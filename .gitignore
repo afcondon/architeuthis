@@ -5,6 +5,7 @@ bower_components/
 
 # Build output
 output/
+dist/
 .psci_modules/
 generated-docs/
 

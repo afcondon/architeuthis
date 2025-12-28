@@ -1,0 +1,37 @@
+{
+  "name": "psd3-tidal",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "spago build && npm run bundle",
+    "bundle": "esbuild output/App/index.js --bundle --outfile=dist/app.js --format=esm --platform=browser",
+    "dev": "npm run build && npm run serve",
+    "serve": "python3 -m http.server 8080"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0"
+  },
+  "dependencies": {
+    "d3": "^7.9.0",
+    "d3-array": "^3.2.4",
+    "d3-color": "^3.1.0",
+    "d3-dispatch": "^3.0.1",
+    "d3-drag": "^3.0.0",
+    "d3-ease": "^3.0.1",
+    "d3-force": "^3.0.0",
+    "d3-format": "^3.1.0",
+    "d3-hierarchy": "^3.1.2",
+    "d3-interpolate": "^3.0.1",
+    "d3-path": "^3.1.0",
+    "d3-quadtree": "^3.0.1",
+    "d3-scale": "^4.0.2",
+    "d3-scale-chromatic": "^3.1.0",
+    "d3-selection": "^3.0.0",
+    "d3-shape": "^3.2.0",
+    "d3-time": "^3.1.0",
+    "d3-time-format": "^4.1.0",
+    "d3-timer": "^3.0.1",
+    "d3-transition": "^3.0.1",
+    "d3-zoom": "^3.0.0"
+  }
+}
