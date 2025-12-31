@@ -65,14 +65,14 @@ import Data.Maybe (Maybe(..))
 import Data.Rational (Rational, (%))
 import Data.String.CodeUnits as SCU
 import Data.Tuple (Tuple(..))
-import Parsing (ParserT)
-import Parsing as P
-import Parsing.Combinators as PC
-import Parsing.String (char, satisfy, string)
-import Parsing.String.Basic (alphaNum, digit, skipSpaces, number)
+import Text.Parsing.Parser (ParserT)
+import Text.Parsing.Parser as P
+import Text.Parsing.Parser.Combinators as PC
+import Text.Parsing.Parser.String (char, satisfy, string, skipSpaces)
+import Text.Parsing.Parser.Token (alphaNum, digit)
 import Tidal.AST.Types (Located(..), TPat(..), SourceSpan, tpatSpan)
 import Tidal.Core.Types (ControlName(..), SourcePos)
-import Tidal.Parse.Class (class AtomParseable, atomParser, TidalParser)
+import Tidal.Parse.Class (class AtomParseable, atomParser, TidalParser, number)
 import Tidal.Parse.State (currentPos, mkSourceSpan, newSeed)
 
 -- | Lift a parser operation into TidalParser

@@ -43,6 +43,7 @@ import Prelude
 
 import Data.Array as Array
 import Data.Int as Int
+import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Rational (Rational, fromInt, toNumber)
 import Tidal.Core.Types (Time)
@@ -321,7 +322,7 @@ queryArc :: forall a. Pattern a -> Time -> Time -> Array (Event a)
 queryArc pat start stop =
   let
     arc = Arc { start, stop }
-    st = State { arc, controls: mempty }
+    st = State { arc, controls: Map.empty }
   in
     query pat st
 

@@ -1,59 +1,36 @@
-workspace:
-  packageSet:
-    registry: 67.0.1
-  extraPackages:
-    psd3-tree:
-      path: ../purescript-psd3-tree
-    psd3-selection:
-      path: ../purescript-psd3-selection
-    psd3-layout:
-      path: ../purescript-psd3-layout
-    psd3-simulation:
-      path: ../purescript-psd3-simulation
-
 package:
-  name: psd3-tidal
-  description: TidalCycles mini-notation parser for PureScript
-  publish:
-    version: 0.1.0
-    license: GPL-3.0-or-later
-    location:
-      githubOwner: afcondon
-      githubRepo: purescript-psd3-tidal
+  name: purerl-tidal
+  description: TidalCycles mini-notation parser for PureScript/Erlang
   dependencies:
-    - aff
-    - aff-promise
     - arrays
     - console
     - control
     - effect
     - either
+    - erl-binary
+    - erl-cowboy
+    - erl-kernel
+    - erl-lists
+    - erl-maps
+    - erl-process
+    - erl-tuples
     - foldable-traversable
-    - halogen
-    - halogen-subscriptions
+    - foreign
     - integers
     - maybe
-    - midi
     - newtype
     - numbers
     - ordered-collections
     - parsing
     - prelude
-    - psd3-layout
-    - psd3-selection
-    - psd3-simulation
-    - psd3-tree
     - rationals
     - refs
     - strings
     - transformers
     - tuples
-    - web-dom
-    - web-events
-    - web-html
-    - web-uievents
-  test:
-    main: Test.Main
-    dependencies:
-      - spec
-      - spec-discovery
+
+workspace:
+  packageSet:
+    url: https://raw.githubusercontent.com/purerl/package-sets/erl-0.15.3-20220629/packages.json
+  backend:
+    cmd: "/Users/afc/bin/purerl"

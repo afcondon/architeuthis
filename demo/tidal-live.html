@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Tidal Live - WebSocket Pattern Editor</title>
+    <style>
+        body {
+            font-family: 'Courier New', monospace;
+            background: #1a1a2e;
+            color: #eee;
+            padding: 40px;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+        h1 {
+            color: #00ff88;
+            margin-bottom: 10px;
+        }
+        .subtitle {
+            color: #888;
+            margin-bottom: 30px;
+        }
+        .connection-status {
+            padding: 10px 20px;
+            border-radius: 4px;
+            margin-bottom: 20px;
+            font-weight: bold;
+        }
+        .connected { background: #0a3d0a; color: #00ff88; }
+        .disconnected { background: #3d0a0a; color: #ff4444; }
+        .connecting { background: #3d3d0a; color: #ffff44; }
+
+        #pattern-input {
+            width: 100%;
+            padding: 15px;
+            font-size: 24px;
+            font-family: 'Courier New', monospace;
+            background: #0f0f23;
+            border: 2px solid #333;
+            color: #00ff88;
+            border-radius: 4px;
+            margin-bottom: 10px;
+        }
+        #pattern-input:focus {
+            outline: none;
+            border-color: #00ff88;
+        }
+
+        button {
+            padding: 10px 30px;
+            font-size: 16px;
+            background: #00ff88;
+            color: #1a1a2e;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-right: 10px;
+        }
+        button:hover { background: #00cc6a; }
+        button:disabled { background: #444; color: #888; cursor: not-allowed; }
+
+        .examples {
+            margin-top: 30px;
+            padding: 20px;
+            background: #0f0f23;
+            border-radius: 4px;
+        }
+        .examples h3 { color: #888; margin-top: 0; }
+        .example {
+            display: inline-block;
+            padding: 8px 16px;
+            margin: 5px;
+            background: #1a1a2e;
+            border: 1px solid #333;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .example:hover { border-color: #00ff88; }
+
+        #log {
+            margin-top: 30px;
+            padding: 15px;
+            background: #0f0f23;
+            border-radius: 4px;
+            max-height: 200px;
+            overflow-y: auto;
+            font-size: 12px;
+        }
+        .log-entry { margin: 5px 0; }
+        .log-sent { color: #00ff88; }
+        .log-received { color: #44aaff; }
+        .log-error { color: #ff4444; }
+    </style>
+</head>
+<body>
+    <h1>Tidal Live</h1>
+    <p class="subtitle">Real-time pattern control via WebSocket</p>
+
+    <div id="status" class="connection-status disconnected">Disconnected</div>
+
+    <input type="text" id="pattern-input" placeholder="bd sn hh cp" value="bd sn hh cp">
+
+    <div style="margin-top: 10px;">
+        <button id="send-btn" onclick="sendPattern()" disabled>Send Pattern</button>
+        <button onclick="connect()">Reconnect</button>
+    </div>
+
+    <div class="examples">
+        <h3>Example Patterns (click to load)</h3>
+        <span class="example" onclick="loadPattern('bd sn hh cp')">bd sn hh cp</span>
+        <span class="example" onclick="loadPattern('bd*2 sn')">bd*2 sn</span>
+        <span class="example" onclick="loadPattern('bd(3,8)')">bd(3,8)</span>
+        <span class="example" onclick="loadPattern('bd(5,8)')">bd(5,8)</span>
+        <span class="example" onclick="loadPattern('[bd sn] hh')"> [bd sn] hh</span>
+        <span class="example" onclick="loadPattern('bd [sn cp] hh')">bd [sn cp] hh</span>
+        <span class="example" onclick="loadPattern('~')">~ (silence)</span>
+    </div>
+
+    <div id="log">
+        <div class="log-entry">Log output will appear here...</div>
+    </div>
+
+    <script>
+        let ws = null;
+        const statusEl = document.getElementById('status');
+        const inputEl = document.getElementById('pattern-input');
+        const sendBtn = document.getElementById('send-btn');
+        const logEl = document.getElementById('log');
+
+        function log(msg, type = '') {
+            const entry = document.createElement('div');
+            entry.className = 'log-entry ' + type;
+            entry.textContent = new Date().toLocaleTimeString() + ' - ' + msg;
+            logEl.insertBefore(entry, logEl.firstChild);
+        }
+
+        function connect() {
+            if (ws) {
+                ws.close();
+            }
+
+            statusEl.className = 'connection-status connecting';
+            statusEl.textContent = 'Connecting...';
+
+            ws = new WebSocket('ws://localhost:8080/ws');
+
+            ws.onopen = function() {
+                statusEl.className = 'connection-status connected';
+                statusEl.textContent = 'Connected';
+                sendBtn.disabled = false;
+                log('Connected to server', 'log-received');
+            };
+
+            ws.onclose = function() {
+                statusEl.className = 'connection-status disconnected';
+                statusEl.textContent = 'Disconnected';
+                sendBtn.disabled = true;
+                log('Disconnected from server', 'log-error');
+            };
+
+            ws.onerror = function(err) {
+                log('WebSocket error', 'log-error');
+            };
+
+            ws.onmessage = function(event) {
+                log('Server: ' + event.data, 'log-received');
+            };
+        }
+
+        function sendPattern() {
+            const pattern = inputEl.value.trim();
+            if (pattern && ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(pattern);
+                log('Sent: ' + pattern, 'log-sent');
+            }
+        }
+
+        function loadPattern(pattern) {
+            inputEl.value = pattern;
+            sendPattern();
+        }
+
+        // Send on Enter key
+        inputEl.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                sendPattern();
+            }
+        });
+
+        // Auto-connect on page load
+        connect();
+    </script>
+</body>
+</html>

@@ -9,6 +9,13 @@ dist/
 .psci_modules/
 generated-docs/
 
+# Erlang/OTP build
+_build/
+ebin/
+rebar.lock
+erl_crash.dump
+*.beam
+
 # IDE
 .idea/
 *.iml

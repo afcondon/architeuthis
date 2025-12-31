@@ -4,7 +4,8 @@
 -- | The actual parser implementation is in Tidal.Parse.Combinators.
 module Tidal.Parse.Parser
   ( -- * Entry points
-    parseTPat
+    parse
+  , parseTPat
   , parseMini
     -- * Re-exports for convenience
   , module Tidal.Parse.Class
@@ -14,8 +15,8 @@ import Prelude
 
 import Control.Monad.State (evalStateT)
 import Data.Either (Either)
-import Parsing (ParseError, runParser)
-import Parsing.String (eof)
+import Text.Parsing.Parser (ParseError, runParser)
+import Text.Parsing.Parser.String (eof)
 import Tidal.AST.Types (TPat)
 import Tidal.Parse.Class (class AtomParseable, TidalParser)
 import Tidal.Parse.Combinators (pTidal, liftP)
@@ -39,3 +40,7 @@ parseTPat input = runParser input (evalStateT parser (initialState "<input>"))
 -- | Alias for parseTPat with a friendlier name
 parseMini :: forall a. AtomParseable a => String -> Either ParseError (TPat a)
 parseMini = parseTPat
+
+-- | Short alias for String patterns (most common use case)
+parse :: String -> Either ParseError (TPat String)
+parse = parseTPat

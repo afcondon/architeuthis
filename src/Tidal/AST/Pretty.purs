@@ -15,9 +15,9 @@ module Tidal.AST.Pretty
 import Prelude
 
 import Data.Maybe (Maybe(..))
-import Data.Rational (Rational, numerator, denominator)
+import Data.Int as Int
+import Data.Rational (Rational, toNumber)
 import Data.String as String
-import JS.BigInt as BigInt
 import Tidal.AST.Types (TPat(..), Located(..), getValue)
 import Tidal.Core.Types (ControlName(..))
 
@@ -125,14 +125,14 @@ prettyWithModifier pat = case pat of
   _ -> "[" <> pretty pat <> "]"
 
 -- | Pretty-print a Rational number
+-- | For purerl compatibility, we use toNumber and detect whole numbers
 prettyRational :: Rational -> String
 prettyRational r =
-  let n = BigInt.toInt (numerator r)
-      d = BigInt.toInt (denominator r)
-  in case n, d of
-    Just num, Just 1 -> show num
-    Just num, Just den -> show num <> "%" <> show den
-    _, _ -> "1"  -- Fallback for very large numbers
+  let n = toNumber r
+      rounded = Int.round n
+  in if n == Int.toNumber rounded
+    then show rounded
+    else show n  -- Fall back to decimal for non-integers
 
 -- | Check if a Rational pattern is just the constant 1
 isOne :: forall a. TPat a -> Boolean

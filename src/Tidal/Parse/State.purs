@@ -13,8 +13,8 @@ module Tidal.Parse.State
 import Prelude
 
 import Control.Monad.State (class MonadState, get, modify)
-import Parsing (Position(..))
-import Parsing as P
+import Text.Parsing.Parser as P
+import Text.Parsing.Parser.Pos (Position(..))
 import Tidal.Core.Types (Seed(..), SourcePos, SourceSpan)
 
 -- | Parser state

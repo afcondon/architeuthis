@@ -13,6 +13,7 @@ module Tidal.Parse.Class
   ( class AtomParseable
   , atomParser
   , TidalParser
+  , number
   ) where
 
 import Prelude
@@ -26,11 +27,11 @@ import Data.Int as Int
 import Data.Maybe (Maybe(..))
 import Data.Rational (Rational, (%))
 import Data.String.CodeUnits as SCU
-import Parsing (ParserT)
-import Parsing as P
-import Parsing.Combinators as PC
-import Parsing.String (char, satisfy)
-import Parsing.String.Basic (alphaNum, digit, number)
+import Text.Parsing.Parser (ParserT)
+import Text.Parsing.Parser as P
+import Text.Parsing.Parser.Combinators as PC
+import Text.Parsing.Parser.String (char, satisfy)
+import Text.Parsing.Parser.Token (alphaNum, digit)
 import Tidal.AST.Types (Located(..))
 import Tidal.Parse.State (ParseState, currentPos, mkSourceSpan)
 
@@ -38,6 +39,29 @@ import Tidal.Parse.State (ParseState, currentPos, mkSourceSpan)
 -- |
 -- | StateT provides the seed counter, ParserT provides parsing.
 type TidalParser = StateT ParseState (ParserT String Identity)
+
+-- | Parse a decimal number (purerl-compatible replacement for Parsing.String.Basic.number)
+number :: forall m. Monad m => ParserT String m Number
+number = do
+  intPart <- Array.some digit
+  fracPart <- PC.option [] do
+    _ <- char '.'
+    Array.some digit
+  let intStr = SCU.fromCharArray intPart
+      fracStr = SCU.fromCharArray fracPart
+      numStr = if Array.null fracPart then intStr else intStr <> "." <> fracStr
+  case Int.fromString intStr of
+    Just _ -> pure $ unsafeParseNumber numStr
+    Nothing -> P.fail "expected number"
+  where
+    -- Safe because we've validated the format
+    unsafeParseNumber :: String -> Number
+    unsafeParseNumber s = case Int.fromString s of
+      Just n -> Int.toNumber n
+      Nothing -> readFloat s
+
+-- | Foreign import for reading floats (will need FFI)
+foreign import readFloat :: String -> Number
 
 -- | Lift a parser operation into TidalParser
 liftP :: forall a. ParserT String Identity a -> TidalParser a
