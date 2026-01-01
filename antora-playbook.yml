@@ -1,0 +1,22 @@
+site:
+  title: Purerl Tidal Documentation
+  start_page: purerl-tidal::index.adoc
+
+content:
+  sources:
+    - url: .
+      start_path: docs
+      branches: HEAD
+
+ui:
+  bundle:
+    url: https://gitlab.com/antora/antora-ui-default/-/jobs/artifacts/HEAD/raw/build/ui-bundle.zip?job=bundle-stable
+    snapshot: true
+
+output:
+  dir: ./build/site
+
+asciidoc:
+  attributes:
+    source-highlighter: highlight.js
+    icons: font

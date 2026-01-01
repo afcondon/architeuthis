@@ -1,0 +1,160 @@
+= Why Erlang?
+:description: The case for using Erlang/OTP for music timing
+:keywords: erlang, otp, beam, timing, real-time
+
+Why we chose Erlang/OTP for the purerl-tidal backend.
+
+== The Problem with Browser Timing
+
+JavaScript in browsers has fundamental timing issues for music:
+
+=== Background Tab Throttling
+
+[source,javascript]
+----
+// In a background tab, this gets throttled
+setInterval(() => playNote(), 25);
+// Actually fires every 1000ms or more!
+----
+
+Browsers aggressively throttle background tabs to save battery. Your metronome becomes a slow heartbeat.
+
+=== Garbage Collection Pauses
+
+JavaScript's GC can pause execution unpredictably:
+
+[source]
+----
+Expected: ♩ ♩ ♩ ♩
+Actual:   ♩ ♩ ── ♩ (GC pause)
+----
+
+=== Timer Coalescing
+
+Browsers batch timers to reduce CPU wakes:
+
+[source,javascript]
+----
+setTimeout(fn, 10);  // Actually fires at 16ms
+setTimeout(fn, 15);  // Actually fires at 16ms
+setTimeout(fn, 20);  // Actually fires at 32ms
+----
+
+=== No Direct Hardware Access
+
+Web MIDI API has its own buffering and latency.
+
+== Why Erlang Solves These
+
+=== Predictable Scheduling
+
+Erlang's scheduler provides soft real-time guarantees:
+
+* Preemptive scheduling prevents any process from hogging CPU
+* Reduction counting ensures fair time slicing
+* No priority inversion issues
+
+=== Per-Process Heaps
+
+Each Erlang process has its own heap:
+
+[source]
+----
+Process A: [heap] → GC
+Process B: [heap] → running (not affected)
+Process C: [heap] → running (not affected)
+----
+
+When one process garbage collects, others continue running.
+
+=== Monotonic Timers
+
+Erlang provides high-precision monotonic timers:
+
+[source,erlang]
+----
+erlang:send_after(25, self(), tick)  -- 25ms precision
+erlang:monotonic_time(millisecond)   -- Monotonic clock
+----
+
+No coalescing, no throttling, just precise timing.
+
+=== OTP Supervision
+
+If something crashes, OTP restarts it:
+
+[source]
+----
+Supervisor
+├── WebSocket Server (restarts on crash)
+├── MIDI Scheduler (restarts on crash)
+└── ... (isolated failures)
+----
+
+Your music keeps playing even if one component fails.
+
+== purerl: Type-Safe Erlang
+
+We don't write raw Erlang. We use PureScript compiled to Erlang via purerl:
+
+[source,purescript]
+----
+-- Type-safe pattern evaluation
+tpatToPattern :: TPat String → Pattern String
+tpatToPattern = case _ of
+  TPat_Atom s → pure s
+  TPat_Seq ps → fastCat (map tpatToPattern ps)
+  ...
+----
+
+Benefits:
+
+* **Type safety** — Catch errors at compile time
+* **Algebraic data types** — Pattern matching on AST
+* **Functional abstractions** — Monads, functors, etc.
+* **Erlang runtime** — All the BEAM benefits
+
+== Comparison
+
+|===
+|Aspect |Browser JS |Erlang/BEAM
+
+|Background tabs
+|Throttled to 1s
+|Full speed
+
+|GC pauses
+|Stop-the-world
+|Per-process
+
+|Timer precision
+|16ms coalesced
+|1ms or better
+
+|Crash recovery
+|Page dies
+|Process restarts
+
+|MIDI access
+|Web MIDI (limited)
+|Native (sendmidi)
+
+|Type safety
+|None (or TypeScript)
+|Full (PureScript)
+|===
+
+== When to Use Browser
+
+The browser is still great for:
+
+* **Visualization** — D3, Canvas, SVG
+* **User interaction** — Mouse, keyboard, touch
+* **Distribution** — No installation needed
+
+That's why we have *two* projects:
+
+* **purerl-tidal** — Erlang backend for timing-critical work
+* **purescript-psd3-tidal** — Browser frontend for visualization
+
+They communicate via WebSocket, combining the best of both worlds.

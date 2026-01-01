@@ -1,0 +1,197 @@
+= WebSocket Protocol
+:description: WebSocket message format for purerl-tidal
+:keywords: websocket, protocol, messages, api
+
+The WebSocket protocol for communicating with the purerl-tidal backend.
+
+== Connection
+
+Connect to:
+
+[source]
+----
+ws://localhost:8080/ws
+----
+
+The server accepts standard WebSocket connections. No authentication required.
+
+== Message Format
+
+=== From Client (Frontend → Backend)
+
+All messages are plain text strings.
+
+==== Pattern Update
+
+Send a mini-notation pattern string:
+
+[source]
+----
+bd sn [hh hh] cp
+----
+
+The server will:
+
+1. Parse the pattern
+2. If valid, update the scheduler and respond with `OK: ...`
+3. If invalid, respond with `ERROR: ...`
+
+==== Silence
+
+Send `~` to stop all sound:
+
+[source]
+----
+~
+----
+
+==== BPM Update (Future)
+
+[source]
+----
+bpm:140
+----
+
+=== From Server (Backend → Frontend)
+
+==== Success Response
+
+[source]
+----
+OK: bd sn [hh hh] cp
+----
+
+The pattern was parsed and the scheduler was updated.
+
+==== Error Response
+
+[source]
+----
+ERROR: Parse error at position 5: unexpected character '{'
+----
+
+The pattern could not be parsed. Includes position and description.
+
+==== Status Messages (Future)
+
+[source]
+----
+STATUS: playing cycle 42
+STATUS: bpm changed to 140
+----
+
+== Example Session
+
+[source]
+----
+Client: bd sn hh cp
+Server: OK: bd sn hh cp
+
+Client: bd*4
+Server: OK: bd*4
+
+Client: invalid{pattern
+Server: ERROR: Parse error at position 8: unexpected '{'
+
+Client: bd(3,8)
+Server: OK: bd(3,8)
+
+Client: ~
+Server: OK: ~
+----
+
+== Connection Lifecycle
+
+=== On Connect
+
+1. Server accepts connection
+2. Server starts with empty pattern (silence)
+3. Ready to receive patterns
+
+=== On Disconnect
+
+1. Pattern continues playing (scheduler is independent)
+2. Reconnect to update pattern
+
+=== Error Handling
+
+If the WebSocket disconnects:
+
+* **Backend continues** — Pattern keeps playing
+* **Frontend should reconnect** — Automatic reconnection recommended
+
+== Testing with wscat
+
+[source,bash]
+----
+# Install
+npm install -g wscat
+
+# Connect
+wscat -c ws://localhost:8080/ws
+
+# Send patterns
+> bd sn hh cp
+< OK: bd sn hh cp
+
+> bd(3,8)
+< OK: bd(3,8)
+
+# Disconnect with Ctrl+C
+----
+
+== Testing with curl (WebSocket upgrade)
+
+[source,bash]
+----
+# WebSocket test (requires wscat or similar)
+# curl doesn't support WebSocket natively
+----
+
+== JavaScript Client Example
+
+[source,javascript]
+----
+const ws = new WebSocket('ws://localhost:8080/ws');
+
+ws.onopen = () => {
+  console.log('Connected');
+  ws.send('bd sn hh cp');
+};
+
+ws.onmessage = (event) => {
+  console.log('Response:', event.data);
+  if (event.data.startsWith('ERROR:')) {
+    console.error('Pattern error:', event.data);
+  }
+};
+
+ws.onerror = (error) => {
+  console.error('WebSocket error:', error);
+};
+
+ws.onclose = () => {
+  console.log('Disconnected');
+  // Implement reconnection logic here
+};
+----
+
+== PureScript Client Example
+
+[source,purescript]
+----
+import Tidal.Output.WebSocket (connectWS, sendPattern)
+
+main :: Effect Unit
+main = do
+  ws ← connectWS "ws://localhost:8080/ws"
+
+  -- Handle messages
+  onMessage ws \msg →
+    if startsWith "OK:" msg
+      then log "Pattern accepted"
+      else log ("Error: " <> msg)
+
+  -- Send a pattern
+  sendPattern ws "bd sn hh cp"
+----

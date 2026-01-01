@@ -1,0 +1,201 @@
+= MIDI Scheduling
+:description: Real-time MIDI scheduling on the BEAM
+:keywords: midi, scheduling, timing, real-time
+
+How purerl-tidal achieves precise MIDI timing on the BEAM.
+
+== The Scheduler Loop
+
+The MIDI scheduler is an Erlang process that:
+
+1. Maintains current BPM and pattern
+2. Wakes up every 25ms
+3. Queries the pattern for upcoming events
+4. Sends MIDI notes at the right times
+
+[source,purescript]
+----
+data SchedulerState =
+  { bpm :: Number
+  , pattern :: Pattern String
+  , currentCycle :: Rational
+  , lookAhead :: Number  -- milliseconds
+  , device :: String
+  }
+
+data SchedulerMsg
+  = Tick
+  | UpdatePattern (Pattern String)
+  | SetBPM Number
+  | Stop
+----
+
+== Timing Strategy
+
+=== Look-Ahead Window
+
+We query events slightly ahead of "now":
+
+[source]
+----
+now ──────────────────► now + lookAhead
+     │                 │
+     │   events to     │
+     │   schedule      │
+     │                 │
+     ▼                 ▼
+----
+
+Default look-ahead is 100ms — enough to account for:
+
+* System call latency
+* MIDI driver buffering
+* sendmidi process spawn time
+
+=== Tick Interval
+
+Every 25ms, the scheduler:
+
+[source,purescript]
+----
+handleTick :: SchedulerState → Effect SchedulerState
+handleTick state = do
+  now ← monotonicTime
+  let queryWindow = { start: state.currentCycle
+                    , stop: state.currentCycle + cycleDelta
+                    }
+  let events = query state.pattern queryWindow
+  for_ events \event →
+    scheduleMIDI event state.device
+  scheduleNextTick
+  pure state { currentCycle = queryWindow.stop }
+----
+
+=== Cycle Time Conversion
+
+Convert cycles to milliseconds:
+
+[source,purescript]
+----
+cyclesToMs :: Number → Rational → Number
+cyclesToMs bpm cycles =
+  let msPerCycle = 60000.0 / bpm * 4.0  -- 4 beats per cycle
+  in toNumber cycles * msPerCycle
+
+msToCycles :: Number → Number → Rational
+msToCycles bpm ms =
+  let msPerCycle = 60000.0 / bpm * 4.0
+  in fromNumber (ms / msPerCycle)
+----
+
+At 120 BPM, one cycle = 2000ms.
+
+== MIDI Output
+
+=== Note Events
+
+Each pattern event becomes MIDI note-on/note-off:
+
+[source,purescript]
+----
+scheduleMIDI :: Event String → String → Effect Unit
+scheduleMIDI event device = do
+  let note = lookupNote event.value
+  let velocity = 100
+  let durationMs = arcDuration event.whole * msPerCycle
+
+  -- Note on
+  sendNoteOn device note velocity
+
+  -- Schedule note off
+  after durationMs do
+    sendNoteOff device note
+----
+
+=== sendmidi CLI
+
+We use the `sendmidi` command-line tool:
+
+[source,bash]
+----
+# Note on: channel 10, note 36, velocity 100
+sendmidi dev "IAC Driver Tidal" ch 10 on 36 100
+
+# Note off
+sendmidi dev "IAC Driver Tidal" ch 10 off 36
+----
+
+This is spawned as an OS process via Erlang's `os:cmd/1`.
+
+== Erlang Timers
+
+We use Erlang's monotonic timers for precision:
+
+[source,erlang]
+----
+% Start a timer for 25ms from now
+erlang:send_after(25, self(), tick)
+
+% Get current time (monotonic, won't jump)
+erlang:monotonic_time(millisecond)
+----
+
+These don't drift or get affected by system clock changes.
+
+== Handling Pattern Updates
+
+When a new pattern arrives via WebSocket:
+
+[source,purescript]
+----
+handleMessage :: SchedulerMsg → State → Effect State
+handleMessage msg state = case msg of
+  UpdatePattern newPat →
+    -- Quantize to next cycle boundary for clean transition
+    pure state { pattern = newPat }
+
+  SetBPM newBpm →
+    pure state { bpm = newBpm }
+
+  Tick →
+    handleTick state
+
+  Stop →
+    stopScheduler
+----
+
+Pattern changes take effect immediately (or could be quantized to bar boundaries).
+
+== Latency Considerations
+
+=== Sources of Latency
+
+1. **Look-ahead** — 100ms by default
+2. **sendmidi spawn** — ~5-10ms per call
+3. **MIDI driver buffer** — varies
+4. **DAW buffer** — typically 128-512 samples
+
+=== Minimizing Latency
+
+[source,purescript]
+----
+-- Reduce look-ahead (risky if system is slow)
+schedulerConfig = { lookAhead: 50.0, tickInterval: 10.0 }
+
+-- Keep sendmidi process alive (future optimization)
+-- Instead of spawning per-note, maintain a persistent connection
+----
+
+== Comparison to Web Audio
+
+Web Audio can achieve good timing with careful scheduling:
+
+[source,javascript]
+----
+// Schedule ahead with Web Audio
+const scheduleAhead = 0.1;  // 100ms
+const now = audioContext.currentTime;
+oscillator.start(now + scheduleAhead);
+----
+
+But this still requires the browser tab to be active. purerl-tidal's approach works regardless of browser state.

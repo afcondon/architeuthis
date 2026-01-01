@@ -1,0 +1,195 @@
+= Pattern Evaluation
+:description: How patterns are parsed and evaluated
+:keywords: pattern, evaluation, ast, combinators
+
+How mini-notation strings become playable patterns.
+
+== The Pipeline
+
+[source]
+----
+"bd sn [hh hh] cp"
+       │
+       ▼ Parse
+TPat_Seq [TPat_Atom "bd", TPat_Atom "sn", ...]
+       │
+       ▼ Evaluate
+Pattern :: State → Array Event
+       │
+       ▼ Query
+[Event "bd" 0.0, Event "sn" 0.25, ...]
+----
+
+== Step 1: Parsing
+
+The parser converts strings to `TPat` (Tidal Pattern AST):
+
+[source,purescript]
+----
+data TPat a
+  = TPat_Atom a SourceSpan
+  | TPat_Silence SourceSpan
+  | TPat_Seq (Array (TPat a)) SourceSpan
+  | TPat_Stack (Array (TPat a)) SourceSpan
+  | TPat_Fast (TPat a) (TPat Rational) SourceSpan
+  | TPat_Slow (TPat a) (TPat Rational) SourceSpan
+  | TPat_Euclid (TPat a) Int Int (Maybe Int) SourceSpan
+  | TPat_DegradeBy (TPat a) Number SourceSpan
+  | TPat_CycleChoose (Array (TPat a)) SourceSpan
+  | TPat_Repeat (TPat a) Int SourceSpan
+  | TPat_Elongate (TPat a) Rational SourceSpan
+----
+
+Every node carries a `SourceSpan` for error reporting and editor integration.
+
+== Step 2: Evaluation
+
+The evaluator converts `TPat` to `Pattern`:
+
+[source,purescript]
+----
+-- A pattern is a query function
+newtype Pattern a = Pattern (State → Array (Event a))
+
+-- Evaluation
+tpatToPattern :: TPat String → Pattern String
+tpatToPattern = case _ of
+  TPat_Atom s _ →
+    pure s  -- Constant pattern
+
+  TPat_Silence _ →
+    silence  -- Empty pattern
+
+  TPat_Seq ps _ →
+    fastCat (map tpatToPattern ps)  -- Concatenate
+
+  TPat_Stack ps _ →
+    stack (map tpatToPattern ps)  -- Layer
+
+  TPat_Fast p rate _ →
+    fast (evalRational rate) (tpatToPattern p)
+
+  TPat_Euclid p hits steps rotation _ →
+    euclidean hits steps (tpatToPattern p)
+  ...
+----
+
+== Pattern Combinators
+
+=== Concatenation (`fastCat`)
+
+Sequences patterns one after another:
+
+[source,purescript]
+----
+fastCat :: Array (Pattern a) → Pattern a
+fastCat ps state =
+  let n = length ps
+      scaled = map (fast n) ps
+  in concatMap (queryArc state) scaled
+----
+
+=== Stacking (`stack`)
+
+Layers patterns simultaneously:
+
+[source,purescript]
+----
+stack :: Array (Pattern a) → Pattern a
+stack ps state = concatMap (flip query state) ps
+----
+
+=== Speed (`fast`, `slow`)
+
+Changes the rate of events:
+
+[source,purescript]
+----
+fast :: Rational → Pattern a → Pattern a
+fast rate (Pattern f) = Pattern \state →
+  f (state { arc = scaleArc (1/rate) state.arc })
+
+slow :: Rational → Pattern a → Pattern a
+slow rate = fast (1/rate)
+----
+
+=== Euclidean Rhythms
+
+Distributes hits evenly using the Bjorklund algorithm:
+
+[source,purescript]
+----
+euclidean :: Int → Int → Pattern a → Pattern a
+euclidean hits steps pat =
+  let rhythm = bjorklund hits steps  -- [1,0,0,1,0,0,1,0]
+      indices = findIndices (_ == 1) rhythm
+  in fastCat (map (atIndex pat) indices)
+----
+
+== Step 3: Querying
+
+The scheduler queries patterns for events in a time window:
+
+[source,purescript]
+----
+query :: Pattern a → State → Array (Event a)
+query (Pattern f) state = f state
+
+-- Query a specific arc
+queryArc :: Arc → Pattern a → Array (Event a)
+queryArc arc pat = query pat { arc, seed: defaultSeed }
+----
+
+== Events
+
+Events have timing and value:
+
+[source,purescript]
+----
+data Event a = Event
+  { whole :: Arc      -- Logical duration
+  , part :: Arc       -- What we're playing
+  , value :: a        -- The sound/note
+  , eventType :: EventType
+  }
+
+data EventType = Digital | Analog
+----
+
+* **whole** — The full duration of the event
+* **part** — The portion within the query window
+* **Digital** — Discrete onset (like a drum hit)
+* **Analog** — Continuous value (like a control change)
+
+== Time Representation
+
+Time uses exact fractions:
+
+[source,purescript]
+----
+type Time = Rational
+type Arc = { start :: Time, stop :: Time }
+
+-- Examples
+quarter = 1 % 4    -- One quarter of a cycle
+third = 1 % 3      -- One third of a cycle
+eighth = 1 % 8     -- One eighth of a cycle
+----
+
+This avoids floating-point drift over long sessions.
+
+== Randomness
+
+Patterns can be probabilistic using seeds:
+
+[source,purescript]
+----
+type Seed = Int
+
+-- Degradation uses seeded randomness
+degradeBy :: Number → Pattern a → Pattern a
+degradeBy prob (Pattern f) = Pattern \state →
+  filter (shouldPlay state.seed prob) (f state)
+----
+
+The seed is derived from cycle position, ensuring deterministic playback.

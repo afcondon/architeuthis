@@ -1,0 +1,206 @@
+= Mini-Notation Syntax
+:description: TidalCycles mini-notation reference
+:keywords: mini-notation, syntax, patterns, tidal
+
+The mini-notation is TidalCycles' compact language for describing rhythmic patterns.
+
+== Basic Sequences
+
+Space-separated elements play in sequence, evenly distributed across one cycle:
+
+[source]
+----
+bd sn hh cp
+----
+
+This plays: kick, snare, hi-hat, clap — each taking 1/4 of the cycle.
+
+== Silence (Rests)
+
+Use `~` for silence:
+
+[source]
+----
+bd ~ sn ~
+----
+
+Plays kick, rest, snare, rest.
+
+== Grouping with Brackets
+
+Square brackets `[]` group elements into one step:
+
+[source]
+----
+bd [sn sn] hh cp
+----
+
+The two snares share the time of one step, playing twice as fast.
+
+Nested grouping:
+
+[source]
+----
+bd [[sn sn] [sn sn sn]] hh
+----
+
+== Parallel (Stacks)
+
+Comma-separated elements play simultaneously:
+
+[source]
+----
+[bd, hh, cp]
+----
+
+All three sounds play at once.
+
+== Speed Modifiers
+
+=== Fast (`*`)
+
+Multiply speed:
+
+[source]
+----
+bd*4      -- Four kicks per cycle
+hh*8      -- Eight hi-hats per cycle
+----
+
+=== Slow (`/`)
+
+Divide speed:
+
+[source]
+----
+bd/2      -- One kick every two cycles
+sn/4      -- One snare every four cycles
+----
+
+== Euclidean Rhythms
+
+The Euclidean algorithm distributes hits evenly:
+
+[source]
+----
+bd(3,8)   -- 3 hits over 8 steps: x..x..x.
+hh(5,8)   -- 5 hits over 8 steps: x.xx.xx.
+cp(2,5)   -- 2 hits over 5 steps: x..x.
+----
+
+With rotation:
+
+[source]
+----
+bd(3,8,2) -- Rotated by 2 steps
+----
+
+== Alternation
+
+Angle brackets `<>` cycle through options:
+
+[source]
+----
+<bd sn cp>
+----
+
+Plays `bd` on cycle 1, `sn` on cycle 2, `cp` on cycle 3, then repeats.
+
+== Probability (Degradation)
+
+`?` followed by a probability (0-1):
+
+[source]
+----
+bd?0.5    -- 50% chance to play
+hh?0.8    -- 80% chance to play
+----
+
+Without a number, defaults to 50%:
+
+[source]
+----
+sn?       -- Same as sn?0.5
+----
+
+== Repetition
+
+`!` repeats an element:
+
+[source]
+----
+bd!3      -- Same as: bd bd bd
+hh!4      -- Same as: hh hh hh hh
+----
+
+== Elongation
+
+`@` stretches an element:
+
+[source]
+----
+bd@2      -- Holds for 2 steps
+sn@3      -- Holds for 3 steps
+----
+
+`_` continues the previous note:
+
+[source]
+----
+bd _ _ sn -- Kick sustains for 3 steps
+----
+
+== Sample Variants
+
+`:` selects sample variants:
+
+[source]
+----
+bd:0      -- First kick sample
+bd:1      -- Second kick sample
+bd:2      -- Third kick sample
+----
+
+== Complex Examples
+
+Combining features:
+
+[source]
+----
+-- Layered drums with Euclidean rhythms
+[bd(3,8), sn(2,8), hh*8]
+
+-- Alternating patterns
+<[bd sn] [bd bd sn] [bd ~ sn sn]>
+
+-- Probabilistic hi-hats
+bd sn hh?0.7 hh?0.5
+
+-- Nested groups with speed
+[bd [sn*2 cp] hh]*2
+----
+
+== Sound Names
+
+Default drum map:
+
+|===
+|Name |MIDI Note |Sound
+
+|`bd` |36 |Bass Drum
+|`sn` |38 |Snare
+|`hh` |42 |Closed Hi-hat
+|`oh` |46 |Open Hi-hat
+|`cp` |39 |Clap
+|`rim` |37 |Rim Shot
+|`tom` |45 |Low Tom
+|`cymbal` |49 |Crash Cymbal
+|===
+
+Numeric notes also work:
+
+[source]
+----
+36 38 42 39   -- Same as: bd sn hh cp
+60 62 64 65   -- C4 D4 E4 F4 (melodic)
+----

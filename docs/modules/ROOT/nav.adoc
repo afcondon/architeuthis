@@ -1,0 +1,20 @@
+.Getting Started
+* xref:getting-started/quickstart.adoc[Quick Start]
+* xref:getting-started/midi-setup.adoc[MIDI Setup]
+* xref:getting-started/mini-notation.adoc[Mini-Notation Syntax]
+
+.How-To Guides
+* xref:how-to/running-the-server.adoc[Running the Server]
+* xref:how-to/connecting-daw.adoc[Connecting to a DAW]
+* xref:how-to/custom-drum-maps.adoc[Custom Drum Maps]
+
+.Understanding
+* xref:understanding/architecture.adoc[Architecture]
+* xref:understanding/why-erlang.adoc[Why Erlang?]
+* xref:understanding/pattern-evaluation.adoc[Pattern Evaluation]
+* xref:understanding/midi-scheduling.adoc[MIDI Scheduling]
+
+.Reference
+* xref:reference/websocket-protocol.adoc[WebSocket Protocol]
+* xref:reference/module-overview.adoc[Module Overview]
+* xref:reference/note-mapping.adoc[Note Mapping]

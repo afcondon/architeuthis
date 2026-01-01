@@ -1,0 +1,97 @@
+= MIDI Setup
+:description: Configure MIDI routing for purerl-tidal
+:keywords: midi, iac driver, macos, audio
+
+Configure your system to route MIDI from purerl-tidal to your DAW or hardware.
+
+== macOS: IAC Driver
+
+The IAC (Inter-Application Communication) Driver creates virtual MIDI ports.
+
+=== Enable IAC Driver
+
+1. Open **Audio MIDI Setup** (in `/Applications/Utilities/`)
+2. Window → **Show MIDI Studio** (or press ⌘2)
+3. Double-click the **IAC Driver** icon
+4. Check **Device is online**
+5. Click **+** to add a port named **"Tidal"**
+6. Click **Apply**
+
+=== Verify Setup
+
+[source,bash]
+----
+sendmidi list
+----
+
+Should show:
+
+[source]
+----
+IAC Driver Tidal
+----
+
+== Configure purerl-tidal
+
+The default device name is `"IAC Driver Tidal"`. To change it, edit `Main.purs`:
+
+[source,purescript]
+----
+midiConfig :: MIDIConfig
+midiConfig =
+  { device: "IAC Driver Tidal"  -- Change this
+  , channel: 10                  -- Drum channel
+  , velocity: 100
+  }
+----
+
+== Linux: ALSA
+
+On Linux, use ALSA virtual MIDI:
+
+[source,bash]
+----
+# Load the virtual MIDI module
+sudo modprobe snd-virmidi
+
+# List devices
+sendmidi list
+----
+
+== Windows
+
+On Windows, use a virtual MIDI driver like:
+
+* **loopMIDI** — Free virtual MIDI port
+* **LoopBe1** — Single-port virtual MIDI
+
+== Troubleshooting
+
+=== No MIDI Devices Found
+
+[source,bash]
+----
+sendmidi list
+# (empty output)
+----
+
+**Solution:** Enable IAC Driver or install a virtual MIDI driver.
+
+=== Permission Denied
+
+[source,bash]
+----
+sendmidi dev "IAC Driver Tidal" on 36 100
+# Error: permission denied
+----
+
+**Solution:** On macOS, grant Terminal/IDE access in System Preferences → Security & Privacy → Privacy → Automation.
+
+=== Notes Play But No Sound
+
+Check your DAW:
+
+1. Is the track armed for recording?
+2. Is the MIDI input set to "IAC Driver Tidal"?
+3. Is a drum kit/instrument loaded?
+4. Is the track monitoring enabled?

@@ -1,0 +1,108 @@
+= Purerl Tidal
+:description: Erlang/OTP backend for TidalCycles - WebSocket to MIDI
+:keywords: tidal, erlang, purerl, midi, live coding, algorave
+
+[.lead]
+*Real-time MIDI scheduling on the BEAM* — An Erlang backend for TidalCycles that receives patterns via WebSocket and outputs MIDI with precise timing.
+
+== The System
+
+Purerl Tidal is the backend half of a two-part live coding system:
+
+[source]
+----
+┌─ Frontend (Browser) ────────────────────────────────┐
+│  purescript-psd3-tidal                              │
+│  Pattern visualization, editing, interaction        │
+└─────────────────────────────────────────────────────┘
+                         │
+                 ws://localhost:8080/ws
+                         │
+                         ▼
+┌─ Backend (Erlang/BEAM) ─────────────────────────────┐
+│  purerl-tidal (this project)                        │
+│  Parse → Evaluate → Schedule → MIDI Output          │
+└─────────────────────────────────────────────────────┘
+                         │
+                         ▼
+                   MIDI Hardware
+              (DAW, Synth, Drum Machine)
+----
+
+== Why Erlang?
+
+Browser JavaScript has fundamental timing issues for music:
+
+* **Background tab throttling** — tabs pause when not visible
+* **GC pauses** — unpredictable garbage collection
+* **Timer coalescing** — browsers batch timers to save power
+* **No direct MIDI** — Web MIDI API has limitations
+
+Erlang/OTP solves all of these:
+
+* **Predictable scheduling** — soft real-time guarantees
+* **No GC pauses** — per-process heaps, incremental collection
+* **Native timers** — microsecond precision via monotonic clock
+* **OTP supervision** — fault-tolerant process management
+
+== Features
+
+|===
+|Feature |Description
+
+|*WebSocket Server*
+|Cowboy-based server on `ws://localhost:8080/ws`
+
+|*Mini-Notation Parser*
+|Full TidalCycles mini-notation: sequences, stacks, Euclidean rhythms
+
+|*Pattern Evaluation*
+|TPat AST → executable Pattern query function
+
+|*MIDI Scheduler*
+|Real-time scheduling with 25ms tick, 100ms look-ahead
+
+|*sendmidi Integration*
+|CLI tool for reliable cross-platform MIDI output
+|===
+
+== Quick Example
+
+[source,bash]
+----
+# Start the backend
+ERL_LIBS="_build/default/lib" spago run
+
+# Output:
+# Tidal on the BEAM!
+# WebSocket server on port 8080
+# MIDI Scheduler started (BPM: 120)
+----
+
+Connect from browser or test with `wscat`:
+
+[source,bash]
+----
+wscat -c ws://localhost:8080/ws
+> bd sn [hh hh] cp
+< OK: bd sn [hh hh] cp
+----
+
+== Documentation
+
+* xref:getting-started/quickstart.adoc[Quick Start] — Get running in 5 minutes
+* xref:understanding/architecture.adoc[Architecture] — System design and data flow
+* xref:understanding/why-erlang.adoc[Why Erlang?] — The case for the BEAM
+* xref:reference/websocket-protocol.adoc[WebSocket Protocol] — Message format
+
+== Part of the PSD3 Ecosystem
+
+Purerl Tidal integrates with:
+
+* *purescript-psd3-tidal* — Browser frontend with D3 visualizations
+* *psd3-selection* — Type-safe D3 bindings used by the frontend
+* *psd3-sheetless* — Shared finally-tagless DSL concepts
+
+== License
+
+GPL-3.0-or-later (matching TidalCycles licensing)

@@ -1,0 +1,109 @@
+= Connecting to a DAW
+:description: Route MIDI from purerl-tidal to your DAW
+:keywords: daw, ableton, logic, midi routing
+
+Route MIDI from purerl-tidal to Ableton Live, Logic Pro, or other DAWs.
+
+== Ableton Live
+
+=== Setup
+
+1. Create a new **MIDI Track**
+2. Set **MIDI From** to "IAC Driver Tidal"
+3. Set **Input Channel** to "Ch. 10" (or All Channels)
+4. Arm the track (record button)
+5. Enable **Monitor** to "In"
+
+=== Add Drums
+
+1. Drag a **Drum Rack** onto the track
+2. Load samples or a kit
+3. Ensure General MIDI drum mapping:
+   * C1 (36) = Kick
+   * D1 (38) = Snare
+   * F#1 (42) = Hi-hat
+
+=== Test
+
+Send a pattern from the frontend or wscat:
+
+[source]
+----
+bd sn hh cp
+----
+
+You should hear the drum kit playing!
+
+== Logic Pro
+
+=== Setup
+
+1. Create a new **Software Instrument** track
+2. Open **Preferences → MIDI**
+3. Enable "IAC Driver Tidal" as input
+4. Load a drum kit (e.g., Drum Kit Designer)
+
+=== MIDI Input
+
+1. Click the track's **Input** dropdown
+2. Select "IAC Driver Tidal"
+3. Enable **Record Enable** (R button)
+
+== Bitwig Studio
+
+1. Add a new **Instrument Track**
+2. In the **I/O Panel**, set MIDI input to "IAC Driver Tidal"
+3. Load a drum instrument
+4. Arm for recording
+
+== FL Studio
+
+1. Open **Options → MIDI Settings**
+2. Enable "IAC Driver Tidal" as input
+3. Create a **Channel** with a drum plugin
+4. Set its MIDI port to match
+
+== Hardware Synths
+
+Route MIDI to hardware via:
+
+1. **Audio Interface** with MIDI out
+2. **USB MIDI Interface**
+3. **MIDI DIN cables**
+
+Configure `sendmidi` to use your hardware:
+
+[source,bash]
+----
+# List available devices
+sendmidi list
+
+# Test direct output
+sendmidi dev "Your Interface" on 36 100
+----
+
+Update `Main.purs`:
+
+[source,purescript]
+----
+midiConfig =
+  { device: "Your Interface"
+  , channel: 10
+  , velocity: 100
+  }
+----
+
+== BPM Synchronization
+
+By default, purerl-tidal runs at 120 BPM. To match your DAW:
+
+1. Set the same BPM in both
+2. Or use MIDI Clock sync (future feature)
+
+== Latency Tuning
+
+If timing feels off:
+
+1. Reduce buffer size in your DAW
+2. Adjust `lookAhead` in scheduler config
+3. Check for competing audio processes

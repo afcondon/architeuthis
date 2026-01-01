@@ -1,0 +1,87 @@
+= Quick Start
+:description: Get purerl-tidal running in 5 minutes
+:keywords: quickstart, installation, setup
+
+Get the Erlang backend running and sending MIDI to your DAW.
+
+== Prerequisites
+
+You'll need:
+
+* **Erlang/OTP 24+** — `brew install erlang`
+* **PureScript + Spago** — `npm install -g spago purescript`
+* **purerl compiler** — PureScript to Erlang backend
+* **sendmidi** — MIDI CLI tool
+
+[source,bash]
+----
+# Install sendmidi
+brew install gbevin/tools/sendmidi
+
+# Verify it works
+sendmidi list
+----
+
+== Clone and Build
+
+[source,bash]
+----
+git clone https://github.com/afcondon/purerl-tidal
+cd purerl-tidal
+
+# Fetch Erlang dependencies
+rebar3 get-deps
+
+# Build PureScript → Erlang
+spago build
+----
+
+== Start the Server
+
+[source,bash]
+----
+ERL_LIBS="_build/default/lib" spago run
+----
+
+You should see:
+
+[source]
+----
+Tidal on the BEAM!
+===================
+
+=== MIDI Devices ===
+MIDI Devices:
+IAC Driver Tidal
+...
+
+=== WebSocket → MIDI Server ===
+Starting WebSocket server on port 8080
+Connect to ws://localhost:8080/ws
+MIDI Scheduler started
+Device: IAC Driver Tidal
+BPM: 120
+----
+
+== Test with wscat
+
+[source,bash]
+----
+# Install wscat if needed
+npm install -g wscat
+
+# Connect
+wscat -c ws://localhost:8080/ws
+
+# Send a pattern
+> bd sn hh cp
+< OK: bd sn hh cp
+----
+
+You should hear MIDI notes playing!
+
+== Next Steps
+
+* xref:getting-started/midi-setup.adoc[MIDI Setup] — Configure your audio routing
+* xref:getting-started/mini-notation.adoc[Mini-Notation] — Learn the pattern syntax
+* xref:how-to/connecting-daw.adoc[Connecting to a DAW] — Route MIDI to Ableton, Logic, etc.

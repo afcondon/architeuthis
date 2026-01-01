@@ -1,0 +1,113 @@
+= Custom Drum Maps
+:description: Map pattern names to custom MIDI notes
+:keywords: drum map, midi notes, samples
+
+Customize how pattern names map to MIDI notes.
+
+== Default Drum Map
+
+The default mapping follows General MIDI drum standards:
+
+[source,purescript]
+----
+defaultDrumMap :: Map String Int
+defaultDrumMap = Map.fromFoldable
+  [ Tuple "bd" 36      -- Bass Drum 1
+  , Tuple "kick" 36    -- Alias
+  , Tuple "sn" 38      -- Snare
+  , Tuple "snare" 38   -- Alias
+  , Tuple "hh" 42      -- Closed Hi-hat
+  , Tuple "hihat" 42   -- Alias
+  , Tuple "oh" 46      -- Open Hi-hat
+  , Tuple "cp" 39      -- Clap
+  , Tuple "clap" 39    -- Alias
+  , Tuple "rim" 37     -- Side Stick
+  , Tuple "tom" 45     -- Low Tom
+  , Tuple "cymbal" 49  -- Crash Cymbal 1
+  , Tuple "ride" 51    -- Ride Cymbal 1
+  , Tuple "bell" 53    -- Ride Bell
+  ]
+----
+
+== Creating a Custom Map
+
+Edit `src/Tidal/MIDIScheduler.purs`:
+
+[source,purescript]
+----
+-- 808-style mapping
+my808Map :: Map String Int
+my808Map = Map.fromFoldable
+  [ Tuple "bd" 36
+  , Tuple "sd" 38      -- 808 snare
+  , Tuple "lt" 43      -- Low tom
+  , Tuple "mt" 47      -- Mid tom
+  , Tuple "ht" 50      -- High tom
+  , Tuple "ch" 42      -- Closed hat
+  , Tuple "oh" 46      -- Open hat
+  , Tuple "cy" 49      -- Cymbal
+  , Tuple "cb" 56      -- Cowbell
+  , Tuple "ma" 70      -- Maracas
+  , Tuple "cl" 75      -- Claves
+  ]
+----
+
+== Using Numeric Notes
+
+You can always use MIDI note numbers directly:
+
+[source]
+----
+36 38 42 39   -- bd sn hh cp
+60 62 64 65   -- C4 D4 E4 F4
+----
+
+== Sample Variants
+
+Use `:` for sample variants (maps to different notes):
+
+[source]
+----
+bd:0    -- 36
+bd:1    -- 37
+bd:2    -- 38
+----
+
+Configure variant offsets in the drum map:
+
+[source,purescript]
+----
+-- Base note + variant number
+resolveNote :: String -> Int -> Int
+resolveNote name variant =
+  case Map.lookup name drumMap of
+    Just baseNote -> baseNote + variant
+    Nothing -> 60  -- Default to middle C
+----
+
+== Per-Channel Mappings
+
+Different channels can have different mappings:
+
+[source,purescript]
+----
+channelMaps :: Map Int (Map String Int)
+channelMaps = Map.fromFoldable
+  [ Tuple 10 drumMap      -- Channel 10: drums
+  , Tuple 1 melodicMap    -- Channel 1: synth
+  , Tuple 2 bassMap       -- Channel 2: bass
+  ]
+----
+
+== Melodic Patterns
+
+For melodic content, use note names or numbers:
+
+[source]
+----
+-- MIDI note numbers
+60 62 64 65 67 69 71 72   -- C major scale
+
+-- Future: note name support
+c4 d4 e4 f4 g4 a4 b4 c5
+----

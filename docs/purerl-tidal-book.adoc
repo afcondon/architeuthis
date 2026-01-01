@@ -1,0 +1,77 @@
+= Purerl Tidal
+:description: Erlang/OTP backend for TidalCycles
+:doctype: book
+:toc: left
+:toclevels: 2
+:sectnums:
+:source-highlighter: rouge
+:icons: font
+
+:xrefstyle: short
+
+[preface]
+== About This Documentation
+
+Purerl Tidal is an Erlang/OTP backend for TidalCycles that receives patterns via WebSocket and outputs MIDI with precise timing. Built with purerl (PureScript → Erlang compiler).
+
+// Part I: Getting Started
+= Getting Started
+
+include::modules/ROOT/pages/getting-started/quickstart.adoc[leveloffset=+1]
+
+<<<
+
+include::modules/ROOT/pages/getting-started/midi-setup.adoc[leveloffset=+1]
+
+<<<
+
+include::modules/ROOT/pages/getting-started/mini-notation.adoc[leveloffset=+1]
+
+// Part II: How-To Guides
+= How-To Guides
+
+<<<
+
+include::modules/ROOT/pages/how-to/running-the-server.adoc[leveloffset=+1]
+
+<<<
+
+include::modules/ROOT/pages/how-to/connecting-daw.adoc[leveloffset=+1]
+
+<<<
+
+include::modules/ROOT/pages/how-to/custom-drum-maps.adoc[leveloffset=+1]
+
+// Part III: Understanding
+= Understanding the Architecture
+
+<<<
+
+include::modules/ROOT/pages/understanding/architecture.adoc[leveloffset=+1]
+
+<<<
+
+include::modules/ROOT/pages/understanding/why-erlang.adoc[leveloffset=+1]
+
+<<<
+
+include::modules/ROOT/pages/understanding/pattern-evaluation.adoc[leveloffset=+1]
+
+<<<
+
+include::modules/ROOT/pages/understanding/midi-scheduling.adoc[leveloffset=+1]
+
+// Part IV: Reference
+= Reference
+
+<<<
+
+include::modules/ROOT/pages/reference/websocket-protocol.adoc[leveloffset=+1]
+
+<<<
+
+include::modules/ROOT/pages/reference/module-overview.adoc[leveloffset=+1]
+
+<<<
+
+include::modules/ROOT/pages/reference/note-mapping.adoc[leveloffset=+1]

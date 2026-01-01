@@ -6,7 +6,10 @@
     "build": "spago build && npm run bundle",
     "bundle": "esbuild output/App/index.js --bundle --outfile=dist/app.js --format=esm --platform=browser",
     "dev": "npm run build && npm run serve",
-    "serve": "python3 -m http.server 8080"
+    "serve": "python3 -m http.server 8080",
+    "docs": "npx antora antora-playbook.yml",
+    "docs:pdf": "cd docs && asciidoctor-pdf -a allow-uri-read -o ../build/purerl-tidal-book.pdf purerl-tidal-book.adoc",
+    "docs:serve": "npm run docs && cd build/site && python3 -m http.server 8081"
   },
   "devDependencies": {
     "esbuild": "^0.24.0"

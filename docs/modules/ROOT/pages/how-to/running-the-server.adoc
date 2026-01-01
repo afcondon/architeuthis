@@ -1,0 +1,137 @@
+= Running the Server
+:description: Starting and configuring the purerl-tidal backend
+:keywords: server, startup, configuration
+
+How to start, configure, and manage the purerl-tidal backend server.
+
+== Basic Startup
+
+[source,bash]
+----
+cd purerl-tidal
+ERL_LIBS="_build/default/lib" spago run
+----
+
+The `ERL_LIBS` environment variable tells Erlang where to find compiled dependencies (cowboy, ranch, etc.).
+
+== Expected Output
+
+[source]
+----
+Tidal on the BEAM!
+===================
+
+=== MIDI Devices ===
+MIDI Devices:
+IAC Driver Tidal
+IAC Driver Bus 1
+...
+
+=== WebSocket → MIDI Server ===
+Starting WebSocket server on port 8080
+Connect to ws://localhost:8080/ws
+MIDI Scheduler started
+Device: IAC Driver Tidal
+BPM: 120
+----
+
+== Rebuilding After Changes
+
+[source,bash]
+----
+# Compile PureScript to Erlang
+spago build
+
+# Compile Erlang to BEAM bytecode (automatic via spago run)
+rebar3 compile
+
+# Run
+ERL_LIBS="_build/default/lib" spago run
+----
+
+== Configuration Options
+
+Edit `src/Main.purs` to change defaults:
+
+[source,purescript]
+----
+-- WebSocket port
+serverConfig :: ServerConfig
+serverConfig = { port: 8080 }  -- Change port here
+
+-- MIDI settings
+midiConfig :: MIDIConfig
+midiConfig =
+  { device: "IAC Driver Tidal"
+  , channel: 10
+  , velocity: 100
+  }
+
+-- Scheduler settings
+schedulerConfig :: SchedulerConfig
+schedulerConfig =
+  { bpm: 120.0
+  , lookAhead: 100.0    -- ms to look ahead
+  , tickInterval: 25.0  -- ms between ticks
+  }
+----
+
+== Running in Background
+
+Use `nohup` or `screen`:
+
+[source,bash]
+----
+# With nohup
+nohup sh -c 'ERL_LIBS="_build/default/lib" spago run' &
+
+# With screen
+screen -S tidal
+ERL_LIBS="_build/default/lib" spago run
+# Ctrl-A D to detach
+----
+
+== Stopping the Server
+
+The server runs as an Erlang process. Stop it with:
+
+* **Ctrl+C** (twice) in the terminal
+* Or send a SIGTERM to the `beam.smp` process
+
+== Troubleshooting
+
+=== Port Already in Use
+
+[source]
+----
+Error: listen EADDRINUSE: address already in use :::8080
+----
+
+Find and kill the existing process:
+
+[source,bash]
+----
+lsof -i :8080
+kill <PID>
+----
+
+=== Erlang Not Finding Dependencies
+
+[source]
+----
+Error: cannot find cowboy
+----
+
+Run `rebar3 get-deps && rebar3 compile` to fetch Erlang dependencies.
+
+=== purerl Compilation Errors
+
+Ensure you have the purerl backend installed:
+
+[source,bash]
+----
+# Check purerl is available
+which purerl
+
+# If not, follow purerl installation instructions
+----

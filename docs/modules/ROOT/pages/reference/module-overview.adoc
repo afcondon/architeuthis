@@ -1,0 +1,273 @@
+= Module Overview
+:description: Overview of purerl-tidal modules
+:keywords: modules, api, reference
+
+A reference of all modules in the purerl-tidal backend.
+
+== Module Structure
+
+[source]
+----
+src/
+├── Main.purs                      # Entry point
+└── Tidal/
+    ├── Core/
+    │   └── Types.purs             # Core types
+    ├── AST/
+    │   ├── Types.purs             # TPat AST
+    │   └── Pretty.purs            # Pretty printing
+    ├── Parse/
+    │   ├── Parser.purs            # Entry points
+    │   ├── Combinators.purs       # Grammar
+    │   ├── Class.purs             # AtomParseable
+    │   └── State.purs             # Parser state
+    ├── Pattern/
+    │   ├── Types.purs             # Pattern, Event, Arc
+    │   └── Core.purs              # Combinators
+    ├── Eval/
+    │   └── Interpret.purs         # TPat → Pattern
+    ├── WebSocket/
+    │   ├── Server.purs            # Cowboy setup
+    │   └── Handler.purs           # Message handling
+    ├── Scheduler.purs             # Base scheduler
+    ├── MIDIScheduler.purs         # MIDI-specific
+    └── MIDI.purs                  # sendmidi FFI
+----
+
+== Core Modules
+
+=== `Main`
+
+Entry point that starts all services.
+
+[source,purescript]
+----
+main :: Effect Unit
+-- Starts WebSocket server and MIDI scheduler
+----
+
+=== `Tidal.Core.Types`
+
+Fundamental types for time and positions.
+
+[source,purescript]
+----
+type Time = Rational
+type Seed = Int
+
+type SourcePos = { line :: Int, column :: Int }
+type SourceSpan = { start :: SourcePos, end :: SourcePos }
+----
+
+== AST Modules
+
+=== `Tidal.AST.Types`
+
+The pattern AST (`TPat`).
+
+[source,purescript]
+----
+data TPat a
+  = TPat_Atom a SourceSpan
+  | TPat_Silence SourceSpan
+  | TPat_Seq (Array (TPat a)) SourceSpan
+  | TPat_Stack (Array (TPat a)) SourceSpan
+  | TPat_Fast (TPat a) (TPat Rational) SourceSpan
+  | TPat_Slow (TPat a) (TPat Rational) SourceSpan
+  | TPat_Euclid (TPat a) Int Int (Maybe Int) SourceSpan
+  | TPat_DegradeBy (TPat a) Number SourceSpan
+  | TPat_CycleChoose (Array (TPat a)) SourceSpan
+  | TPat_Repeat (TPat a) Int SourceSpan
+  | TPat_Elongate (TPat a) Rational SourceSpan
+  | TPat_Var String SourceSpan
+  | TPat_EnumFromTo Int Int SourceSpan
+----
+
+=== `Tidal.AST.Pretty`
+
+Pretty-print AST back to mini-notation.
+
+[source,purescript]
+----
+prettyTPat :: forall a. Show a ⇒ TPat a → String
+----
+
+== Parse Modules
+
+=== `Tidal.Parse.Parser`
+
+Main parser entry points.
+
+[source,purescript]
+----
+parseTPat :: String → Either ParseError (TPat String)
+parseMini :: String → Either ParseError (TPat String)
+----
+
+=== `Tidal.Parse.Combinators`
+
+Parser combinators for mini-notation grammar.
+
+[source,purescript]
+----
+atom :: Parser (TPat String)
+sequence :: Parser (TPat String)
+stack :: Parser (TPat String)
+fast :: Parser (TPat String)
+euclid :: Parser (TPat String)
+-- etc.
+----
+
+=== `Tidal.Parse.Class`
+
+Type class for parseable atom types.
+
+[source,purescript]
+----
+class AtomParseable a where
+  parseAtom :: Parser a
+----
+
+=== `Tidal.Parse.State`
+
+Parser state management.
+
+[source,purescript]
+----
+type ParserState = { ... }
+----
+
+== Pattern Modules
+
+=== `Tidal.Pattern.Types`
+
+Pattern, Event, and Arc types.
+
+[source,purescript]
+----
+newtype Pattern a = Pattern (State → Array (Event a))
+
+type Arc = { start :: Time, stop :: Time }
+
+data Event a = Event
+  { whole :: Arc
+  , part :: Arc
+  , value :: a
+  , eventType :: EventType
+  }
+
+data EventType = Digital | Analog
+
+type State = { arc :: Arc, seed :: Seed }
+----
+
+=== `Tidal.Pattern.Core`
+
+Pattern combinators.
+
+[source,purescript]
+----
+-- Time manipulation
+fast :: Rational → Pattern a → Pattern a
+slow :: Rational → Pattern a → Pattern a
+rotL :: Rational → Pattern a → Pattern a
+rotR :: Rational → Pattern a → Pattern a
+rev :: Pattern a → Pattern a
+
+-- Structure
+cat :: Array (Pattern a) → Pattern a
+fastCat :: Array (Pattern a) → Pattern a
+stack :: Array (Pattern a) → Pattern a
+overlay :: Pattern a → Pattern a → Pattern a
+append :: Pattern a → Pattern a → Pattern a
+
+-- Filtering
+filterEvents :: (Event a → Boolean) → Pattern a → Pattern a
+filterDigital :: Pattern a → Pattern a
+filterAnalog :: Pattern a → Pattern a
+
+-- Querying
+query :: Pattern a → State → Array (Event a)
+queryArc :: Arc → Pattern a → Array (Event a)
+sam :: Time → Time  -- Start of cycle
+cyclePos :: Time → Time  -- Position in cycle
+----
+
+== Eval Module
+
+=== `Tidal.Eval.Interpret`
+
+Convert AST to executable patterns.
+
+[source,purescript]
+----
+tpatToPattern :: TPat String → Pattern String
+----
+
+== Output Modules
+
+=== `Tidal.WebSocket.Server`
+
+Cowboy WebSocket server setup.
+
+[source,purescript]
+----
+startServer :: ServerConfig → Effect Unit
+
+type ServerConfig = { port :: Int }
+----
+
+=== `Tidal.WebSocket.Handler`
+
+WebSocket message handler.
+
+[source,purescript]
+----
+handleMessage :: String → SchedulerPid → Effect String
+----
+
+=== `Tidal.Scheduler`
+
+Base scheduler (pattern querying).
+
+[source,purescript]
+----
+startScheduler :: SchedulerConfig → Effect SchedulerPid
+updatePattern :: SchedulerPid → Pattern String → Effect Unit
+setBPM :: SchedulerPid → Number → Effect Unit
+
+type SchedulerConfig =
+  { bpm :: Number
+  , lookAhead :: Number
+  , tickInterval :: Number
+  }
+----
+
+=== `Tidal.MIDIScheduler`
+
+MIDI-specific scheduler.
+
+[source,purescript]
+----
+startMIDIScheduler :: MIDIConfig → SchedulerConfig → Effect SchedulerPid
+
+type MIDIConfig =
+  { device :: String
+  , channel :: Int
+  , velocity :: Int
+  }
+
+defaultDrumMap :: Map String Int
+----
+
+=== `Tidal.MIDI`
+
+sendmidi FFI bindings.
+
+[source,purescript]
+----
+listDevices :: Effect (Array String)
+sendNoteOn :: String → Int → Int → Effect Unit
+sendNoteOff :: String → Int → Effect Unit
+sendDrum :: String → Int → Int → Int → Effect Unit
+----

@@ -1,0 +1,191 @@
+= Architecture
+:description: System architecture of purerl-tidal
+:keywords: architecture, design, components
+
+The purerl-tidal backend follows a pipeline architecture from WebSocket input to MIDI output.
+
+== System Overview
+
+[source]
+----
+┌─────────────────────────────────────────────────────────────┐
+│                    FRONTEND (Browser)                        │
+│         purescript-psd3-tidal - Pattern Editor               │
+└─────────────────────────────────────────│───────────────────┘
+                                          │
+                                  ws://localhost:8080/ws
+                                          │
+                                          ▼
+┌─────────────────────────────────────────────────────────────┐
+│                    BACKEND (Erlang/BEAM)                     │
+│                                                              │
+│  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐   │
+│  │  WebSocket   │    │   Pattern    │    │    MIDI      │   │
+│  │   Server     │───►│   Parser &   │───►│  Scheduler   │   │
+│  │  (Cowboy)    │    │  Evaluator   │    │              │   │
+│  └──────────────┘    └──────────────┘    └──────────────┘   │
+│                                                 │            │
+│                                                 ▼            │
+│                                          ┌──────────────┐   │
+│                                          │   sendmidi   │   │
+│                                          │  (CLI tool)  │   │
+│                                          └──────────────┘   │
+└─────────────────────────────────────────────────│───────────┘
+                                                  │
+                                                  ▼
+                                          MIDI Hardware
+                                    (DAW, Synth, Drum Machine)
+----
+
+== Component Responsibilities
+
+=== WebSocket Server
+
+**Module:** `Tidal.WebSocket.Server`, `Tidal.WebSocket.Handler`
+
+* Accept WebSocket connections on port 8080
+* Route `/ws` path to handler
+* Parse incoming pattern strings
+* Send acknowledgement or error responses
+* Forward valid patterns to scheduler
+
+=== Pattern Parser
+
+**Modules:** `Tidal.Parse.Parser`, `Tidal.Parse.Combinators`
+
+* Parse mini-notation strings to AST (`TPat`)
+* Handle all syntax: sequences, stacks, Euclidean, etc.
+* Track source positions for error reporting
+* Return structured parse errors on failure
+
+=== Pattern Evaluator
+
+**Module:** `Tidal.Eval.Interpret`
+
+* Convert `TPat` (AST) to `Pattern` (query function)
+* Implement combinators: `fast`, `slow`, `cat`, `stack`
+* Handle Euclidean rhythm generation (Bjorklund algorithm)
+* Produce `Pattern (String, Maybe Int)` (sound name + variant)
+
+=== MIDI Scheduler
+
+**Module:** `Tidal.MIDIScheduler`
+
+* Maintain current pattern and BPM
+* Tick every 25ms via Erlang timer
+* Query pattern for events in look-ahead window
+* Convert sound names to MIDI notes
+* Schedule note-on/note-off via sendmidi
+
+=== MIDI Output
+
+**Module:** `Tidal.MIDI`
+
+* FFI to `sendmidi` CLI tool
+* Send note-on, note-off, control change
+* List available MIDI devices
+* Handle device errors gracefully
+
+== Data Flow
+
+[source]
+----
+1. Frontend sends:    "bd sn [hh hh] cp"
+                            │
+                            ▼
+2. Parser produces:   TPat_Seq [ TPat_Atom "bd"
+                              , TPat_Atom "sn"
+                              , TPat_Stack [TPat_Atom "hh", TPat_Atom "hh"]
+                              , TPat_Atom "cp"
+                              ]
+                            │
+                            ▼
+3. Evaluator creates: Pattern :: State → Array Event
+                      (a function that can be queried)
+                            │
+                            ▼
+4. Scheduler queries: Events in [cycle 0.0, cycle 0.1)
+                      → [ Event "bd" 0.0, Event "sn" 0.25, ... ]
+                            │
+                            ▼
+5. MIDI output:       sendmidi dev "IAC" on 36 100
+                      sendmidi dev "IAC" off 36
+----
+
+== Process Architecture
+
+[source]
+----
+beam.smp (Erlang VM)
+├── cowboy_acceptor_pool
+│   └── websocket_handler (per connection)
+├── midi_scheduler (GenServer)
+│   ├── timer (25ms tick)
+│   └── pattern state
+└── sendmidi (spawned processes)
+----
+
+== Module Structure
+
+[source]
+----
+src/
+├── Main.purs                   # Entry point
+└── Tidal/
+    ├── Core/
+    │   └── Types.purs          # Rational time, positions
+    ├── AST/
+    │   ├── Types.purs          # TPat AST
+    │   └── Pretty.purs         # Pretty printing
+    ├── Parse/
+    │   ├── Parser.purs         # Entry points
+    │   ├── Combinators.purs    # Grammar
+    │   ├── Class.purs          # AtomParseable
+    │   └── State.purs          # Parser state
+    ├── Pattern/
+    │   ├── Types.purs          # Pattern, Event, Arc
+    │   └── Core.purs           # Combinators
+    ├── Eval/
+    │   └── Interpret.purs      # TPat → Pattern
+    ├── WebSocket/
+    │   ├── Server.purs         # Cowboy setup
+    │   └── Handler.purs        # Message handling
+    ├── Scheduler.purs          # Base scheduler
+    ├── MIDIScheduler.purs      # MIDI-specific
+    └── MIDI.purs               # sendmidi FFI
+----
+
+== Key Design Decisions
+
+=== Rational Time
+
+Time is represented as exact fractions, not floats:
+
+[source,purescript]
+----
+type Time = Rational  -- e.g., 1 % 4 = one quarter
+----
+
+This prevents accumulating floating-point errors over long sessions.
+
+=== Pattern as Query Function
+
+A pattern is a function, not a data structure:
+
+[source,purescript]
+----
+newtype Pattern a = Pattern (State → Array (Event a))
+----
+
+This enables lazy evaluation and efficient querying of infinite patterns.
+
+=== Digital vs Analog Events
+
+Events can be discrete (note onsets) or continuous (control values):
+
+[source,purescript]
+----
+data EventType = Digital | Analog
+----
+
+MIDI notes are Digital; future continuous control would be Analog.
