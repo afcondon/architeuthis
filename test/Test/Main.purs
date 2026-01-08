@@ -8,6 +8,7 @@ import Effect.Console (log)
 import Test.ControlSpec (runControlTests)
 import Test.LawSpec (runLawTests)
 import Test.PatternSpec (runPatternTests)
+import Test.UtilSpec (runUtilTests)
 import Tidal.AST.Pretty (pretty)
 import Tidal.AST.Types (TPat)
 import Tidal.Parse.Parser (parseTPat)
@@ -92,6 +93,31 @@ main = do
   testRoundTrip "bd(3,8)"
 
   log ""
+  log "--- Complex Nesting ---"
+  testParse "[[bd sn] [hh cp]]" "nested groups"
+  testParse "[[[bd]]]" "deeply nested (3 levels)"
+  testParse "<[bd sn] [hh cp]>" "alternating groups"
+  testParse "{[bd sn]*2, hh hh hh}" "poly with fast group"
+  testParse "[bd, sn] [hh, cp]" "stacks in sequence"
+
+  log ""
+  log "--- Mixed Operators ---"
+  testParse "bd*2 sn/2" "fast and slow in sequence"
+  testParse "[bd*2]*2" "nested fast"
+  testParse "[bd!2]*2" "repeat in group then fast"
+  testParse "bd@2 sn" "elongate with sequence"
+  testParse "bd? sn? hh?" "multiple degrades"
+
+  log ""
+  log "--- Edge Cases ---"
+  testParse "bd sn hh cp lo" "long sequence (5)"
+  testParse "bd, sn, hh, cp" "stacked 4-way"
+  testParse "bd(1,1)" "euclidean 1,1"
+  testParse "bd(8,8)" "euclidean full"
+  testParse "[bd]" "single element group"
+  testParse "< bd >" "alternating single"
+
+  log ""
   log "=== Parser tests completed ==="
 
   -- Run pattern evaluation tests
@@ -102,6 +128,9 @@ main = do
 
   -- Run law/property tests
   runLawTests
+
+  -- Run utility tests
+  runUtilTests
 
   log ""
   log "=== All tests completed ==="

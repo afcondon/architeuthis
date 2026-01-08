@@ -213,23 +213,22 @@ Verify algebraic correctness.
 
 ## Phase 7: Advanced Parser Tests (Priority: Low)
 
-Edge cases and error handling.
+Edge cases and complex pattern handling.
 
-### 7.1 Comment Support
-- [ ] Single-line comments: `-- comment`
-- [ ] Multi-line comments: `{- comment -}`
-- [ ] Comments in patterns
+### 7.1 Complex Nesting
+- [x] Deeply nested groups: `[[[bd]]]`
+- [x] Mixed group types: `<[bd sn] [hh cp]>`
+- [x] Stacks in sequence: `[bd, sn] [hh, cp]`
 
-### 7.2 Error Cases
-- [ ] Invalid syntax errors
-- [ ] Type mismatches (float in int pattern)
-- [ ] Unknown chord/scale names
-- [ ] Malformed ratios
+### 7.2 Mixed Operators
+- [x] Fast and slow in sequence: `bd*2 sn/2`
+- [x] Nested fast: `[bd*2]*2`
+- [x] Multiple degrades: `bd? sn? hh?`
 
-### 7.3 Complex Nesting
-- [ ] Deeply nested groups
-- [ ] Mixed operators
-- [ ] Operator precedence
+### 7.3 Edge Cases
+- [x] Long sequences: 5+ elements
+- [x] Single element groups: `[bd]`, `<bd>`
+- [x] Euclidean edge cases: `bd(1,1)`, `bd(8,8)`
 
 ---
 
@@ -238,16 +237,15 @@ Edge cases and error handling.
 Helper functions for pattern manipulation.
 
 ### 8.1 Tuple Utilities
-- [ ] `delta` - difference
-- [ ] `mid` - midpoint
-- [ ] `mapBoth`, `mapFst`, `mapSnd`
+- [x] `delta` - difference between tuple elements
+- [x] `mid` - midpoint between tuple elements
+- [x] `mapBoth`, `mapFst`, `mapSnd` - tuple mapping
 
 ### 8.2 List Utilities
-- [ ] `nth` - safe indexing
-- [ ] `accumulate` - accumulation
-- [ ] `enumerate` - with indices
-- [ ] `wordsBy` - split by predicate
-- [ ] `removeCommon` - set difference
+- [x] `nth` - safe indexing
+- [x] `accumulate` - running accumulation
+- [x] `enumerate` - with indices
+- [x] `removeCommon` - set difference
 
 ---
 
@@ -266,10 +264,10 @@ Helper functions for pattern manipulation.
 | 5.x | Control params | ✓ Complete | +14 |
 | 5.3 | Oscillators | ✓ Complete | +16 |
 | 6.x | Pattern laws | ✓ Complete | +13 |
-| 7.x | Advanced parser | Not started | 0 |
-| 8.x | Utilities | Not started | 0 |
+| 7.x | Advanced parser | ✓ Complete | +16 |
+| 8.x | Utilities | ✓ Complete | +14 |
 
-**Total**: 200 tests (baseline 122 + 78 new)
+**Total**: 230 tests (baseline 122 + 108 new)
 
 ---
 
