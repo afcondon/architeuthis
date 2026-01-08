@@ -4,6 +4,7 @@
 module Tidal.Scheduler
   ( SchedulerConfig
   , ScheduledEvent
+  , TrackInfo
   , Msg(..)
   , startScheduler
   , sendAfter
@@ -12,7 +13,9 @@ module Tidal.Scheduler
 
 import Prelude
 
+import Data.Array as Array
 import Data.Either (Either(..))
+import Data.Maybe (Maybe(..))
 import Data.Foldable (for_)
 import Data.Int (round, toNumber, floor) as Int
 import Data.Rational (Rational, fromInt, toNumber) as R
@@ -27,7 +30,7 @@ import Erl.Process (Process, ProcessM, spawn, self, receive, (!), unsafeRunProce
 import Erl.Process.Raw as Raw
 import Tidal.Eval.Interpret (tpatToPattern)
 import Tidal.Parse.Parser (parse)
-import Tidal.Pattern.Core (queryArc)
+import Tidal.Pattern.Core (queryArc, stack)
 import Tidal.Pattern.Types (Event(..), Pattern, Arc(..))
 
 -- | Scheduler configuration
@@ -51,10 +54,15 @@ type ScheduledEvent =
   , sample :: String      -- What sample to play
   }
 
+-- | A track with its pattern string and MIDI channel
+type TrackInfo = { pattern :: String, channel :: Int }
+
 -- | Messages to the scheduler process
 data Msg
   = Tick              -- Time to schedule more events
-  | UpdatePattern String  -- Update the pattern
+  | UpdatePattern String  -- Update the pattern (legacy, uses default channel)
+  | UpdatePatternWithChannel String Int  -- Update pattern with specific MIDI channel
+  | UpdateTracks (Array TrackInfo)  -- Update multiple tracks, each with own channel
   | Stop              -- Stop the scheduler
 
 -- | FFI for erlang:send_after
@@ -151,6 +159,27 @@ schedulerLoop stateRef = do
             Left _ -> state.pattern
       liftEffect $ Ref.write (state { pattern = newPat }) stateRef
       liftEffect $ log $ "Pattern updated: " <> patStr
+      schedulerLoop stateRef
+
+    UpdatePatternWithChannel patStr _ -> do
+      -- Base scheduler ignores channel (MIDI scheduler handles it)
+      state <- liftEffect $ Ref.read stateRef
+      let newPat = case parse patStr of
+            Right ast -> tpatToPattern ast
+            Left _ -> state.pattern
+      liftEffect $ Ref.write (state { pattern = newPat }) stateRef
+      liftEffect $ log $ "Pattern updated: " <> patStr
+      schedulerLoop stateRef
+
+    UpdateTracks tracks -> do
+      -- Base scheduler combines all track patterns (MIDI scheduler handles per-track channels)
+      state <- liftEffect $ Ref.read stateRef
+      let patterns = Array.mapMaybe (\t -> case parse t.pattern of
+            Right ast -> Just (tpatToPattern ast)
+            Left _ -> Nothing) tracks
+      let combined = stack patterns
+      liftEffect $ Ref.write (state { pattern = combined }) stateRef
+      liftEffect $ log $ "Tracks updated: " <> show (Array.length tracks) <> " tracks"
       schedulerLoop stateRef
 
     Stop -> do

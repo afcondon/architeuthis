@@ -1,6 +1,9 @@
 -- | WebSocket handler for live pattern updates
 -- |
 -- | Receives pattern strings from clients and forwards to scheduler
+-- | Supports two message formats:
+-- |   1. Plain pattern string: "bd sn hh cp"
+-- |   2. JSON with per-track channels: {"tracks":[...],"combined":"bd sn, hh"}
 module Tidal.WebSocket.Handler
   ( Config
   , HandlerState
@@ -12,6 +15,8 @@ import Prelude
 
 import Attribute (Attribute(..), Behaviour)
 import Data.Either (Either(..))
+import Data.Maybe (Maybe(..))
+import Data.String as String
 import Effect (Effect)
 import Effect.Class (liftEffect)
 import Effect.Console (log)
@@ -25,6 +30,37 @@ import Tidal.Scheduler (Msg(..))
 
 -- | Convert binary to string (UTF-8)
 foreign import binaryToString :: forall a. a -> String
+
+-- | Extract pattern from message (handles both plain text and JSON formats)
+-- | JSON format: {"tracks":[...],"combined":"pattern here"}
+extractPattern :: String -> String
+extractPattern msg =
+  -- Check if it looks like JSON (starts with {)
+  if String.take 1 msg == "{"
+    then
+      -- Extract "combined":"..." value
+      -- Find "combined":" and extract until next unescaped "
+      case String.indexOf (String.Pattern "\"combined\":\"") msg of
+        Nothing -> msg  -- Not valid JSON format, try as plain pattern
+        Just idx ->
+          let afterKey = String.drop (idx + 12) msg  -- Skip past "combined":"
+          in extractUntilQuote afterKey ""
+    else msg  -- Plain pattern string
+
+-- | Extract string content until closing quote (handling escapes)
+extractUntilQuote :: String -> String -> String
+extractUntilQuote remaining acc =
+  let first = String.take 1 remaining
+      rest = String.drop 1 remaining
+  in
+    if first == "" then acc  -- End of string
+    else if first == "\\" then
+      -- Escape sequence - include next char
+      let escaped = String.take 1 rest
+          afterEscape = String.drop 1 rest
+      in extractUntilQuote afterEscape (acc <> escaped)
+    else if first == "\"" then acc  -- Found closing quote
+    else extractUntilQuote rest (acc <> first)
 
 -- | Configuration passed to init
 type Config =
@@ -60,13 +96,16 @@ websocket_handle :: WS.FrameHandler HandlerState
 websocket_handle = mkEffectFn2 \inFrame state -> do
   case WS.decodeInFrame inFrame of
     WS.TextFrame text -> do
-      log $ "WebSocket: Received pattern: " <> text
+      log $ "WebSocket: Received message: " <> text
+      -- Extract pattern from message (handles JSON or plain text)
+      let pattern = extractPattern text
+      log $ "WebSocket: Extracted pattern: " <> pattern
       -- Validate the pattern before sending
-      case parse text of
+      case parse pattern of
         Right _ -> do
           -- Valid pattern - send to scheduler
-          send state.schedulerPid (UpdatePattern text)
-          let response = WS.outFrame (WS.TextFrame ("OK: " <> text))
+          send state.schedulerPid (UpdatePattern pattern)
+          let response = WS.outFrame (WS.TextFrame ("OK: " <> pattern))
           pure $ WS.replyResult state (List.singleton response)
         Left err -> do
           log $ "WebSocket: Parse error: " <> show err
@@ -76,11 +115,12 @@ websocket_handle = mkEffectFn2 \inFrame state -> do
     WS.BinaryFrame bin -> do
       -- Try to decode as UTF-8 text
       let text = binaryToString bin
-      log $ "WebSocket: Received binary pattern: " <> text
-      case parse text of
+      log $ "WebSocket: Received binary message: " <> text
+      let pattern = extractPattern text
+      case parse pattern of
         Right _ -> do
-          send state.schedulerPid (UpdatePattern text)
-          let response = WS.outFrame (WS.TextFrame ("OK: " <> text))
+          send state.schedulerPid (UpdatePattern pattern)
+          let response = WS.outFrame (WS.TextFrame ("OK: " <> pattern))
           pure $ WS.replyResult state (List.singleton response)
         Left err -> do
           let response = WS.outFrame (WS.TextFrame ("ERROR: " <> show err))

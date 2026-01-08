@@ -13,6 +13,7 @@ module Tidal.MIDI
   , noteOff
   , sendDrum
   , scheduleDrum
+  , scheduleDrumOnChannel
   , listDevices
   ) where
 
@@ -65,3 +66,7 @@ foreign import sendDrum :: MIDIClient -> Int -> Int -> Int -> Effect Unit
 -- | Schedule drum trigger after a delay
 -- | scheduleDrum client note velocity durationMs delayMs
 foreign import scheduleDrum :: MIDIClient -> Int -> Int -> Int -> Int -> Effect Unit
+
+-- | Schedule drum trigger on a specific channel (overrides client default)
+-- | scheduleDrumOnChannel client channel note velocity durationMs delayMs
+foreign import scheduleDrumOnChannel :: MIDIClient -> Int -> Int -> Int -> Int -> Int -> Effect Unit

@@ -1,5 +1,5 @@
 -module(tidal_mIDI@foreign).
--export([listDevices/0, startClient/1, stopClient/1, noteOn/3, noteOff/2, sendDrum/4, scheduleDrum/5]).
+-export([listDevices/0, startClient/1, stopClient/1, noteOn/3, noteOff/2, sendDrum/4, scheduleDrum/5, scheduleDrumOnChannel/6]).
 
 %% Path to sendmidi binary
 -define(SENDMIDI, os:getenv("HOME") ++ "/bin/sendmidi").
@@ -116,6 +116,34 @@ scheduleDrum(Client, Note, Velocity, DurationMs, DelayMs) ->
                 "~s dev \"~s\" ch ~B off ~B",
                 [?SENDMIDI, Device, Channel, Note])),
             io:format("MIDI> ~s~n", [OffCmd]),
+            os:cmd(OffCmd)
+        end),
+        unit
+    end.
+
+%% Schedule drum hit on a specific channel (overrides client's default channel)
+%% Used when frontend specifies per-track channels
+scheduleDrumOnChannel(Client, Channel, Note, Velocity, DurationMs, DelayMs) ->
+    fun() ->
+        Device = maps:get(device, Client),
+
+        %% Spawn process that waits then plays the note via one-shot sendmidi
+        spawn(fun() ->
+            %% Wait until the note should play
+            timer:sleep(DelayMs),
+
+            %% Send note on via one-shot command
+            OnCmd = lists:flatten(io_lib:format(
+                "~s dev \"~s\" ch ~B on ~B ~B",
+                [?SENDMIDI, Device, Channel, Note, Velocity])),
+            io:format("MIDI> ch~B ~s~n", [Channel, OnCmd]),
+            os:cmd(OnCmd),
+
+            %% Wait note duration then send note off
+            timer:sleep(DurationMs),
+            OffCmd = lists:flatten(io_lib:format(
+                "~s dev \"~s\" ch ~B off ~B",
+                [?SENDMIDI, Device, Channel, Note])),
             os:cmd(OffCmd)
         end),
         unit

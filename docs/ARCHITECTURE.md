@@ -444,6 +444,66 @@ rebar3 get-deps
 rebar3 compile
 ```
 
+### Clean Build Procedure
+
+When changes don't seem to take effect, follow this complete rebuild procedure:
+
+**1. Compile PureScript to Erlang**
+```bash
+spago build
+```
+This compiles `.purs` files and generates `.erl` files in `output/ModuleName/`:
+- `module_name@ps.erl` - PureScript-generated code
+- `module_name@foreign.erl` - Copied from `src/` FFI files
+
+**2. Compile Erlang to BEAM**
+```bash
+# Option A: Use Makefile
+make build
+
+# Option B: Manual erlc
+erlc -o ebin $(find output -name "*.erl")
+```
+This compiles `.erl` files to `.beam` bytecode in `ebin/`.
+
+**3. Restart the server**
+```bash
+# Stop existing server (Ctrl+C twice in the terminal)
+# Then start fresh:
+make start
+```
+The Erlang VM loads `.beam` files at startup. Changes only take effect after restart.
+
+**Verification checklist:**
+- Check timestamp: `ls -la ebin/tidal_webSocket_handler@foreign.beam`
+- Verify new code loaded: Look for version markers in server logs
+- Confirm output dir: `grep "your_change" output/*/your_module*.erl`
+
+**Common pitfalls:**
+1. **Forgot erlc step** - `.erl` exists but `.beam` is stale
+2. **Forgot restart** - `.beam` is new but old code still running in VM
+3. **Editing wrong file** - See "Foreign File Gotcha" below
+
+### Foreign File Gotcha
+
+**⚠️ CRITICAL**: Files like `Handler.erl` that export Cowboy callbacks are called **directly by Cowboy**, bypassing PureScript entirely.
+
+If you edit `Handler.purs` expecting WebSocket behavior to change, it won't work. You must edit `src/Tidal/WebSocket/Handler.erl`.
+
+The build pipeline for foreign files:
+```
+src/Tidal/WebSocket/Handler.erl
+        │
+        ▼ spago build (copies verbatim)
+output/Tidal.WebSocket.Handler/tidal_webSocket_handler@foreign.erl
+        │
+        ▼ erlc
+ebin/tidal_webSocket_handler@foreign.beam
+        │
+        ▼ Cowboy calls directly
+websocket_handle/2, init/2, etc.
+```
+
 ### Run
 
 ```bash
@@ -469,6 +529,15 @@ ws.send('~')               // silence
 ### Why Native Erlang for WebSocket Handler?
 
 purerl generates functions that return functions (curried), but cowboy expects callbacks with specific arities like `init(Req, State)`. Writing the handler in native Erlang avoids this mismatch.
+
+**⚠️ CRITICAL GOTCHA**: When a foreign `.erl` file declares `-behaviour(cowboy_websocket)` and exports callbacks like `websocket_handle/2`, Cowboy calls the **Erlang functions directly**, completely bypassing any PureScript code in the corresponding `@ps` module.
+
+This means:
+- Changes to `Handler.purs` will have **no effect** on WebSocket handling
+- All WebSocket logic must be in `src/Tidal/WebSocket/Handler.erl`
+- The PureScript file exists mainly for type declarations and helper functions
+
+**Debugging tip**: If changes to a PureScript handler aren't working after rebuild + restart, check the foreign `.erl` file - that's what Cowboy is actually calling.
 
 ### Why Persistent sendmidi Port?
 
