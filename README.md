@@ -16,8 +16,38 @@ Built with [purerl](https://github.com/purerl/purerl) (PureScript → Erlang com
 # Install sendmidi (required for MIDI output)
 brew install gbevin/tools/sendmidi
 
-# Start the backend
-ERL_LIBS="_build/default/lib" spago run
+# Fetch Erlang dependencies (first time only)
+rebar3 get-deps && rebar3 compile
+
+# Build and run
+make run
+```
+
+## Build System
+
+The project uses a Makefile to orchestrate the multi-stage build:
+
+```bash
+make              # Full build (spago → purerl → erlc)
+make test         # Run the test suite (77 tests)
+make run          # Start the WebSocket/MIDI server
+make clean        # Clean PureScript output
+make distclean    # Clean everything including deps
+make help         # Show all targets
+```
+
+### Build Pipeline
+
+1. `spago build` - Compiles PureScript to Erlang source (`.erl` files in `output/`)
+2. `erlc` - Compiles Erlang source to BEAM bytecode (`.beam` files in `ebin/`)
+3. `rebar3` - Manages Erlang dependencies (cowboy, ranch)
+
+### Manual Build (if needed)
+
+```bash
+spago build                                    # PureScript → Erlang
+find output -name "*.erl" -exec erlc -o ebin {} \;   # Erlang → BEAM
+ERL_LIBS="_build/default/lib" erl -pa ebin -noshell -eval 'F = main@ps:main(), F()'
 ```
 
 Output:
@@ -62,6 +92,20 @@ Frontend (Browser)          Backend (Erlang/BEAM)
       │                     ┌──────────────┐
       │◄───────────────────│   sendmidi   │───► MIDI Hardware
       │  "OK: bd sn..."    └──────────────┘
+```
+
+## Test Suite
+
+The project includes a comprehensive test suite (77 tests) covering:
+
+- **Parser tests** (36): Basic atoms, silence, speed modifiers, degradation, repetition, elongation, grouping, stack, polyrhythm, euclidean, choose, variables, round-trip
+- **Pattern evaluation** (12): Sequences, silence, stack/parallel, speed modifiers, euclidean rhythms, groups
+- **Core combinators** (13): `cat`, `fastCat`, `stack`, `rev`, `fast`, `slow`, `rotL`, `rotR`, `fastAppend`
+- **Euclidean rhythms** (16): Toussaint paper examples including E(3,8), E(5,8), E(7,12), Cuban cinquillo, West African bell patterns
+
+Run tests with:
+```bash
+make test
 ```
 
 ## Supported Mini-Notation

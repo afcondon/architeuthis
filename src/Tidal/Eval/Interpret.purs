@@ -216,15 +216,34 @@ euclidean n k
   | otherwise = bjorklund n k
 
 -- | Bjorklund's algorithm for Euclidean distribution
+-- |
+-- | Special case: when k-n == 1 (only one zero), we need to place it
+-- | in the middle to get proper distribution. The standard algorithm
+-- | would just append it at the end.
 bjorklund :: Int -> Int -> Array Boolean
 bjorklund n k =
   let
-    ones = Array.replicate n [true]
-    zeros = Array.replicate (k - n) [false]
+    zeros = k - n
   in
-    Array.concat (bjorklundStep ones zeros)
+    if zeros == 1 then
+      -- Special case: one zero goes in the middle
+      -- E.g., E(1,2) = [1,0], E(2,3) = [1,0,1], E(3,4) = [1,0,1,1]
+      -- Use ceiling division to ensure at least 1 pulse before the zero
+      let mid = (n + 1) / 2  -- ceiling of n/2
+      in Array.replicate mid true
+           <> [false]
+           <> Array.replicate (n - mid) true
+    else
+      let
+        ones = Array.replicate n [true]
+        zerosArr = Array.replicate zeros [false]
+      in
+        Array.concat (bjorklundStep ones zerosArr)
 
 -- | Recursive step of Bjorklund's algorithm
+-- |
+-- | The algorithm distributes elements from ys into xs by appending.
+-- | Terminates when ys has <= 1 element (can't evenly distribute further).
 bjorklundStep :: Array (Array Boolean) -> Array (Array Boolean) -> Array (Array Boolean)
 bjorklundStep xs ys =
   let lenYs = Array.length ys

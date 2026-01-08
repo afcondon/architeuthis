@@ -1,0 +1,80 @@
+# Makefile for purerl-tidal
+#
+# Build workflow:
+#   1. rebar3 get-deps     - fetch Erlang dependencies (cowboy, ranch)
+#   2. rebar3 compile      - compile Erlang dependencies
+#   3. spago build         - PureScript → Erlang (.erl files in output/)
+#   4. erlc                - compile .erl → .beam files in ebin/
+#
+# Usage:
+#   make              - full build
+#   make test         - run tests
+#   make run          - start the server
+#   make clean        - clean PureScript output
+#   make distclean    - clean everything including deps
+
+.PHONY: all deps ps erl test run clean distclean help
+
+# Default target
+all: erl
+
+help:
+	@echo "purerl-tidal build targets:"
+	@echo "  make           - full build (deps + ps + erl)"
+	@echo "  make deps      - fetch and compile Erlang dependencies"
+	@echo "  make ps        - compile PureScript to Erlang"
+	@echo "  make erl       - compile Erlang to beam (includes ps)"
+	@echo "  make test      - run the test suite"
+	@echo "  make run       - start the WebSocket/MIDI server"
+	@echo "  make clean     - clean PureScript output"
+	@echo "  make distclean - clean everything"
+
+# Erlang dependencies (cowboy, ranch)
+deps:
+	@echo "==> Fetching Erlang dependencies..."
+	rebar3 get-deps
+	@echo "==> Compiling Erlang dependencies..."
+	rebar3 compile
+
+# PureScript compilation (generates .erl files in output/)
+ps:
+	@echo "==> Building PureScript..."
+	spago build
+
+# Erlang compilation (compiles .erl to .beam in ebin/)
+erl: ps
+	@echo "==> Compiling Erlang to BEAM..."
+	@mkdir -p ebin
+	@find output -name "*.erl" -exec erlc -o ebin {} \; 2>&1 | grep -v "Warning:" || true
+	@echo "==> Build complete. BEAM files in ebin/"
+
+# Run tests
+test: erl
+	@echo "==> Running tests..."
+	ERL_LIBS="_build/default/lib" erl -pa ebin -noshell \
+		-eval 'F = test_main@ps:main(), F()' \
+		-s init stop
+
+# Start the server
+run: erl
+	@echo "==> Starting purerl-tidal server on port 8080..."
+	@echo "    WebSocket: ws://localhost:8080/ws"
+	@echo "    Press Ctrl+C to stop"
+	ERL_LIBS="_build/default/lib" erl -pa ebin -noshell \
+		-eval 'F = main@ps:main(), F()'
+
+# Clean PureScript output
+clean:
+	@echo "==> Cleaning PureScript output..."
+	rm -rf output
+	rm -rf ebin/*.beam
+
+# Clean everything
+distclean: clean
+	@echo "==> Cleaning all build artifacts..."
+	rm -rf _build
+	rm -rf .spago
+	rm -rf ebin
+
+# Rebuild everything from scratch
+rebuild: distclean deps all

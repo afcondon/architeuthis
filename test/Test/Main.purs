@@ -5,6 +5,7 @@ import Prelude
 import Data.Either (Either(..))
 import Effect (Effect)
 import Effect.Console (log)
+import Test.PatternSpec (runPatternTests)
 import Tidal.AST.Pretty (pretty)
 import Tidal.AST.Types (TPat)
 import Tidal.Parse.Parser (parseTPat)
@@ -87,6 +88,12 @@ main = do
   testRoundTrip "<bd sn hh>"
   testRoundTrip "{bd sn, hh hh hh}"
   testRoundTrip "bd(3,8)"
+
+  log ""
+  log "=== Parser tests completed ==="
+
+  -- Run pattern evaluation tests
+  runPatternTests
 
   log ""
   log "=== All tests completed ==="
