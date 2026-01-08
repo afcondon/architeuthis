@@ -13,7 +13,7 @@
 #   make clean        - clean PureScript output
 #   make distclean    - clean everything including deps
 
-.PHONY: all deps ps erl test run clean distclean help
+.PHONY: all deps ps erl test run start clean distclean help
 
 # Default target
 all: erl
@@ -25,7 +25,8 @@ help:
 	@echo "  make ps        - compile PureScript to Erlang"
 	@echo "  make erl       - compile Erlang to beam (includes ps)"
 	@echo "  make test      - run the test suite"
-	@echo "  make run       - start the WebSocket/MIDI server"
+	@echo "  make run       - build and start the server"
+	@echo "  make start     - start the server (no rebuild)"
 	@echo "  make clean     - clean PureScript output"
 	@echo "  make distclean - clean everything"
 
@@ -55,8 +56,16 @@ test: erl
 		-eval 'F = test_main@ps:main(), F()' \
 		-s init stop
 
-# Start the server
+# Start the server (with rebuild)
 run: erl
+	@echo "==> Starting purerl-tidal server on port 8080..."
+	@echo "    WebSocket: ws://localhost:8080/ws"
+	@echo "    Press Ctrl+C to stop"
+	ERL_LIBS="_build/default/lib" erl -pa ebin -noshell \
+		-eval 'F = main@ps:main(), F()'
+
+# Start the server (no rebuild)
+start:
 	@echo "==> Starting purerl-tidal server on port 8080..."
 	@echo "    WebSocket: ws://localhost:8080/ws"
 	@echo "    Press Ctrl+C to stop"

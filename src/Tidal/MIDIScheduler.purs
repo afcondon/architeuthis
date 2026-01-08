@@ -28,7 +28,7 @@ import Erl.Kernel.Erlang (monotonicTime, monotonicStartTime, monotonicTimeDelta,
 import Erl.Process (Process, ProcessM, spawn, receive)
 import Erl.Process.Raw as Raw
 import Tidal.Eval.Interpret (tpatToPattern)
-import Tidal.MIDI (MIDIClient, MIDIConfig, startClient, sendDrum)
+import Tidal.MIDI (MIDIClient, MIDIConfig, startClient, scheduleDrum)
 import Tidal.Parse.Parser (parse)
 import Tidal.Pattern.Core (queryArc)
 import Tidal.Pattern.Types (Event(..), Pattern, Arc(..))
@@ -149,8 +149,14 @@ midiSchedulerLoop stateRef = do
           when (eventCycle >= fromCycle && eventCycle < toCycle && eventCycle > state.lastTrigger) do
             let note = sampleToNote state.config.noteMap sample
             when (note > 0) do
-              liftEffect $ log $ "  ♪ " <> sample <> " → note " <> show note
-              liftEffect $ sendDrum state.midiClient note state.config.midi.defaultVelocity state.config.noteDuration
+              -- Calculate when this event should play
+              let eventCycleNum = R.toNumber eventCycle
+              let eventTimeMs = eventCycleNum * cycleDurationMs
+              let delayMs = eventTimeMs - elapsedMs
+              let delayInt = max 0 (Int.floor delayMs)
+
+              liftEffect $ log $ "  ♪ " <> sample <> " → note " <> show note <> " in " <> show delayInt <> "ms"
+              liftEffect $ scheduleDrum state.midiClient note state.config.midi.defaultVelocity state.config.noteDuration delayInt
 
             -- Update last trigger
             liftEffect $ Ref.modify_ (_ { lastTrigger = eventCycle }) stateRef
