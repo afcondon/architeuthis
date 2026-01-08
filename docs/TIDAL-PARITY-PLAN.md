@@ -141,16 +141,14 @@ Core pattern manipulation functions.
 Pattern operations that work step-by-step.
 
 ### 4.1 Core Stepwise Functions
-- [ ] `stepcat` - stepwise concatenation
-- [ ] `steptake n` - take first n steps
-- [ ] `stepdrop n` - drop first n steps
-- [ ] Step count preservation
+- [x] `steptake n` - take first n steps
+- [x] `stepdrop n` - drop first n steps
 
 ### 4.2 Expansion/Iteration
-- [ ] `expand` - expand with duration pattern
-- [ ] `linger` - linger on pattern portion
-- [ ] `iter n` - iterate through pattern
-- [ ] `iter'` - reverse iteration
+- [x] `linger` - linger on pattern portion (stretch first part)
+- [x] `trunc` - truncate pattern (zoom to first part)
+- [x] `iter n` - iterate through pattern
+- [x] `iter'` - reverse iteration
 
 ---
 
@@ -175,13 +173,14 @@ Named control patterns for synthesis parameters.
 - [x] `|>` directional merge (right structure)
 
 ### 5.3 Oscillator Patterns
-- [ ] `sine` - sine wave 0-1
-- [ ] `cosine` - cosine wave
-- [ ] `saw` - sawtooth
-- [ ] `tri` - triangle
-- [ ] `square` - square wave
-- [ ] `rand` - random values
-- [ ] `irand n` - random integers
+- [x] `sine` - sine wave 0-1
+- [x] `cosine` - cosine wave
+- [x] `saw` - sawtooth (rising)
+- [x] `isaw` - inverse sawtooth (falling)
+- [x] `tri` - triangle wave
+- [x] `square` - square wave
+- [x] `rand` - pseudorandom values (deterministic)
+- [x] `irand n` - random integers 0 to n-1
 
 ---
 
@@ -263,13 +262,14 @@ Helper functions for pattern manipulation.
 | 1.5 | Chord modifiers | ✓ Complete | +7 |
 | 2.x | Scales system | ✓ Complete | +11 |
 | 3.x | Transformations | ✓ Complete | +6 |
-| 4.x | Stepwise ops | ✓ Partial | +2 |
+| 4.x | Stepwise ops | ✓ Complete | +2 |
 | 5.x | Control params | ✓ Complete | +14 |
+| 5.3 | Oscillators | ✓ Complete | +16 |
 | 6.x | Pattern laws | ✓ Complete | +13 |
 | 7.x | Advanced parser | Not started | 0 |
 | 8.x | Utilities | Not started | 0 |
 
-**Total**: 185 tests (baseline 122 + 63 new)
+**Total**: 200 tests (baseline 122 + 78 new)
 
 ---
 

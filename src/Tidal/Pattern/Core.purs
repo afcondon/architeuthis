@@ -30,6 +30,19 @@ module Tidal.Pattern.Core
   , whenMod
   , iter
   , iter'
+  , linger
+  , trunc
+  , steptake
+  , stepdrop
+    -- * Oscillators (continuous patterns)
+  , sine
+  , cosine
+  , saw
+  , isaw
+  , tri
+  , square
+  , rand
+  , irand
     -- * Filtering and selection
   , filterEvents
   , filterDigital
@@ -53,7 +66,9 @@ import Data.Array as Array
 import Data.Int as Int
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
+import Data.Ord (comparing)
 import Data.Rational (Rational, fromInt, toNumber)
+import Math (cos, floor, pi, sin)
 import Tidal.Core.Types (Time)
 import Tidal.Pattern.Types
   ( Arc(..)
@@ -82,6 +97,7 @@ import Tidal.Pattern.Types
   , State(..)
   , arcStart
   , arcStop
+  , emptyContext
   , eventValue
   , isAnalog
   , isDigital
@@ -525,6 +541,97 @@ iter' n pat
   where
     floorInt t = Int.floor (toNumber t)
 
+-- | Linger on the first part of a pattern
+-- |
+-- | `linger 0.25 pat` takes the first quarter of the pattern
+-- | and stretches it to fill the whole cycle
+linger :: forall a. Rational -> Pattern a -> Pattern a
+linger d pat
+  | d <= zero = silence
+  | d >= one = pat
+  | otherwise = compress zero d pat
+
+-- | Truncate a pattern, keeping only the first part
+-- |
+-- | `trunc 0.5 pat` keeps only the first half of each cycle
+trunc :: forall a. Rational -> Pattern a -> Pattern a
+trunc d pat
+  | d <= zero = silence
+  | d >= one = pat
+  | otherwise = zoom zero d pat
+
+-- | Take the first n steps of a pattern
+-- |
+-- | Works with stepwise patterns by taking events from cycle 0
+steptake :: forall a. Int -> Pattern a -> Pattern a
+steptake n pat
+  | n <= 0 = silence
+  | otherwise = pattern \(State st) ->
+      let
+        -- Get events from the first cycle
+        events = query pat (State st { arc = Arc { start: zero, stop: one } })
+        -- Sort by start time and take first n
+        sorted = Array.sortBy (comparing eventStart) events
+        taken = Array.take n sorted
+        -- Map them back to the query arc
+      in mapEventTimes (scaleToArc st.arc (Array.length taken)) <$> taken
+  where
+    eventStart (Digital e) = arcStart e.part
+    eventStart (Analog e) = arcStart e.part
+
+    scaleToArc :: Arc -> Int -> Rational -> Rational
+    scaleToArc (Arc arc) count t =
+      let duration = arc.stop - arc.start
+          scaled = arc.start + (t * duration / fromInt count)
+      in scaled
+
+    mapEventTimes :: (Rational -> Rational) -> Event a -> Event a
+    mapEventTimes f (Digital e) =
+      let Arc p = e.part
+          Arc w = e.whole
+      in Digital e { part = Arc { start: f p.start, stop: f p.stop }
+                   , whole = Arc { start: f w.start, stop: f w.stop } }
+    mapEventTimes f (Analog e) =
+      let Arc p = e.part
+      in Analog e { part = Arc { start: f p.start, stop: f p.stop } }
+
+-- | Drop the first n steps of a pattern
+-- |
+-- | Works with stepwise patterns by dropping events from cycle 0
+stepdrop :: forall a. Int -> Pattern a -> Pattern a
+stepdrop n pat
+  | n <= 0 = pat
+  | otherwise = pattern \(State st) ->
+      let
+        -- Get events from the first cycle
+        events = query pat (State st { arc = Arc { start: zero, stop: one } })
+        -- Sort by start time and drop first n
+        sorted = Array.sortBy (comparing eventStart) events
+        dropped = Array.drop n sorted
+        -- Map them back to the query arc
+      in mapEventTimes (scaleToArc st.arc (Array.length dropped)) <$> dropped
+  where
+    eventStart (Digital e) = arcStart e.part
+    eventStart (Analog e) = arcStart e.part
+
+    scaleToArc :: Arc -> Int -> Rational -> Rational
+    scaleToArc (Arc arc) count t =
+      if count == 0 then arc.start
+      else
+        let duration = arc.stop - arc.start
+            scaled = arc.start + (t * duration / fromInt count)
+        in scaled
+
+    mapEventTimes :: (Rational -> Rational) -> Event a -> Event a
+    mapEventTimes f (Digital e) =
+      let Arc p = e.part
+          Arc w = e.whole
+      in Digital e { part = Arc { start: f p.start, stop: f p.stop }
+                   , whole = Arc { start: f w.start, stop: f w.stop } }
+    mapEventTimes f (Analog e) =
+      let Arc p = e.part
+      in Analog e { part = Arc { start: f p.start, stop: f p.stop } }
+
 -------------------------------------------------------------------------------
 -- Filtering
 -------------------------------------------------------------------------------
@@ -562,6 +669,104 @@ queryArc pat start stop =
     st = State { arc, controls: Map.empty }
   in
     query pat st
+
+-------------------------------------------------------------------------------
+-- Oscillators (continuous patterns)
+-------------------------------------------------------------------------------
+
+-- | Sine wave oscillator, 0 to 1 over each cycle
+sine :: Pattern Number
+sine = pattern \(State st) ->
+  let
+    Arc { start, stop } = st.arc
+    midpoint = toNumber $ (start + stop) / fromInt 2
+    -- cyclePos gives 0-1 within cycle
+    pos = midpoint - floor midpoint
+    -- sine from 0-1: (sin(2*pi*t) + 1) / 2
+    value = (sin (2.0 * pi * pos) + 1.0) / 2.0
+  in
+    [ Analog { context: emptyContext, part: st.arc, value } ]
+
+-- | Cosine wave oscillator, 0 to 1 over each cycle
+cosine :: Pattern Number
+cosine = pattern \(State st) ->
+  let
+    Arc { start, stop } = st.arc
+    midpoint = toNumber $ (start + stop) / fromInt 2
+    pos = midpoint - floor midpoint
+    value = (cos (2.0 * pi * pos) + 1.0) / 2.0
+  in
+    [ Analog { context: emptyContext, part: st.arc, value } ]
+
+-- | Sawtooth wave, 0 to 1 rising over each cycle
+saw :: Pattern Number
+saw = pattern \(State st) ->
+  let
+    Arc { start, stop } = st.arc
+    midpoint = toNumber $ (start + stop) / fromInt 2
+    value = midpoint - floor midpoint
+  in
+    [ Analog { context: emptyContext, part: st.arc, value } ]
+
+-- | Inverse sawtooth wave, 1 to 0 falling over each cycle
+isaw :: Pattern Number
+isaw = pattern \(State st) ->
+  let
+    Arc { start, stop } = st.arc
+    midpoint = toNumber $ (start + stop) / fromInt 2
+    value = 1.0 - (midpoint - floor midpoint)
+  in
+    [ Analog { context: emptyContext, part: st.arc, value } ]
+
+-- | Triangle wave, 0 to 1 to 0 over each cycle
+tri :: Pattern Number
+tri = pattern \(State st) ->
+  let
+    Arc { start, stop } = st.arc
+    midpoint = toNumber $ (start + stop) / fromInt 2
+    pos = midpoint - floor midpoint
+    -- Triangle: rises 0-0.5, falls 0.5-1
+    value = if pos < 0.5
+            then pos * 2.0
+            else 2.0 - pos * 2.0
+  in
+    [ Analog { context: emptyContext, part: st.arc, value } ]
+
+-- | Square wave, 0 for first half of cycle, 1 for second half
+square :: Pattern Number
+square = pattern \(State st) ->
+  let
+    Arc { start, stop } = st.arc
+    midpoint = toNumber $ (start + stop) / fromInt 2
+    pos = midpoint - floor midpoint
+    value = if pos < 0.5 then 0.0 else 1.0
+  in
+    [ Analog { context: emptyContext, part: st.arc, value } ]
+
+-- | Pseudorandom values 0 to 1, deterministic based on cycle position
+-- | Uses a simple hash function for repeatability
+rand :: Pattern Number
+rand = pattern \(State st) ->
+  let
+    Arc { start, stop } = st.arc
+    midpoint = toNumber $ (start + stop) / fromInt 2
+    -- Simple hash: multiply by large prime, take fractional part
+    hash = midpoint * 15485863.0
+    value = hash - floor hash
+  in
+    [ Analog { context: emptyContext, part: st.arc, value } ]
+
+-- | Random integers from 0 to n-1
+irand :: Int -> Pattern Int
+irand n = pattern \(State st) ->
+  let
+    Arc { start, stop } = st.arc
+    midpoint = toNumber $ (start + stop) / fromInt 2
+    hash = midpoint * 15485863.0
+    frac = hash - floor hash
+    value = Int.floor (frac * Int.toNumber n)
+  in
+    [ Analog { context: emptyContext, part: st.arc, value } ]
 
 -------------------------------------------------------------------------------
 -- Internal utilities

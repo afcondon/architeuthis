@@ -17,7 +17,7 @@ import Effect.Console (log)
 import Tidal.AST.Types (TPat)
 import Tidal.Eval.Interpret (tpatToPattern)
 import Tidal.Parse.Parser (parseTPat, parseChord)
-import Tidal.Pattern.Core (cat, compress, every, fast, fastAppend, fastCat, iter, iter', queryArc, rev, rotL, rotR, segment, slow, stack, zoom)
+import Tidal.Pattern.Core (cat, compress, cosine, every, fast, fastAppend, fastCat, irand, isaw, iter, iter', queryArc, rand, rev, rotL, rotR, saw, segment, sine, slow, square, stack, tri, zoom)
 import Data.Newtype (unwrap)
 import Tidal.Pattern.Types (Arc(..), Event(..), Note, Pattern, arcStart, arcStop, mkNote)
 import Tidal.Scales as Scales
@@ -1159,6 +1159,34 @@ runToussaintTests = do
     ]
 
   log ""
+  log "--- Oscillators ---"
+
+  -- sine at cycle position 0 = 0.5, at 0.25 = 1.0, at 0.5 = 0.5, at 0.75 = 0.0
+  -- Note: tolerance is higher because we sample the midpoint of query arc
+  testOscillator sine "sine at t=0" 0.0 0.01 0.5 0.05
+  testOscillator sine "sine at t=0.25" 0.25 0.26 1.0 0.05
+  testOscillator sine "sine at t=0.5" 0.5 0.51 0.5 0.05
+  testOscillator sine "sine at t=0.75" 0.75 0.76 0.0 0.05
+
+  testOscillator saw "saw at t=0" 0.0 0.01 0.0 0.01
+  testOscillator saw "saw at t=0.5" 0.5 0.51 0.5 0.01
+  testOscillator saw "saw at t=0.99" 0.99 1.0 0.99 0.02
+
+  testOscillator tri "tri at t=0" 0.0 0.01 0.0 0.02
+  testOscillator tri "tri at t=0.25" 0.25 0.26 0.5 0.02
+  testOscillator tri "tri at t=0.5" 0.5 0.51 1.0 0.02
+  testOscillator tri "tri at t=0.75" 0.75 0.76 0.5 0.02
+
+  testOscillator square "square at t=0.25" 0.25 0.26 0.0 0.01
+  testOscillator square "square at t=0.75" 0.75 0.76 1.0 0.01
+
+  -- rand produces values 0-1
+  testOscillatorRange rand "rand produces 0-1 values" 0.0 1.0 0.0 1.0
+
+  -- irand produces integers
+  testIrandRange 4 "irand 4 produces 0-3" 0.0 1.0 0 3
+
+  log ""
   log "=========================================="
   log "  All Tests Complete"
   log "=========================================="
@@ -1621,3 +1649,65 @@ testIter input desc n startTime stopTime expectedCount expectedEvents = do
           log $ "    Got: " <> formatEvents events
         else
           log $ "  ✓ " <> desc
+
+-- | Test oscillator value at a specific time
+testOscillator :: Pattern Number -> String -> Number -> Number -> Number -> Number -> Effect Unit
+testOscillator pat desc startN stopN expectedValue tolerance = do
+  let start = toRational startN
+  let stop = toRational stopN
+  let events = queryArc pat start stop
+  case Array.head events of
+    Nothing -> log $ "  ✗ " <> desc <> ": no events"
+    Just event ->
+      let value = getEventValue event
+          diff = if value > expectedValue then value - expectedValue else expectedValue - value
+      in if diff <= tolerance then
+           log $ "  ✓ " <> desc
+         else do
+           log $ "  ✗ " <> desc
+           log $ "    Expected ~" <> show expectedValue <> ", got " <> show value
+  where
+    toRational :: Number -> Rational
+    toRational n = fromInt (Int.round (n * 1000.0)) / fromInt 1000
+
+    getEventValue :: Event Number -> Number
+    getEventValue (Digital e) = e.value
+    getEventValue (Analog e) = e.value
+
+-- | Test oscillator produces values in a range
+testOscillatorRange :: Pattern Number -> String -> Number -> Number -> Number -> Number -> Effect Unit
+testOscillatorRange pat desc startN stopN minVal maxVal = do
+  let start = toRational startN
+  let stop = toRational stopN
+  let events = queryArc pat start stop
+  let values = map getEventValue events
+  let allInRange = Array.all (\v -> v >= minVal && v <= maxVal) values
+  if allInRange then
+    log $ "  ✓ " <> desc
+  else do
+    log $ "  ✗ " <> desc
+    log $ "    Values out of range [" <> show minVal <> ", " <> show maxVal <> "]"
+  where
+    toRational n = fromInt (Int.round (n * 1000.0)) / fromInt 1000
+    getEventValue (Digital e) = e.value
+    getEventValue (Analog e) = e.value
+
+-- | Test irand produces integers in range
+testIrandRange :: Int -> String -> Number -> Number -> Int -> Int -> Effect Unit
+testIrandRange n desc startN stopN minVal maxVal = do
+  let pat = irand n
+  let start = toRational startN
+  let stop = toRational stopN
+  let events = queryArc pat start stop
+  let values = map getEventValue events
+  let allInRange = Array.all (\v -> v >= minVal && v <= maxVal) values
+  if allInRange then
+    log $ "  ✓ " <> desc
+  else do
+    log $ "  ✗ " <> desc
+    log $ "    Values out of range [" <> show minVal <> ", " <> show maxVal <> "]"
+  where
+    toRational n' = fromInt (Int.round (n' * 1000.0)) / fromInt 1000
+    getEventValue :: Event Int -> Int
+    getEventValue (Digital e) = e.value
+    getEventValue (Analog e) = e.value
