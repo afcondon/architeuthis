@@ -22,6 +22,7 @@ import Control.Alt ((<|>))
 import Control.Monad.State (StateT)
 import Control.Monad.Trans.Class (lift)
 import Data.Array as Array
+import Data.Char (toCharCode, fromCharCode)
 import Data.Identity (Identity)
 import Data.Int as Int
 import Data.Maybe (Maybe(..))
@@ -31,8 +32,9 @@ import Text.Parsing.Parser (ParserT)
 import Text.Parsing.Parser as P
 import Text.Parsing.Parser.Combinators as PC
 import Text.Parsing.Parser.String (char, satisfy)
-import Text.Parsing.Parser.Token (alphaNum, digit)
+import Text.Parsing.Parser.Token (alphaNum, digit, letter)
 import Tidal.AST.Types (Located(..))
+import Tidal.Pattern.Types (Note, mkNote)
 import Tidal.Parse.State (ParseState, currentPos, mkSourceSpan)
 
 -- | The parser monad: Parser with state for seed generation
@@ -176,3 +178,74 @@ instance AtomParseable Rational where
         n <- liftP number
         let scaled = sign * n * 1000.0
         pure $ Int.round scaled % 1000
+
+-------------------------------------------------------------------------------
+-- Note atoms
+-------------------------------------------------------------------------------
+
+-- | Parse a musical note
+-- |
+-- | Supports:
+-- | - Note names: c, d, e, f, g, a, b (case insensitive)
+-- | - Accidentals: s (sharp), f (flat), n (natural)
+-- | - Octave: 0-9 (default 5, like Tidal)
+-- | - MIDI numbers: 60, 48, etc.
+-- |
+-- | Examples: "c4", "fs5", "bf3", "60"
+-- |
+-- | Note: c5 = MIDI 60 (middle C), following Tidal's convention
+instance AtomParseable Note where
+  atomParser = located $ noteName <|> noteNumber
+    where
+      -- Parse note name: c, cs, df, etc. with optional octave
+      noteName = liftP $ PC.try do
+        base <- noteBase
+        mods <- Array.many noteModifier
+        oct <- PC.option 5 (Int.round <$> number)
+        let pitch = base + sum mods + (oct - 5) * 12
+        pure $ mkNote pitch
+
+      -- Base note: c=0, d=2, e=4, f=5, g=7, a=9, b=11
+      noteBase :: ParserT String Identity Int
+      noteBase = do
+        c <- letter
+        case toLowerChar c of
+          'c' -> pure 0
+          'd' -> pure 2
+          'e' -> pure 4
+          'f' -> pure 5
+          'g' -> pure 7
+          'a' -> pure 9
+          'b' -> pure 11
+          _   -> P.fail "expected note name (c, d, e, f, g, a, b)"
+
+      -- Accidentals: s=+1 (sharp), f=-1 (flat), n=0 (natural)
+      noteModifier :: ParserT String Identity Int
+      noteModifier = do
+        c <- satisfy \x -> x == 's' || x == 'f' || x == 'n'
+        pure $ case c of
+          's' -> 1   -- sharp
+          'f' -> (-1) -- flat
+          'n' -> 0   -- natural
+          _   -> 0
+
+      -- MIDI note number (integer)
+      noteNumber = do
+        sign <- (liftP (char '-') $> (-1)) <|> pure 1
+        digits <- liftP $ Array.some digit
+        case Int.fromString (SCU.fromCharArray digits) of
+          Just n -> pure $ mkNote (sign * n)
+          Nothing -> liftP $ P.fail "expected note number"
+
+      -- Helper: convert Char to lowercase
+      toLowerChar :: Char -> Char
+      toLowerChar c
+        | c >= 'A' && c <= 'Z' =
+            case fromCharCode (toCharCode c + 32) of
+              Just lc -> lc
+              Nothing -> c
+        | otherwise = c
+
+      -- Sum helper
+      sum :: Array Int -> Int
+      sum = Array.foldl (+) 0

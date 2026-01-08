@@ -18,7 +18,8 @@ import Tidal.AST.Types (TPat)
 import Tidal.Eval.Interpret (tpatToPattern)
 import Tidal.Parse.Parser (parseTPat)
 import Tidal.Pattern.Core (cat, fast, fastAppend, fastCat, queryArc, rev, rotL, rotR, slow, stack)
-import Tidal.Pattern.Types (Arc(..), Event(..), Pattern, arcStart, arcStop)
+import Data.Newtype (unwrap)
+import Tidal.Pattern.Types (Arc(..), Event(..), Note, Pattern, arcStart, arcStop, mkNote)
 
 -------------------------------------------------------------------------------
 -- Test runner
@@ -477,12 +478,166 @@ runToussaintTests = do
     , { sample: "bd", start: 0.833, stop: 0.916 }
     ]
 
+  log ""
+  log "=========================================="
+  log "  Pitched Note Tests"
+  log "=========================================="
+  log ""
+
+  log "--- Note Name Parsing ---"
+
+  -- Basic note names (octave 5 = reference, c5 = 0)
+  testNotePattern "c5"
+    "C5 (middle C reference)"
+    1
+    [ { note: 0, start: 0.0, stop: 1.0 } ]
+
+  testNotePattern "d5"
+    "D5"
+    1
+    [ { note: 2, start: 0.0, stop: 1.0 } ]
+
+  testNotePattern "e5"
+    "E5"
+    1
+    [ { note: 4, start: 0.0, stop: 1.0 } ]
+
+  testNotePattern "g5"
+    "G5"
+    1
+    [ { note: 7, start: 0.0, stop: 1.0 } ]
+
+  testNotePattern "a5"
+    "A5"
+    1
+    [ { note: 9, start: 0.0, stop: 1.0 } ]
+
+  testNotePattern "b5"
+    "B5"
+    1
+    [ { note: 11, start: 0.0, stop: 1.0 } ]
+
+  log ""
+  log "--- Octave Variations ---"
+
+  testNotePattern "c4"
+    "C4 (one octave below)"
+    1
+    [ { note: -12, start: 0.0, stop: 1.0 } ]
+
+  testNotePattern "c6"
+    "C6 (one octave above)"
+    1
+    [ { note: 12, start: 0.0, stop: 1.0 } ]
+
+  testNotePattern "a4"
+    "A4 (concert pitch reference)"
+    1
+    [ { note: -3, start: 0.0, stop: 1.0 } ]
+
+  log ""
+  log "--- Accidentals ---"
+
+  testNotePattern "cs5"
+    "C# (C sharp)"
+    1
+    [ { note: 1, start: 0.0, stop: 1.0 } ]
+
+  testNotePattern "df5"
+    "Db (D flat)"
+    1
+    [ { note: 1, start: 0.0, stop: 1.0 } ]
+
+  testNotePattern "fs4"
+    "F#4 (F sharp, octave 4)"
+    1
+    [ { note: -6, start: 0.0, stop: 1.0 } ]
+
+  testNotePattern "bf3"
+    "Bb3 (B flat, octave 3)"
+    1
+    [ { note: -14, start: 0.0, stop: 1.0 } ]
+
+  log ""
+  log "--- Note Sequences ---"
+
+  testNotePattern "c5 e5 g5"
+    "C major triad"
+    3
+    [ { note: 0, start: 0.0, stop: 0.333 }
+    , { note: 4, start: 0.333, stop: 0.666 }
+    , { note: 7, start: 0.666, stop: 1.0 }
+    ]
+
+  testNotePattern "c4 d4 e4 f4 g4 a4 b4 c5"
+    "C major scale"
+    8
+    [ { note: -12, start: 0.0, stop: 0.125 }
+    , { note: -10, start: 0.125, stop: 0.25 }
+    , { note: -8, start: 0.25, stop: 0.375 }
+    , { note: -7, start: 0.375, stop: 0.5 }
+    , { note: -5, start: 0.5, stop: 0.625 }
+    , { note: -3, start: 0.625, stop: 0.75 }
+    , { note: -1, start: 0.75, stop: 0.875 }
+    , { note: 0, start: 0.875, stop: 1.0 }
+    ]
+
+  log ""
+  log "--- MIDI Note Numbers ---"
+
+  testNotePattern "60"
+    "MIDI 60 (middle C)"
+    1
+    [ { note: 60, start: 0.0, stop: 1.0 } ]
+
+  testNotePattern "0 12 24"
+    "MIDI octaves"
+    3
+    [ { note: 0, start: 0.0, stop: 0.333 }
+    , { note: 12, start: 0.333, stop: 0.666 }
+    , { note: 24, start: 0.666, stop: 1.0 }
+    ]
+
+  log ""
+  log "--- Note Pattern Modifiers ---"
+
+  testNotePattern "c5*4"
+    "C5 repeated 4 times"
+    4
+    [ { note: 0, start: 0.0, stop: 0.25 }
+    , { note: 0, start: 0.25, stop: 0.5 }
+    , { note: 0, start: 0.5, stop: 0.75 }
+    , { note: 0, start: 0.75, stop: 1.0 }
+    ]
+
+  testNotePattern "[c5 e5 g5]*2"
+    "C major triad doubled"
+    6
+    [ { note: 0, start: 0.0, stop: 0.166 }
+    , { note: 4, start: 0.166, stop: 0.333 }
+    , { note: 7, start: 0.333, stop: 0.5 }
+    , { note: 0, start: 0.5, stop: 0.666 }
+    , { note: 4, start: 0.666, stop: 0.833 }
+    , { note: 7, start: 0.833, stop: 1.0 }
+    ]
+
+  log ""
+  log "=========================================="
+  log "  Pattern Tests Complete"
+  log "=========================================="
+
 -------------------------------------------------------------------------------
 -- Test helpers
 -------------------------------------------------------------------------------
 
 type ExpectedEvent =
   { sample :: String
+  , start :: Number
+  , stop :: Number
+  }
+
+type ExpectedNoteEvent =
+  { note :: Int
   , start :: Number
   , stop :: Number
   }
@@ -539,6 +694,33 @@ testPattern input desc expectedCount expectedEvents = do
           log $ "  ✗ " <> desc <> " (\"" <> input <> "\")"
           for_ mismatches \m -> log $ "    " <> m
           log $ "    Got: " <> formatEvents events
+        else do
+          log $ "  ✓ " <> desc <> " (\"" <> input <> "\"): " <> show actualCount <> " events"
+
+-- | Test a Note pattern produces expected events
+testNotePattern :: String -> String -> Int -> Array ExpectedNoteEvent -> Effect Unit
+testNotePattern input desc expectedCount expectedEvents = do
+  let result = parseTPat input :: Either _ (TPat Note)
+  case result of
+    Left err -> do
+      log $ "  ✗ " <> desc <> ": parse error - " <> show err
+    Right ast -> do
+      let pat = tpatToPattern ast
+      let events = queryArc pat (fromInt 0) (fromInt 1)
+      let actualCount = Array.length events
+
+      -- Check count
+      if actualCount /= expectedCount then do
+        log $ "  ✗ " <> desc <> " (\"" <> input <> "\")"
+        log $ "    Expected " <> show expectedCount <> " events, got " <> show actualCount
+        log $ "    Events: " <> formatNoteEvents events
+      else do
+        -- Check each event
+        let mismatches = findNoteMismatches events expectedEvents
+        if Array.length mismatches > 0 then do
+          log $ "  ✗ " <> desc <> " (\"" <> input <> "\")"
+          for_ mismatches \m -> log $ "    " <> m
+          log $ "    Got: " <> formatNoteEvents events
         else do
           log $ "  ✓ " <> desc <> " (\"" <> input <> "\"): " <> show actualCount <> " events"
 
@@ -612,3 +794,72 @@ eventStop = case _ of
 
 abs :: Number -> Number
 abs n = if n < 0.0 then -n else n
+
+-------------------------------------------------------------------------------
+-- Note event helpers
+-------------------------------------------------------------------------------
+
+-- | Format Note events for display
+formatNoteEvents :: Array (Event Note) -> String
+formatNoteEvents events =
+  "[" <> Array.intercalate ", " (map formatNoteEvent events) <> "]"
+
+formatNoteEvent :: Event Note -> String
+formatNoteEvent = case _ of
+  Digital { value, part: Arc { start, stop } } ->
+    show (noteValue value) <> "@" <> formatTime start <> "-" <> formatTime stop
+  Analog { value, part: Arc { start, stop } } ->
+    show (noteValue value) <> "~" <> formatTime start <> "-" <> formatTime stop
+
+-- | Find mismatches between actual and expected Note events
+findNoteMismatches :: Array (Event Note) -> Array ExpectedNoteEvent -> Array String
+findNoteMismatches actuals expecteds =
+  let
+    -- Sort actuals by start time
+    compareNoteEventStart a b = compare (toNumber (noteEventStart a)) (toNumber (noteEventStart b))
+    sortedActuals = Array.sortBy compareNoteEventStart actuals
+    -- Sort expecteds by start time
+    sortedExpecteds = Array.sortBy (\a b -> compare a.start b.start) expecteds
+
+    checkOne idx expected =
+      case Array.index sortedActuals idx of
+        Nothing -> Just $ "Event " <> show idx <> ": missing"
+        Just actual -> checkNoteEvent idx actual expected
+  in
+    Array.mapWithIndex checkOne sortedExpecteds # Array.catMaybes
+  where
+    checkNoteEvent :: Int -> Event Note -> ExpectedNoteEvent -> Maybe String
+    checkNoteEvent idx actual expected =
+      let
+        actualNote = noteValue (noteEventValue actual)
+        actualStart = toNumber (noteEventStart actual)
+        actualStop = toNumber (noteEventStop actual)
+        tolerance = 0.01
+      in
+        if actualNote /= expected.note then
+          Just $ "Event " <> show idx <> ": note " <> show actualNote <> " ≠ " <> show expected.note
+        else if abs (actualStart - expected.start) > tolerance then
+          Just $ "Event " <> show idx <> ": start " <> show actualStart <> " ≠ " <> show expected.start
+        else if abs (actualStop - expected.stop) > tolerance then
+          Just $ "Event " <> show idx <> ": stop " <> show actualStop <> " ≠ " <> show expected.stop
+        else
+          Nothing
+
+noteEventValue :: Event Note -> Note
+noteEventValue = case _ of
+  Digital { value } -> value
+  Analog { value } -> value
+
+noteEventStart :: Event Note -> Rational
+noteEventStart = case _ of
+  Digital { part: Arc { start } } -> start
+  Analog { part: Arc { start } } -> start
+
+noteEventStop :: Event Note -> Rational
+noteEventStop = case _ of
+  Digital { part: Arc { stop } } -> stop
+  Analog { part: Arc { stop } } -> stop
+
+-- | Extract the note number from a Note
+noteValue :: Note -> Int
+noteValue n = (unwrap n).note
