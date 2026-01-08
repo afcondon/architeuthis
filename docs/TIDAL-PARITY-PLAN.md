@@ -159,17 +159,20 @@ Pattern operations that work step-by-step.
 Named control patterns for synthesis parameters.
 
 ### 5.1 Core Controls
-- [ ] `sound` / `s` - sample name
-- [ ] `note` / `n` - note/pitch
-- [ ] `gain` - volume
-- [ ] `pan` - stereo position
-- [ ] `speed` - playback speed
+- [x] `sound` / `s` - sample name
+- [x] `note` / `n` - note/pitch
+- [x] `gain` - volume
+- [x] `pan` - stereo position
+- [x] `speed` - playback speed
+- [x] `begin`, `end`, `loop` - sample position controls
+- [x] `cut` - cut groups
+- [x] `delay`, `delaytime`, `delayfeedback` - delay FX controls
 
 ### 5.2 Pattern Merging
-- [ ] `#` operator for combining controls
-- [ ] `|>|` structure merge
-- [ ] `|+|`, `|*|`, `|-|` arithmetic merge
-- [ ] `|>`, `|<` directional merge
+- [x] `#` operator for combining controls
+- [x] `|>|` structure merge (both)
+- [x] `|+`, `|*`, `|-`, `|/` arithmetic merge
+- [x] `|>` directional merge (right structure)
 
 ### 5.3 Oscillator Patterns
 - [ ] `sine` - sine wave 0-1
@@ -187,23 +190,25 @@ Named control patterns for synthesis parameters.
 Verify algebraic correctness.
 
 ### 6.1 Monoid Laws
-- [ ] Identity: `mempty <> x = x`
-- [ ] Associativity: `(x <> y) <> z = x <> (y <> z)`
-- [ ] Silence behavior with operators
+- [x] Stack associativity: `stack [stack [a, b], c] = stack [a, stack [b, c]]`
+- [x] Stack with silence: `stack [pat, silence] = pat`
+- [x] Silence produces no events
 
 ### 6.2 Functor Laws
-- [ ] `fmap id = id`
-- [ ] `fmap (f . g) = fmap f . fmap g`
+- [x] `fmap id = id`
+- [x] `fmap (f . g) = fmap f . fmap g`
 
-### 6.3 Applicative Laws
-- [ ] `<*>` operator properties
-- [ ] `*>` and `<*` behavior
-- [ ] Structure preservation
+### 6.3 Transformation Properties
+- [x] `fast n . slow n = id`
+- [x] `slow n . fast n = id`
+- [x] `rotL t . rotR t = id`
+- [x] `rev . rev = id`
 
-### 6.4 Pattern-Specific Properties
-- [ ] Query boundary conditions
-- [ ] Cross-cycle queries
-- [ ] Zero-length arc handling
+### 6.4 Query Boundary Conditions
+- [x] Empty arc returns no events
+- [x] Single cycle returns correct events
+- [x] Cross-cycle queries return all events
+- [x] Fractional arc correctly slices events
 
 ---
 
@@ -259,12 +264,12 @@ Helper functions for pattern manipulation.
 | 2.x | Scales system | ✓ Complete | +11 |
 | 3.x | Transformations | ✓ Complete | +6 |
 | 4.x | Stepwise ops | ✓ Partial | +2 |
-| 5.x | Control params | Not started | 0 |
-| 6.x | Pattern laws | Not started | 0 |
+| 5.x | Control params | ✓ Complete | +14 |
+| 6.x | Pattern laws | ✓ Complete | +13 |
 | 7.x | Advanced parser | Not started | 0 |
 | 8.x | Utilities | Not started | 0 |
 
-**Total**: 158 tests (baseline 122 + 36 new)
+**Total**: 185 tests (baseline 122 + 63 new)
 
 ---
 

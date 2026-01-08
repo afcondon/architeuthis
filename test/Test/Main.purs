@@ -5,6 +5,8 @@ import Prelude
 import Data.Either (Either(..))
 import Effect (Effect)
 import Effect.Console (log)
+import Test.ControlSpec (runControlTests)
+import Test.LawSpec (runLawTests)
 import Test.PatternSpec (runPatternTests)
 import Tidal.AST.Pretty (pretty)
 import Tidal.AST.Types (TPat)
@@ -94,6 +96,12 @@ main = do
 
   -- Run pattern evaluation tests
   runPatternTests
+
+  -- Run control pattern tests
+  runControlTests
+
+  -- Run law/property tests
+  runLawTests
 
   log ""
   log "=== All tests completed ==="
