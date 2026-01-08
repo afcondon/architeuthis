@@ -79,7 +79,7 @@ import Text.Parsing.Parser.Token (alphaNum, digit)
 import Tidal.AST.Types (Located(..), TPat(..), SourceSpan, tpatSpan)
 import Tidal.Chords (lookupChord)
 import Tidal.Core.Types (ControlName(..), SourcePos)
-import Tidal.Parse.Class (class AtomParseable, atomParser, TidalParser, number)
+import Tidal.Parse.Class (class AtomParseable, atomParser, patternParser, TidalParser, number)
 import Tidal.Parse.State (currentPos, mkSourceSpan, newSeed)
 import Tidal.Pattern.Types (Note, mkNote)
 
@@ -190,9 +190,9 @@ pPart = defer \_ ->
     <|> pPolyOut
     <|> pVar
 
--- | Parse an atom with its modifiers
+-- | Parse an atom with its modifiers (uses patternParser to support chords for Note)
 pSingle :: forall a. AtomParseable a => TidalParser (TPat a)
-pSingle = defer \_ -> pAtom <|> pSilence
+pSingle = defer \_ -> patternParser <|> pSilence
 
 -------------------------------------------------------------------------------
 -- Atoms

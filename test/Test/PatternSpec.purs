@@ -774,6 +774,81 @@ runToussaintTests = do
     ]
 
   log ""
+  log "--- Chord Sequences (Integrated Patterns) ---"
+
+  -- Two chords in sequence: each chord takes half the cycle
+  -- c'major (notes 0,4,7) in first half, e'minor (notes 4,7,11) in second half
+  testNotePattern "c'major e'minor"
+    "Two chord sequence (C maj -> E min)"
+    6
+    [ { note: 0, start: 0.0, stop: 0.5 }   -- C (chord 1)
+    , { note: 4, start: 0.0, stop: 0.5 }   -- E (chord 1)
+    , { note: 7, start: 0.0, stop: 0.5 }   -- G (chord 1)
+    , { note: 4, start: 0.5, stop: 1.0 }   -- E (chord 2)
+    , { note: 7, start: 0.5, stop: 1.0 }   -- G (chord 2)
+    , { note: 11, start: 0.5, stop: 1.0 }  -- B (chord 2)
+    ]
+
+  -- Four chord sequence (common I-V-vi-IV progression)
+  testNotePattern "c'major g'major a'minor f'major"
+    "Four chord progression (I-V-vi-IV)"
+    12
+    [ { note: 0, start: 0.0, stop: 0.25 }   -- C maj
+    , { note: 4, start: 0.0, stop: 0.25 }
+    , { note: 7, start: 0.0, stop: 0.25 }
+    , { note: 7, start: 0.25, stop: 0.5 }   -- G maj
+    , { note: 11, start: 0.25, stop: 0.5 }
+    , { note: 14, start: 0.25, stop: 0.5 }
+    , { note: 9, start: 0.5, stop: 0.75 }   -- A min
+    , { note: 12, start: 0.5, stop: 0.75 }
+    , { note: 16, start: 0.5, stop: 0.75 }
+    , { note: 5, start: 0.75, stop: 1.0 }   -- F maj
+    , { note: 9, start: 0.75, stop: 1.0 }
+    , { note: 12, start: 0.75, stop: 1.0 }
+    ]
+
+  -- Mixed: single notes and chords in same pattern
+  testNotePattern "c5 c'major g5"
+    "Mixed notes and chords"
+    5
+    [ { note: 0, start: 0.0, stop: 0.333 }     -- C5 (single note)
+    , { note: 0, start: 0.333, stop: 0.666 }   -- C (chord)
+    , { note: 4, start: 0.333, stop: 0.666 }   -- E (chord)
+    , { note: 7, start: 0.333, stop: 0.666 }   -- G (chord)
+    , { note: 7, start: 0.666, stop: 1.0 }     -- G5 (single note)
+    ]
+
+  -- Chord with modifier (fast)
+  testNotePattern "c'major*2"
+    "Chord repeated twice"
+    6
+    [ { note: 0, start: 0.0, stop: 0.5 }   -- C maj (first)
+    , { note: 4, start: 0.0, stop: 0.5 }
+    , { note: 7, start: 0.0, stop: 0.5 }
+    , { note: 0, start: 0.5, stop: 1.0 }   -- C maj (second)
+    , { note: 4, start: 0.5, stop: 1.0 }
+    , { note: 7, start: 0.5, stop: 1.0 }
+    ]
+
+  -- Chord in a group
+  testNotePattern "[c'major e'minor]*2"
+    "Chord group repeated"
+    12
+    [ { note: 0, start: 0.0, stop: 0.25 }
+    , { note: 4, start: 0.0, stop: 0.25 }
+    , { note: 7, start: 0.0, stop: 0.25 }
+    , { note: 4, start: 0.25, stop: 0.5 }
+    , { note: 7, start: 0.25, stop: 0.5 }
+    , { note: 11, start: 0.25, stop: 0.5 }
+    , { note: 0, start: 0.5, stop: 0.75 }
+    , { note: 4, start: 0.5, stop: 0.75 }
+    , { note: 7, start: 0.5, stop: 0.75 }
+    , { note: 4, start: 0.75, stop: 1.0 }
+    , { note: 7, start: 0.75, stop: 1.0 }
+    , { note: 11, start: 0.75, stop: 1.0 }
+    ]
+
+  log ""
   log "=========================================="
   log "  All Tests Complete"
   log "=========================================="
