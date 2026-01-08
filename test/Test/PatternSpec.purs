@@ -16,7 +16,7 @@ import Effect (Effect)
 import Effect.Console (log)
 import Tidal.AST.Types (TPat)
 import Tidal.Eval.Interpret (tpatToPattern)
-import Tidal.Parse.Parser (parseTPat)
+import Tidal.Parse.Parser (parseTPat, parseChord)
 import Tidal.Pattern.Core (cat, fast, fastAppend, fastCat, queryArc, rev, rotL, rotR, slow, stack)
 import Data.Newtype (unwrap)
 import Tidal.Pattern.Types (Arc(..), Event(..), Note, Pattern, arcStart, arcStop, mkNote)
@@ -623,7 +623,159 @@ runToussaintTests = do
 
   log ""
   log "=========================================="
-  log "  Pattern Tests Complete"
+  log "  Chord Tests"
+  log "=========================================="
+  log ""
+
+  log "--- Basic Triads ---"
+
+  testChord "c'major"
+    "C major triad"
+    3
+    [ { note: 0, start: 0.0, stop: 1.0 }   -- C
+    , { note: 4, start: 0.0, stop: 1.0 }   -- E
+    , { note: 7, start: 0.0, stop: 1.0 }   -- G
+    ]
+
+  testChord "c'minor"
+    "C minor triad"
+    3
+    [ { note: 0, start: 0.0, stop: 1.0 }   -- C
+    , { note: 3, start: 0.0, stop: 1.0 }   -- Eb
+    , { note: 7, start: 0.0, stop: 1.0 }   -- G
+    ]
+
+  testChord "c'dim"
+    "C diminished triad"
+    3
+    [ { note: 0, start: 0.0, stop: 1.0 }   -- C
+    , { note: 3, start: 0.0, stop: 1.0 }   -- Eb
+    , { note: 6, start: 0.0, stop: 1.0 }   -- Gb
+    ]
+
+  testChord "c'aug"
+    "C augmented triad"
+    3
+    [ { note: 0, start: 0.0, stop: 1.0 }   -- C
+    , { note: 4, start: 0.0, stop: 1.0 }   -- E
+    , { note: 8, start: 0.0, stop: 1.0 }   -- G#
+    ]
+
+  log ""
+  log "--- Seventh Chords ---"
+
+  testChord "c'major7"
+    "C major 7th"
+    4
+    [ { note: 0, start: 0.0, stop: 1.0 }   -- C
+    , { note: 4, start: 0.0, stop: 1.0 }   -- E
+    , { note: 7, start: 0.0, stop: 1.0 }   -- G
+    , { note: 11, start: 0.0, stop: 1.0 }  -- B
+    ]
+
+  testChord "c'dom7"
+    "C dominant 7th"
+    4
+    [ { note: 0, start: 0.0, stop: 1.0 }   -- C
+    , { note: 4, start: 0.0, stop: 1.0 }   -- E
+    , { note: 7, start: 0.0, stop: 1.0 }   -- G
+    , { note: 10, start: 0.0, stop: 1.0 }  -- Bb
+    ]
+
+  testChord "c'minor7"
+    "C minor 7th"
+    4
+    [ { note: 0, start: 0.0, stop: 1.0 }   -- C
+    , { note: 3, start: 0.0, stop: 1.0 }   -- Eb
+    , { note: 7, start: 0.0, stop: 1.0 }   -- G
+    , { note: 10, start: 0.0, stop: 1.0 }  -- Bb
+    ]
+
+  log ""
+  log "--- Transposed Chords ---"
+
+  testChord "e'minor"
+    "E minor (transposed)"
+    3
+    [ { note: 4, start: 0.0, stop: 1.0 }   -- E
+    , { note: 7, start: 0.0, stop: 1.0 }   -- G
+    , { note: 11, start: 0.0, stop: 1.0 }  -- B
+    ]
+
+  testChord "g'major"
+    "G major (transposed)"
+    3
+    [ { note: 7, start: 0.0, stop: 1.0 }   -- G
+    , { note: 11, start: 0.0, stop: 1.0 }  -- B
+    , { note: 14, start: 0.0, stop: 1.0 }  -- D (octave up)
+    ]
+
+  testChord "fs'minor"
+    "F# minor (with accidental)"
+    3
+    [ { note: 6, start: 0.0, stop: 1.0 }   -- F#
+    , { note: 9, start: 0.0, stop: 1.0 }   -- A
+    , { note: 13, start: 0.0, stop: 1.0 }  -- C#
+    ]
+
+  testChord "bf'major"
+    "Bb major (with flat, octave 5)"
+    3
+    [ { note: 10, start: 0.0, stop: 1.0 }  -- Bb5 (B=11, flat=-1)
+    , { note: 14, start: 0.0, stop: 1.0 }  -- D6
+    , { note: 17, start: 0.0, stop: 1.0 }  -- F6
+    ]
+
+  log ""
+  log "--- Chord Aliases ---"
+
+  testChord "c'M"
+    "C major (M alias)"
+    3
+    [ { note: 0, start: 0.0, stop: 1.0 }
+    , { note: 4, start: 0.0, stop: 1.0 }
+    , { note: 7, start: 0.0, stop: 1.0 }
+    ]
+
+  testChord "c'm"
+    "C minor (m alias)"
+    3
+    [ { note: 0, start: 0.0, stop: 1.0 }
+    , { note: 3, start: 0.0, stop: 1.0 }
+    , { note: 7, start: 0.0, stop: 1.0 }
+    ]
+
+  testChord "c'7"
+    "C7 (dominant 7th alias)"
+    4
+    [ { note: 0, start: 0.0, stop: 1.0 }
+    , { note: 4, start: 0.0, stop: 1.0 }
+    , { note: 7, start: 0.0, stop: 1.0 }
+    , { note: 10, start: 0.0, stop: 1.0 }
+    ]
+
+  log ""
+  log "--- Suspended Chords ---"
+
+  testChord "c'sus4"
+    "C sus4"
+    3
+    [ { note: 0, start: 0.0, stop: 1.0 }   -- C
+    , { note: 5, start: 0.0, stop: 1.0 }   -- F
+    , { note: 7, start: 0.0, stop: 1.0 }   -- G
+    ]
+
+  testChord "c'sus2"
+    "C sus2"
+    3
+    [ { note: 0, start: 0.0, stop: 1.0 }   -- C
+    , { note: 2, start: 0.0, stop: 1.0 }   -- D
+    , { note: 7, start: 0.0, stop: 1.0 }   -- G
+    ]
+
+  log ""
+  log "=========================================="
+  log "  All Tests Complete"
   log "=========================================="
 
 -------------------------------------------------------------------------------
@@ -863,3 +1015,70 @@ noteEventStop = case _ of
 -- | Extract the note number from a Note
 noteValue :: Note -> Int
 noteValue n = (unwrap n).note
+
+-------------------------------------------------------------------------------
+-- Chord test helpers
+-------------------------------------------------------------------------------
+
+-- | Test a chord produces expected notes
+testChord :: String -> String -> Int -> Array ExpectedNoteEvent -> Effect Unit
+testChord input desc expectedCount expectedEvents = do
+  let result = parseChord input
+  case result of
+    Left err -> do
+      log $ "  ✗ " <> desc <> ": parse error - " <> show err
+    Right ast -> do
+      let pat = tpatToPattern ast
+      let events = queryArc pat (fromInt 0) (fromInt 1)
+      let actualCount = Array.length events
+
+      -- Check count
+      if actualCount /= expectedCount then do
+        log $ "  ✗ " <> desc <> " (\"" <> input <> "\")"
+        log $ "    Expected " <> show expectedCount <> " events, got " <> show actualCount
+        log $ "    Events: " <> formatNoteEvents events
+      else do
+        -- Check each event (chords produce overlapping events, so don't sort by start)
+        let mismatches = findChordMismatches events expectedEvents
+        if Array.length mismatches > 0 then do
+          log $ "  ✗ " <> desc <> " (\"" <> input <> "\")"
+          for_ mismatches \m -> log $ "    " <> m
+          log $ "    Got: " <> formatNoteEvents events
+        else do
+          log $ "  ✓ " <> desc <> " (\"" <> input <> "\"): " <> show actualCount <> " notes"
+
+-- | Find mismatches between actual and expected chord notes
+-- | For chords, events all have the same time, so we compare by note value
+findChordMismatches :: Array (Event Note) -> Array ExpectedNoteEvent -> Array String
+findChordMismatches actuals expecteds =
+  let
+    -- Sort both by note value for comparison
+    sortByNote :: Array (Event Note) -> Array (Event Note)
+    sortByNote = Array.sortBy (\a b -> compare (noteValue (noteEventValue a)) (noteValue (noteEventValue b)))
+
+    sortedActuals = sortByNote actuals
+    sortedExpecteds = Array.sortBy (\a b -> compare a.note b.note) expecteds
+
+    checkOne idx expected =
+      case Array.index sortedActuals idx of
+        Nothing -> Just $ "Note " <> show idx <> ": missing"
+        Just actual -> checkChordEvent idx actual expected
+  in
+    Array.mapWithIndex checkOne sortedExpecteds # Array.catMaybes
+  where
+    checkChordEvent :: Int -> Event Note -> ExpectedNoteEvent -> Maybe String
+    checkChordEvent idx actual expected =
+      let
+        actualNote = noteValue (noteEventValue actual)
+        actualStart = toNumber (noteEventStart actual)
+        actualStop = toNumber (noteEventStop actual)
+        tolerance = 0.01
+      in
+        if actualNote /= expected.note then
+          Just $ "Note " <> show idx <> ": pitch " <> show actualNote <> " ≠ " <> show expected.note
+        else if abs (actualStart - expected.start) > tolerance then
+          Just $ "Note " <> show idx <> ": start " <> show actualStart <> " ≠ " <> show expected.start
+        else if abs (actualStop - expected.stop) > tolerance then
+          Just $ "Note " <> show idx <> ": stop " <> show actualStop <> " ≠ " <> show expected.stop
+        else
+          Nothing

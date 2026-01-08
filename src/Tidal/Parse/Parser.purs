@@ -7,6 +7,8 @@ module Tidal.Parse.Parser
     parse
   , parseTPat
   , parseMini
+    -- * Chord parsing
+  , parseChord
     -- * Re-exports for convenience
   , module Tidal.Parse.Class
   ) where
@@ -19,8 +21,9 @@ import Text.Parsing.Parser (ParseError, runParser)
 import Text.Parsing.Parser.String (eof)
 import Tidal.AST.Types (TPat)
 import Tidal.Parse.Class (class AtomParseable, TidalParser)
-import Tidal.Parse.Combinators (pTidal, liftP)
+import Tidal.Parse.Combinators (pTidal, pNoteChord, liftP)
 import Tidal.Parse.State (initialState)
+import Tidal.Pattern.Types (Note)
 
 -- | Parse a mini-notation string to TPat AST
 -- |
@@ -44,3 +47,17 @@ parseMini = parseTPat
 -- | Short alias for String patterns (most common use case)
 parse :: String -> Either ParseError (TPat String)
 parse = parseTPat
+
+-- | Parse a single chord expression
+-- |
+-- | This parses chord notation like:
+-- | - `c'major` - C major chord
+-- | - `e'minor` - E minor chord
+-- | - `'major` - Major chord (root defaults to C)
+-- |
+-- | Returns a TPat_Stack of notes for the chord.
+parseChord :: String -> Either ParseError (TPat Note)
+parseChord input = runParser input (evalStateT parser (initialState "<input>"))
+  where
+    parser :: TidalParser (TPat Note)
+    parser = pNoteChord <* liftP eof

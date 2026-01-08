@@ -25,6 +25,8 @@ module Tidal.Parse.Combinators
   , pAtom
   , pSilence
   , pVar
+    -- * Chords (Note-specific)
+  , pNoteChord
     -- * Modifiers
   , pMult
   , pRand
@@ -50,6 +52,9 @@ module Tidal.Parse.Combinators
   , pRational
   , pInt
   , pNumber
+    -- * Internal (for custom parsers)
+  , symbol
+  , spaces
   ) where
 
 import Prelude hiding (between)
@@ -59,6 +64,7 @@ import Control.Lazy (defer)
 import Control.Monad.State.Trans (mapStateT)
 import Control.Monad.Trans.Class (lift)
 import Data.Array as Array
+import Data.Char (toCharCode, fromCharCode)
 import Data.Identity (Identity)
 import Data.Int as Int
 import Data.Maybe (Maybe(..))
@@ -71,9 +77,11 @@ import Text.Parsing.Parser.Combinators as PC
 import Text.Parsing.Parser.String (char, satisfy, string, skipSpaces)
 import Text.Parsing.Parser.Token (alphaNum, digit)
 import Tidal.AST.Types (Located(..), TPat(..), SourceSpan, tpatSpan)
+import Tidal.Chords (lookupChord)
 import Tidal.Core.Types (ControlName(..), SourcePos)
 import Tidal.Parse.Class (class AtomParseable, atomParser, TidalParser, number)
 import Tidal.Parse.State (currentPos, mkSourceSpan, newSeed)
+import Tidal.Pattern.Types (Note, mkNote)
 
 -- | Lift a parser operation into TidalParser
 liftP :: forall a. ParserT String Identity a -> TidalParser a
@@ -208,6 +216,88 @@ pVar = do
     cs <- liftP $ Array.many (alphaNum <|> satisfy \c -> c == '.' || c == '-' || c == '_' || c == ':')
     pure $ ControlName $ SCU.fromCharArray cs
   pure $ TPat_Var span name
+
+-------------------------------------------------------------------------------
+-- Chords (Note-specific parsing)
+-------------------------------------------------------------------------------
+
+-- | Parse a chord: c'major, e'minor, 'major (defaults to C)
+-- |
+-- | Returns a TPat_Stack of notes for the chord.
+-- |
+-- | Syntax:
+-- | - `c'major` - C major chord (notes: 0, 4, 7)
+-- | - `e'minor` - E minor chord (notes: 4, 7, 11)
+-- | - `fs'dim` - F# diminished
+-- | - `'major` - Major chord starting from C (root = 0)
+pNoteChord :: TidalParser (TPat Note)
+pNoteChord = tryT $ do
+  Tuple span (Tuple root intervals) <- spanned do
+    -- Parse optional root note
+    root <- optionT 0 pNoteRoot
+    -- Parse chord separator and name
+    _ <- liftP $ char '\''
+    chordName <- liftP $ Array.some (alphaNum <|> satisfy \c -> c == '7' || c == '9')
+    let name = SCU.fromCharArray chordName
+    case lookupChord name of
+      Just intervals -> pure $ Tuple root intervals
+      Nothing -> liftP $ P.fail $ "unknown chord: " <> name
+  -- Build stack of notes
+  let notes = map (\interval -> noteAtom span (root + interval)) intervals
+  case Array.length notes of
+    0 -> liftP $ P.fail "empty chord"
+    1 -> case Array.head notes of
+           Just n -> pure n
+           Nothing -> liftP $ P.fail "empty chord"
+    _ -> pure $ TPat_Stack span notes
+  where
+    -- Create a single note atom
+    noteAtom :: SourceSpan -> Int -> TPat Note
+    noteAtom s pitch = TPat_Atom (Located s (mkNote pitch))
+
+    -- Parse root note: c, d, e, f, g, a, b with optional accidentals and octave
+    pNoteRoot :: TidalParser Int
+    pNoteRoot = liftP $ PC.try do
+      base <- noteBase
+      mods <- Array.many noteModifier
+      oct <- PC.option 5 (Int.round <$> number)
+      pure $ base + Array.foldl (+) 0 mods + (oct - 5) * 12
+
+    -- Base note values
+    noteBase :: ParserT String Identity Int
+    noteBase = do
+      c <- satisfy \x -> x >= 'a' && x <= 'g' || x >= 'A' && x <= 'G'
+      case toLower c of
+        'c' -> pure 0
+        'd' -> pure 2
+        'e' -> pure 4
+        'f' -> pure 5
+        'g' -> pure 7
+        'a' -> pure 9
+        'b' -> pure 11
+        _   -> P.fail "expected note name"
+
+    -- Accidentals
+    noteModifier :: ParserT String Identity Int
+    noteModifier = do
+      c <- satisfy \x -> x == 's' || x == 'f' || x == 'n'
+      pure $ case c of
+        's' -> 1    -- sharp
+        'f' -> (-1) -- flat
+        _   -> 0    -- natural
+
+    toLower :: Char -> Char
+    toLower c
+      | c >= 'A' && c <= 'G' = case charFromCode (charCode c + 32) of
+          Just lc -> lc
+          Nothing -> c
+      | otherwise = c
+
+    charCode :: Char -> Int
+    charCode = toCharCode
+
+    charFromCode :: Int -> Maybe Char
+    charFromCode = fromCharCode
 
 -------------------------------------------------------------------------------
 -- Modifiers
