@@ -77,7 +77,7 @@ import Text.Parsing.Parser.Combinators as PC
 import Text.Parsing.Parser.String (char, satisfy, string, skipSpaces)
 import Text.Parsing.Parser.Token (alphaNum, digit)
 import Tidal.AST.Types (Located(..), TPat(..), SourceSpan, tpatSpan)
-import Tidal.Chords (lookupChord)
+import Tidal.Chords (Modifier(..), lookupChord, applyModifiers)
 import Tidal.Core.Types (ControlName(..), SourcePos)
 import Tidal.Parse.Class (class AtomParseable, atomParser, patternParser, TidalParser, number)
 import Tidal.Parse.State (currentPos, mkSourceSpan, newSeed)
@@ -143,11 +143,14 @@ parens = betweenT (void $ symbol "(") (void $ symbol ")")
 
 -- | Main entry point - parse a full pattern
 -- |
--- | A pattern is a sequence optionally followed by stack (,) or choose (|) operators.
+-- | A pattern is a sequence optionally followed by:
+-- | - stack (,) - layers patterns
+-- | - choose (|) - randomly selects
+-- | - dot (.) - divides cycle into equal groups
 pTidal :: forall a. AtomParseable a => TidalParser (TPat a)
 pTidal = defer \_ -> do
   s <- pSequence
-  stackTail s <|> chooseTail s <|> pure s
+  stackTail s <|> chooseTail s <|> dotTail s <|> pure s
   where
     stackTail s = do
       _ <- symbol ","
@@ -161,6 +164,21 @@ pTidal = defer \_ -> do
       theSpan <- spanFromArray (Array.cons s ss)
       seed <- newSeed
       pure $ TPat_CycleChoose theSpan seed (Array.cons s ss)
+
+    -- Dot grouping: "bd sd . hh hh hh" = [[bd sd] [hh hh hh]]
+    -- Each dot-separated group gets equal time in the cycle
+    dotTail s = do
+      _ <- pDot
+      ss <- pSequence `sepByT` pDot
+      theSpan <- spanFromArray (Array.cons s ss)
+      pure $ TPat_Seq theSpan (Array.cons s ss)
+
+    -- Parse dot separator (. but not ..)
+    pDot = tryT do
+      _ <- liftP $ char '.'
+      -- Make sure it's not .. (range operator)
+      liftP $ PC.notFollowedBy (char '.')
+      spaces
 
     -- Get span covering all elements
     spanFromArray :: Array (TPat a) -> TidalParser SourceSpan
@@ -202,11 +220,19 @@ pSingle = defer \_ -> patternParser <|> pSilence
 pAtom :: forall a. AtomParseable a => TidalParser (TPat a)
 pAtom = TPat_Atom <$> atomParser
 
--- | Parse silence (only ~ now, - is for negation)
+-- | Parse silence: ~ or - (dash only when not followed by digit)
 pSilence :: forall a. TidalParser (TPat a)
 pSilence = do
-  Tuple span _ <- spanned $ liftP (char '~')
+  Tuple span _ <- spanned $ liftP (tilde <|> dash)
   pure $ TPat_Silence span
+  where
+    tilde = void $ char '~'
+    -- Dash is silence only when NOT followed by a digit (otherwise it's negation)
+    dash = PC.try do
+      _ <- char '-'
+      -- Peek ahead - fail if followed by digit
+      PC.notFollowedBy digit
+      pure unit
 
 -- | Parse a variable reference: ^name
 pVar :: forall a. TidalParser (TPat a)
@@ -240,7 +266,10 @@ pNoteChord = tryT $ do
     chordName <- liftP $ Array.some (alphaNum <|> satisfy \c -> c == '7' || c == '9')
     let name = SCU.fromCharArray chordName
     case lookupChord name of
-      Just intervals -> pure $ Tuple root intervals
+      Just ints -> do
+        -- Parse optional modifiers (each prefixed with ')
+        mods <- liftP $ Array.many parseModifierGroup
+        pure $ Tuple root (applyModifiers (Array.concat mods) ints)
       Nothing -> liftP $ P.fail $ "unknown chord: " <> name
   -- Build stack of notes
   let notes = map (\interval -> noteAtom span (root + interval)) intervals
@@ -262,6 +291,53 @@ pNoteChord = tryT $ do
       mods <- Array.many noteModifier
       oct <- PC.option 5 (Int.round <$> number)
       pure $ base + Array.foldl (+) 0 mods + (oct - 5) * 12
+
+    -- Parse a modifier group: 'i, 'ii, 'i2, 'o, 'd1, '5
+    parseModifierGroup :: ParserT String Identity (Array Modifier)
+    parseModifierGroup = do
+      _ <- char '\''
+      parseInvertMany <|> parseInvertN <|> parseOpen <|> parseDrop <|> parseRange
+
+    -- Parse multiple 'i' characters: 'ii = two inversions
+    parseInvertMany :: ParserT String Identity (Array Modifier)
+    parseInvertMany = PC.try do
+      is <- Array.some (char 'i')
+      PC.notFollowedBy digit  -- Not 'i2' form
+      pure $ Array.replicate (Array.length is) Invert
+
+    -- Parse 'i2' form: 'i followed by a number
+    parseInvertN :: ParserT String Identity (Array Modifier)
+    parseInvertN = PC.try do
+      _ <- char 'i'
+      n <- pIntRaw
+      pure $ Array.replicate n Invert
+
+    -- Parse 'o' for open voicing
+    parseOpen :: ParserT String Identity (Array Modifier)
+    parseOpen = do
+      os <- Array.some (char 'o')
+      pure $ Array.replicate (Array.length os) Open
+
+    -- Parse 'd1', 'd2' for drop voicing
+    parseDrop :: ParserT String Identity (Array Modifier)
+    parseDrop = do
+      _ <- char 'd'
+      n <- pIntRaw
+      pure [Drop n]
+
+    -- Parse a number alone as range
+    parseRange :: ParserT String Identity (Array Modifier)
+    parseRange = do
+      n <- pIntRaw
+      pure [Range n]
+
+    -- Parse a positive integer (raw parser, not TidalParser)
+    pIntRaw :: ParserT String Identity Int
+    pIntRaw = do
+      digits <- Array.some digit
+      case Int.fromString (SCU.fromCharArray digits) of
+        Just n -> pure n
+        Nothing -> P.fail "expected integer"
 
     -- Base note values
     noteBase :: ParserT String Identity Int

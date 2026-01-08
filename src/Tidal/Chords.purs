@@ -5,6 +5,10 @@
 module Tidal.Chords
   ( lookupChord
   , chordNames
+  -- * Modifiers
+  , Modifier(..)
+  , applyModifier
+  , applyModifiers
   -- * Basic triads
   , major
   , minor
@@ -38,8 +42,68 @@ module Tidal.Chords
 import Prelude
 
 import Data.Array as Array
-import Data.Maybe (Maybe(..))
+import Data.Foldable (foldl)
+import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Tuple (Tuple(..))
+
+-------------------------------------------------------------------------------
+-- Chord modifiers
+-------------------------------------------------------------------------------
+
+-- | Chord voicing modifiers
+-- |
+-- | These modify how chord notes are arranged:
+-- | - `Invert` - Move the bass note up an octave
+-- | - `Range n` - Take n notes from octave-extended chord
+-- | - `Drop n` - Drop the nth voice from top down an octave
+-- | - `Open` - Open voicing (spread notes across octaves)
+data Modifier
+  = Invert
+  | Range Int
+  | Drop Int
+  | Open
+
+derive instance eqModifier :: Eq Modifier
+
+instance showModifier :: Show Modifier where
+  show Invert = "Invert"
+  show (Range n) = "Range " <> show n
+  show (Drop n) = "Drop " <> show n
+  show Open = "Open"
+
+-- | Apply a single modifier to chord intervals
+applyModifier :: Modifier -> Array Int -> Array Int
+applyModifier Invert notes = case Array.uncons notes of
+  Nothing -> notes
+  Just { head: d, tail: ds } -> ds <> [d + 12]
+applyModifier (Range i) notes =
+  -- Take i notes from chord extended across octaves
+  let octaves = Array.concat $ map (\oct -> map (_ + oct) notes) [0, 12, 24, 36, 48]
+  in Array.take i octaves
+applyModifier (Drop i) notes =
+  -- Drop the ith voice from top down an octave
+  let len = Array.length notes
+      s = len - i
+  in if len < i then notes
+     else case Array.index notes s of
+       Nothing -> notes
+       Just dropped ->
+         let xs = Array.take s notes
+             ys = Array.drop (s + 1) notes
+         in Array.cons (dropped - 12) (xs <> ys)
+applyModifier Open notes =
+  -- Open voicing: move middle voice(s) down an octave
+  if Array.length notes <= 2 then notes
+  else
+    let bass = fromMaybe 0 (Array.index notes 0)
+        third = fromMaybe 0 (Array.index notes 1)
+        fifth = fromMaybe 0 (Array.index notes 2)
+        rest = Array.drop 3 notes
+    in [bass - 12, fifth - 12, third] <> rest
+
+-- | Apply multiple modifiers in sequence
+applyModifiers :: Array Modifier -> Array Int -> Array Int
+applyModifiers mods notes = foldl (flip applyModifier) notes mods
 
 -------------------------------------------------------------------------------
 -- Chord lookup

@@ -39,6 +39,8 @@ module Tidal.Pattern.Types
   , Value(..)
   , Note(..)
   , mkNote
+  , class TidalEnum
+  , enumRange
   , ValueMap
   , ControlPattern
     -- * Utilities
@@ -49,14 +51,14 @@ module Tidal.Pattern.Types
 
 import Prelude
 
-import Data.Array (concatMap, filter) as Array
+import Data.Array (concatMap, filter, range, reverse) as Array
 import Data.Int as Int
 import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Newtype (class Newtype)
+import Data.Rational (Rational, fromInt, toNumber)
 import Data.Rational (fromInt, toNumber) as Rational
-import Data.Rational (Rational)
 import Tidal.Core.Types (Time, SourceSpan, emptySpan, Seed, ControlName)
 
 -------------------------------------------------------------------------------
@@ -210,6 +212,44 @@ instance showNote :: Show Note where
 -- | Create a note from MIDI number
 mkNote :: Int -> Note
 mkNote n = Note { note: n, bend: 0.0 }
+
+-------------------------------------------------------------------------------
+-- TidalEnum: Enumeration for range operator (..)
+-------------------------------------------------------------------------------
+
+-- | Type class for types that can be enumerated in ranges
+-- |
+-- | Used by the `..` operator, e.g., `0 .. 7` or `c4 .. c5`
+class TidalEnum a where
+  enumRange :: a -> a -> Array a
+
+-- | Int enumeration: 0 .. 5 = [0, 1, 2, 3, 4, 5]
+instance tidalEnumInt :: TidalEnum Int where
+  enumRange from to
+    | from <= to = Array.range from to
+    | otherwise = Array.reverse (Array.range to from)
+
+-- | Note enumeration: chromatic scale between notes
+instance tidalEnumNote :: TidalEnum Note where
+  enumRange (Note { note: from }) (Note { note: to })
+    | from <= to = map mkNote (Array.range from to)
+    | otherwise = map mkNote (Array.reverse (Array.range to from))
+
+-- | Number enumeration: step by 1.0
+instance tidalEnumNumber :: TidalEnum Number where
+  enumRange from to
+    | from <= to = map Int.toNumber (Array.range (Int.floor from) (Int.floor to))
+    | otherwise = Array.reverse $ map Int.toNumber (Array.range (Int.floor to) (Int.floor from))
+
+-- | String: no meaningful enumeration
+instance tidalEnumString :: TidalEnum String where
+  enumRange from _ = [from]  -- Just return the start value
+
+-- | Rational: step by 1
+instance tidalEnumRational :: TidalEnum Rational where
+  enumRange from to = map fromInt (enumRange (rationalToInt from) (rationalToInt to))
+    where
+      rationalToInt r = Int.floor (toNumber r)
 
 -- | Primitive values for control patterns
 -- |

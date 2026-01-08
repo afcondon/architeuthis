@@ -17,9 +17,10 @@ import Effect.Console (log)
 import Tidal.AST.Types (TPat)
 import Tidal.Eval.Interpret (tpatToPattern)
 import Tidal.Parse.Parser (parseTPat, parseChord)
-import Tidal.Pattern.Core (cat, fast, fastAppend, fastCat, queryArc, rev, rotL, rotR, slow, stack)
+import Tidal.Pattern.Core (cat, compress, every, fast, fastAppend, fastCat, iter, iter', queryArc, rev, rotL, rotR, segment, slow, stack, zoom)
 import Data.Newtype (unwrap)
 import Tidal.Pattern.Types (Arc(..), Event(..), Note, Pattern, arcStart, arcStop, mkNote)
+import Tidal.Scales as Scales
 
 -------------------------------------------------------------------------------
 -- Test runner
@@ -60,7 +61,28 @@ runPatternTests = do
   log ""
   log "--- Silence ---"
   testPattern "bd ~ sn"
-    "with rest"
+    "tilde rest"
+    2
+    [ { sample: "bd", start: 0.0, stop: 0.333 }
+    , { sample: "sn", start: 0.666, stop: 1.0 }
+    ]
+
+  testPattern "bd - sn"
+    "dash rest"
+    2
+    [ { sample: "bd", start: 0.0, stop: 0.333 }
+    , { sample: "sn", start: 0.666, stop: 1.0 }
+    ]
+
+  testPattern "bd - - sn"
+    "multiple dash rests"
+    2
+    [ { sample: "bd", start: 0.0, stop: 0.25 }
+    , { sample: "sn", start: 0.75, stop: 1.0 }
+    ]
+
+  testPattern "[bd - sn]"
+    "dash in group"
     2
     [ { sample: "bd", start: 0.0, stop: 0.333 }
     , { sample: "sn", start: 0.666, stop: 1.0 }
@@ -81,6 +103,40 @@ runPatternTests = do
     [ { sample: "bd", start: 0.0, stop: 0.5 }
     , { sample: "sn", start: 0.5, stop: 1.0 }
     , { sample: "hh", start: 0.0, stop: 1.0 }
+    ]
+
+  log ""
+  log "--- Dot Grouping ---"
+
+  -- Dot creates equal-time groups: bd sd . hh hh hh = [bd sd] [hh hh hh]
+  -- Each group gets 0.5 of the cycle
+  testPattern "bd sd . hh hh hh"
+    "dot groups equal time"
+    5
+    [ { sample: "bd", start: 0.0, stop: 0.25 }    -- first half: bd sd
+    , { sample: "sd", start: 0.25, stop: 0.5 }
+    , { sample: "hh", start: 0.5, stop: 0.666 }   -- second half: hh hh hh
+    , { sample: "hh", start: 0.666, stop: 0.833 }
+    , { sample: "hh", start: 0.833, stop: 1.0 }
+    ]
+
+  -- Three dot groups
+  testPattern "bd . sn . hh"
+    "three dot groups"
+    3
+    [ { sample: "bd", start: 0.0, stop: 0.333 }
+    , { sample: "sn", start: 0.333, stop: 0.666 }
+    , { sample: "hh", start: 0.666, stop: 1.0 }
+    ]
+
+  -- Dot with multiple items per group
+  testPattern "bd bd . sn sn"
+    "two items per dot group"
+    4
+    [ { sample: "bd", start: 0.0, stop: 0.25 }
+    , { sample: "bd", start: 0.25, stop: 0.5 }
+    , { sample: "sn", start: 0.5, stop: 0.75 }
+    , { sample: "sn", start: 0.75, stop: 1.0 }
     ]
 
   log ""
@@ -305,6 +361,50 @@ runCombinatorTests = do
     2
     [ { sample: "bd", start: 0.0, stop: 0.5 }
     , { sample: "sn", start: 0.5, stop: 1.0 }
+    ]
+
+  log ""
+  log "--- Range Operator (..) ---"
+
+  -- Note ranges - chromatic scale
+  testNotePattern "c5 .. e5"
+    "chromatic range c5 to e5"
+    5
+    [ { note: 0, start: 0.0, stop: 0.2 }   -- c5
+    , { note: 1, start: 0.2, stop: 0.4 }   -- cs5
+    , { note: 2, start: 0.4, stop: 0.6 }   -- d5
+    , { note: 3, start: 0.6, stop: 0.8 }   -- ds5
+    , { note: 4, start: 0.8, stop: 1.0 }   -- e5
+    ]
+
+  -- Descending range
+  testNotePattern "e5 .. c5"
+    "descending chromatic range"
+    5
+    [ { note: 4, start: 0.0, stop: 0.2 }   -- e5
+    , { note: 3, start: 0.2, stop: 0.4 }   -- ds5
+    , { note: 2, start: 0.4, stop: 0.6 }   -- d5
+    , { note: 1, start: 0.6, stop: 0.8 }   -- cs5
+    , { note: 0, start: 0.8, stop: 1.0 }   -- c5
+    ]
+
+  -- Octave range
+  testNotePattern "c4 .. c5"
+    "full octave range"
+    13
+    [ { note: -12, start: 0.0, stop: 0.076 }   -- c4
+    , { note: -11, start: 0.076, stop: 0.153 }
+    , { note: -10, start: 0.153, stop: 0.23 }
+    , { note: -9, start: 0.23, stop: 0.307 }
+    , { note: -8, start: 0.307, stop: 0.384 }
+    , { note: -7, start: 0.384, stop: 0.461 }
+    , { note: -6, start: 0.461, stop: 0.538 }
+    , { note: -5, start: 0.538, stop: 0.615 }
+    , { note: -4, start: 0.615, stop: 0.692 }
+    , { note: -3, start: 0.692, stop: 0.769 }
+    , { note: -2, start: 0.769, stop: 0.846 }
+    , { note: -1, start: 0.846, stop: 0.923 }
+    , { note: 0, start: 0.923, stop: 1.0 }     -- c5
     ]
 
 -------------------------------------------------------------------------------
@@ -598,6 +698,15 @@ runToussaintTests = do
     , { note: 24, start: 0.666, stop: 1.0 }
     ]
 
+  -- Important: verify dash-digit is negative, not silence
+  testNotePattern "-12 0 12"
+    "negative MIDI (dash-digit not silence)"
+    3
+    [ { note: -12, start: 0.0, stop: 0.333 }
+    , { note: 0, start: 0.333, stop: 0.666 }
+    , { note: 12, start: 0.666, stop: 1.0 }
+    ]
+
   log ""
   log "--- Note Pattern Modifiers ---"
 
@@ -846,6 +955,207 @@ runToussaintTests = do
     , { note: 4, start: 0.75, stop: 1.0 }
     , { note: 7, start: 0.75, stop: 1.0 }
     , { note: 11, start: 0.75, stop: 1.0 }
+    ]
+
+  log ""
+  log "--- Chord Modifiers ---"
+
+  -- Inversion: move bass note up an octave
+  -- C major = [0, 4, 7], inverted = [4, 7, 12]
+  testChord "c'major'i"
+    "C major first inversion"
+    3
+    [ { note: 4, start: 0.0, stop: 1.0 }   -- E (was bass)
+    , { note: 7, start: 0.0, stop: 1.0 }   -- G
+    , { note: 12, start: 0.0, stop: 1.0 }  -- C (moved up)
+    ]
+
+  -- Double inversion: ii or i2
+  -- C major inverted twice = [7, 12, 16]
+  testChord "c'major'ii"
+    "C major second inversion (ii)"
+    3
+    [ { note: 7, start: 0.0, stop: 1.0 }   -- G (was third)
+    , { note: 12, start: 0.0, stop: 1.0 }  -- C
+    , { note: 16, start: 0.0, stop: 1.0 }  -- E (moved up)
+    ]
+
+  testChord "c'major'i2"
+    "C major second inversion (i2)"
+    3
+    [ { note: 7, start: 0.0, stop: 1.0 }   -- G
+    , { note: 12, start: 0.0, stop: 1.0 }  -- C
+    , { note: 16, start: 0.0, stop: 1.0 }  -- E
+    ]
+
+  -- Range: extend chord across octaves
+  -- C major = [0, 4, 7], range 5 = [0, 4, 7, 12, 16]
+  testChord "c'major'5"
+    "C major range 5 (5 notes across octaves)"
+    5
+    [ { note: 0, start: 0.0, stop: 1.0 }   -- C
+    , { note: 4, start: 0.0, stop: 1.0 }   -- E
+    , { note: 7, start: 0.0, stop: 1.0 }   -- G
+    , { note: 12, start: 0.0, stop: 1.0 }  -- C (octave up)
+    , { note: 16, start: 0.0, stop: 1.0 }  -- E (octave up)
+    ]
+
+  -- Open voicing: spread notes across octaves
+  -- C major = [0, 4, 7], open = [-12, -5, 4]
+  testChord "c'major'o"
+    "C major open voicing"
+    3
+    [ { note: -12, start: 0.0, stop: 1.0 }  -- C (octave down)
+    , { note: -5, start: 0.0, stop: 1.0 }   -- G (octave down)
+    , { note: 4, start: 0.0, stop: 1.0 }    -- E (in place)
+    ]
+
+  -- Drop 1: drop the top note down an octave
+  -- C major = [0, 4, 7], drop1 = [-5, 0, 4]
+  testChord "c'major'd1"
+    "C major drop 1 voicing"
+    3
+    [ { note: -5, start: 0.0, stop: 1.0 }   -- G (dropped)
+    , { note: 0, start: 0.0, stop: 1.0 }    -- C
+    , { note: 4, start: 0.0, stop: 1.0 }    -- E
+    ]
+
+  -- Combined: inversion + range
+  testChord "c'major'i'5"
+    "C major inverted then range 5"
+    5
+    [ { note: 4, start: 0.0, stop: 1.0 }   -- E (inverted bass)
+    , { note: 7, start: 0.0, stop: 1.0 }   -- G
+    , { note: 12, start: 0.0, stop: 1.0 }  -- C
+    , { note: 16, start: 0.0, stop: 1.0 }  -- E (octave up)
+    , { note: 19, start: 0.0, stop: 1.0 }  -- G (octave up)
+    ]
+
+  log ""
+  log "=========================================="
+  log "  Scale Tests"
+  log "=========================================="
+
+  log ""
+  log "--- Scale Definitions ---"
+
+  -- Test major scale intervals
+  testScaleLookup "major" "Major scale lookup" [0.0, 2.0, 4.0, 5.0, 7.0, 9.0, 11.0]
+  testScaleLookup "minor" "Minor scale lookup" [0.0, 2.0, 3.0, 5.0, 7.0, 8.0, 10.0]
+  testScaleLookup "dorian" "Dorian mode lookup" [0.0, 2.0, 3.0, 5.0, 7.0, 9.0, 10.0]
+  testScaleLookup "minPent" "Minor pentatonic lookup" [0.0, 3.0, 5.0, 7.0, 10.0]
+  testScaleLookup "chromatic" "Chromatic scale lookup" [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0]
+
+  log ""
+  log "--- Scale Degree Conversion ---"
+
+  -- Test noteInScale function
+  testNoteInScale Scales.major 0 0.0 "Major degree 0 = root"
+  testNoteInScale Scales.major 2 4.0 "Major degree 2 = major 3rd"
+  testNoteInScale Scales.major 4 7.0 "Major degree 4 = perfect 5th"
+  testNoteInScale Scales.major 7 12.0 "Major degree 7 = octave (wraps)"
+  testNoteInScale Scales.major 14 24.0 "Major degree 14 = 2 octaves (wraps)"
+  testNoteInScale Scales.minPent 5 12.0 "MinPent degree 5 = octave (wraps)"
+
+  log ""
+  log "=========================================="
+  log "  Transformation Tests"
+  log "=========================================="
+
+  log ""
+  log "--- Segment (Discretize) ---"
+
+  -- segment 4 of "bd sn" should give 4 events: bd, bd, sn, sn
+  testPattern "bd sn"
+    "Pattern without segment"
+    2
+    [ { sample: "bd", start: 0.0, stop: 0.5 }
+    , { sample: "sn", start: 0.5, stop: 1.0 }
+    ]
+
+  -- Test segment function directly
+  testSegment "bd sn"
+    "segment 4 of bd sn"
+    4
+    4
+    [ { sample: "bd", start: 0.0, stop: 0.25 }
+    , { sample: "bd", start: 0.25, stop: 0.5 }
+    , { sample: "sn", start: 0.5, stop: 0.75 }
+    , { sample: "sn", start: 0.75, stop: 1.0 }
+    ]
+
+  log ""
+  log "--- Compress ---"
+
+  -- compress (0, 0.5) of "bd sn" puts both events in first half
+  testCompress "bd sn"
+    "compress 0-0.5 of bd sn"
+    (fromInt 0) (one / fromInt 2)
+    2
+    [ { sample: "bd", start: 0.0, stop: 0.25 }
+    , { sample: "sn", start: 0.25, stop: 0.5 }
+    ]
+
+  log ""
+  log "--- Zoom ---"
+
+  -- zoom (0.5, 1) of "bd sn" takes only second half (sn) and stretches to full cycle
+  testZoom "bd sn"
+    "zoom 0.5-1 of bd sn (takes sn only)"
+    (one / fromInt 2) one
+    1
+    [ { sample: "sn", start: 0.0, stop: 1.0 }
+    ]
+
+  log ""
+  log "--- Every ---"
+
+  -- every 2 rev of "bd sn" - first cycle is reversed
+  testEvery "bd sn"
+    "every 2 rev cycle 0 (should reverse)"
+    2
+    (fromInt 0) one
+    2
+    [ { sample: "sn", start: 0.0, stop: 0.5 }   -- reversed
+    , { sample: "bd", start: 0.5, stop: 1.0 }
+    ]
+
+  -- every 2 rev cycle 1 should NOT reverse
+  testEvery "bd sn"
+    "every 2 rev cycle 1 (should not reverse)"
+    2
+    one (fromInt 2)
+    2
+    [ { sample: "bd", start: 1.0, stop: 1.5 }   -- not reversed
+    , { sample: "sn", start: 1.5, stop: 2.0 }
+    ]
+
+  log ""
+  log "--- Iter ---"
+
+  -- iter 2 of "bd sn hh cp": cycle 0 starts at 0, cycle 1 starts at 0.5 (rotated)
+  -- Cycle 0: bd sn hh cp (no rotation)
+  testIter "bd sn hh cp"
+    "iter 2 cycle 0 (no rotation)"
+    2
+    (fromInt 0) one
+    4
+    [ { sample: "bd", start: 0.0, stop: 0.25 }
+    , { sample: "sn", start: 0.25, stop: 0.5 }
+    , { sample: "hh", start: 0.5, stop: 0.75 }
+    , { sample: "cp", start: 0.75, stop: 1.0 }
+    ]
+
+  -- iter 2 cycle 1: rotated by 1/2 so starts with hh cp bd sn
+  testIter "bd sn hh cp"
+    "iter 2 cycle 1 (rotated by 1/2)"
+    2
+    one (fromInt 2)
+    4
+    [ { sample: "hh", start: 1.0, stop: 1.25 }
+    , { sample: "cp", start: 1.25, stop: 1.5 }
+    , { sample: "bd", start: 1.5, stop: 1.75 }
+    , { sample: "sn", start: 1.75, stop: 2.0 }
     ]
 
   log ""
@@ -1157,3 +1467,157 @@ findChordMismatches actuals expecteds =
           Just $ "Note " <> show idx <> ": stop " <> show actualStop <> " ≠ " <> show expected.stop
         else
           Nothing
+
+-------------------------------------------------------------------------------
+-- Scale test helpers
+-------------------------------------------------------------------------------
+
+-- | Test scale lookup returns expected intervals
+testScaleLookup :: String -> String -> Array Number -> Effect Unit
+testScaleLookup scaleName desc expected = do
+  case Scales.lookupScale scaleName of
+    Nothing -> log $ "  ✗ " <> desc <> ": scale not found"
+    Just actual ->
+      if actual == expected then
+        log $ "  ✓ " <> desc
+      else
+        log $ "  ✗ " <> desc <> ": expected " <> show expected <> ", got " <> show actual
+
+-- | Test noteInScale returns expected semitone offset
+testNoteInScale :: Array Number -> Int -> Number -> String -> Effect Unit
+testNoteInScale scale degree expected desc = do
+  let actual = Scales.noteInScale scale degree
+  let tolerance = 0.001
+  if abs (actual - expected) < tolerance then
+    log $ "  ✓ " <> desc
+  else
+    log $ "  ✗ " <> desc <> ": expected " <> show expected <> ", got " <> show actual
+
+-------------------------------------------------------------------------------
+-- Transformation test helpers
+-------------------------------------------------------------------------------
+
+-- | Test segment function
+testSegment :: String -> String -> Int -> Int -> Array ExpectedEvent -> Effect Unit
+testSegment input desc n expectedCount expectedEvents = do
+  let result = parseTPat input
+  case result of
+    Left err -> log $ "  ✗ " <> desc <> ": parse error - " <> show err
+    Right ast -> do
+      let basePat = tpatToPattern ast
+      let pat = segment n basePat
+      let events = queryArc pat (fromInt 0) (fromInt 1)
+      let actualCount = Array.length events
+
+      if actualCount /= expectedCount then do
+        log $ "  ✗ " <> desc
+        log $ "    Expected " <> show expectedCount <> " events, got " <> show actualCount
+        log $ "    Events: " <> formatEvents events
+      else do
+        let mismatches = findMismatches events expectedEvents
+        if Array.length mismatches > 0 then do
+          log $ "  ✗ " <> desc
+          for_ mismatches \m -> log $ "    " <> m
+          log $ "    Got: " <> formatEvents events
+        else
+          log $ "  ✓ " <> desc
+
+-- | Test compress function
+testCompress :: String -> String -> Rational -> Rational -> Int -> Array ExpectedEvent -> Effect Unit
+testCompress input desc s e expectedCount expectedEvents = do
+  let result = parseTPat input
+  case result of
+    Left err -> log $ "  ✗ " <> desc <> ": parse error - " <> show err
+    Right ast -> do
+      let basePat = tpatToPattern ast
+      let pat = compress s e basePat
+      let events = queryArc pat (fromInt 0) (fromInt 1)
+      let actualCount = Array.length events
+
+      if actualCount /= expectedCount then do
+        log $ "  ✗ " <> desc
+        log $ "    Expected " <> show expectedCount <> " events, got " <> show actualCount
+        log $ "    Events: " <> formatEvents events
+      else do
+        let mismatches = findMismatches events expectedEvents
+        if Array.length mismatches > 0 then do
+          log $ "  ✗ " <> desc
+          for_ mismatches \m -> log $ "    " <> m
+          log $ "    Got: " <> formatEvents events
+        else
+          log $ "  ✓ " <> desc
+
+-- | Test zoom function
+testZoom :: String -> String -> Rational -> Rational -> Int -> Array ExpectedEvent -> Effect Unit
+testZoom input desc s e expectedCount expectedEvents = do
+  let result = parseTPat input
+  case result of
+    Left err -> log $ "  ✗ " <> desc <> ": parse error - " <> show err
+    Right ast -> do
+      let basePat = tpatToPattern ast
+      let pat = zoom s e basePat
+      let events = queryArc pat (fromInt 0) (fromInt 1)
+      let actualCount = Array.length events
+
+      if actualCount /= expectedCount then do
+        log $ "  ✗ " <> desc
+        log $ "    Expected " <> show expectedCount <> " events, got " <> show actualCount
+        log $ "    Events: " <> formatEvents events
+      else do
+        let mismatches = findMismatches events expectedEvents
+        if Array.length mismatches > 0 then do
+          log $ "  ✗ " <> desc
+          for_ mismatches \m -> log $ "    " <> m
+          log $ "    Got: " <> formatEvents events
+        else
+          log $ "  ✓ " <> desc
+
+-- | Test every function
+testEvery :: String -> String -> Int -> Rational -> Rational -> Int -> Array ExpectedEvent -> Effect Unit
+testEvery input desc n startTime stopTime expectedCount expectedEvents = do
+  let result = parseTPat input
+  case result of
+    Left err -> log $ "  ✗ " <> desc <> ": parse error - " <> show err
+    Right ast -> do
+      let basePat = tpatToPattern ast
+      let pat = every n rev basePat
+      let events = queryArc pat startTime stopTime
+      let actualCount = Array.length events
+
+      if actualCount /= expectedCount then do
+        log $ "  ✗ " <> desc
+        log $ "    Expected " <> show expectedCount <> " events, got " <> show actualCount
+        log $ "    Events: " <> formatEvents events
+      else do
+        let mismatches = findMismatches events expectedEvents
+        if Array.length mismatches > 0 then do
+          log $ "  ✗ " <> desc
+          for_ mismatches \m -> log $ "    " <> m
+          log $ "    Got: " <> formatEvents events
+        else
+          log $ "  ✓ " <> desc
+
+-- | Test iter function
+testIter :: String -> String -> Int -> Rational -> Rational -> Int -> Array ExpectedEvent -> Effect Unit
+testIter input desc n startTime stopTime expectedCount expectedEvents = do
+  let result = parseTPat input
+  case result of
+    Left err -> log $ "  ✗ " <> desc <> ": parse error - " <> show err
+    Right ast -> do
+      let basePat = tpatToPattern ast
+      let pat = iter n basePat
+      let events = queryArc pat startTime stopTime
+      let actualCount = Array.length events
+
+      if actualCount /= expectedCount then do
+        log $ "  ✗ " <> desc
+        log $ "    Expected " <> show expectedCount <> " events, got " <> show actualCount
+        log $ "    Events: " <> formatEvents events
+      else do
+        let mismatches = findMismatches events expectedEvents
+        if Array.length mismatches > 0 then do
+          log $ "  ✗ " <> desc
+          for_ mismatches \m -> log $ "    " <> m
+          log $ "    Got: " <> formatEvents events
+        else
+          log $ "  ✓ " <> desc

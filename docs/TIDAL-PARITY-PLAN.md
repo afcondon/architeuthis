@@ -251,20 +251,20 @@ Helper functions for pattern manipulation.
 
 | Phase | Description | Status | Tests Added |
 |-------|-------------|--------|-------------|
-| 1.1 | Range operator | Not started | 0 |
-| 1.2 | Ratio shorthand | Not started | 0 |
-| 1.3 | Dot grouping | Not started | 0 |
-| 1.4 | Dash silence | Not started | 0 |
-| 1.5 | Chord modifiers | Not started | 0 |
-| 2.x | Scales system | Not started | 0 |
-| 3.x | Transformations | Not started | 0 |
-| 4.x | Stepwise ops | Not started | 0 |
+| 1.1 | Range operator | ✓ Complete | +3 |
+| 1.2 | Ratio shorthand | ✓ Complete | 0 |
+| 1.3 | Dot grouping | ✓ Complete | +3 |
+| 1.4 | Dash silence | ✓ Complete | +4 |
+| 1.5 | Chord modifiers | ✓ Complete | +7 |
+| 2.x | Scales system | ✓ Complete | +11 |
+| 3.x | Transformations | ✓ Complete | +6 |
+| 4.x | Stepwise ops | ✓ Partial | +2 |
 | 5.x | Control params | Not started | 0 |
 | 6.x | Pattern laws | Not started | 0 |
 | 7.x | Advanced parser | Not started | 0 |
 | 8.x | Utilities | Not started | 0 |
 
-**Total**: 122 tests (baseline)
+**Total**: 158 tests (baseline 122 + 36 new)
 
 ---
 

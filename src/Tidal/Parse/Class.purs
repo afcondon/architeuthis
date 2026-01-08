@@ -38,7 +38,7 @@ import Text.Parsing.Parser.Combinators as PC
 import Text.Parsing.Parser.String (char, satisfy)
 import Text.Parsing.Parser.Token (alphaNum, digit, letter)
 import Tidal.AST.Types (Located(..), TPat(..), SourceSpan)
-import Tidal.Chords (lookupChord)
+import Tidal.Chords (Modifier(..), lookupChord, applyModifiers)
 import Tidal.Pattern.Types (Note, mkNote)
 import Tidal.Parse.State (ParseState, currentPos, mkSourceSpan)
 
@@ -112,10 +112,12 @@ instance AtomParseable String where
   patternParser = TPat_Atom <$> located stringAtom
 
 -- | Core string atom parser
+-- | Must start with alphanumeric, then can contain :.-_
 stringAtom :: TidalParser String
 stringAtom = do
-  chars <- liftP $ Array.some validChar
-  pure $ SCU.fromCharArray chars
+  first <- liftP alphaNum  -- Must start with letter or digit
+  rest <- liftP $ Array.many validChar
+  pure $ SCU.fromCharArray (Array.cons first rest)
   where
     validChar = alphaNum <|> satisfy \c ->
       c == ':' || c == '.' || c == '-' || c == '_'
@@ -176,9 +178,28 @@ instance AtomParseable Rational where
 
 -- | Core rational atom parser
 rationalAtom :: TidalParser Rational
-rationalAtom = shortcut <|> ratio <|> decimal
+rationalAtom = numberedShortcut <|> shortcut <|> ratio <|> decimal
   where
-    -- Duration shortcuts (like in Tidal)
+    -- Number with duration suffix: 3h (3 half notes), 1.5q (1.5 quarter notes)
+    numberedShortcut = liftP $ PC.try do
+      sign <- (char '-' $> (-1.0)) <|> pure 1.0
+      n <- number
+      c <- satisfy \x -> x == 'w' || x == 'h' || x == 'q' ||
+                         x == 'e' || x == 's' || x == 't' ||
+                         x == 'f' || x == 'x'
+      let base = case c of
+            'w' -> 1.0       -- whole
+            'h' -> 0.5       -- half
+            'q' -> 0.25      -- quarter
+            'e' -> 0.125     -- eighth
+            's' -> 0.0625    -- sixteenth
+            't' -> 0.03125   -- 32nd
+            'f' -> 0.015625  -- 64th
+            _   -> 0.0078125 -- 128th (x)
+          result = sign * n * base * 1000.0
+      pure $ Int.round result % 1000
+
+    -- Duration shortcuts (like in Tidal) - single letter
     shortcut = do
       c <- liftP $ satisfy \x -> x == 'w' || x == 'h' || x == 'q' ||
                                  x == 'e' || x == 's' || x == 't' ||
@@ -236,6 +257,7 @@ instance AtomParseable Note where
       tryT = mapStateT PC.try
 
       -- Parse chord: c'major, e'minor, 'major
+      -- With optional modifiers: c'major'i, c'major'o, c'major'5, c'major'd1
       chordParser :: TidalParser (TPat Note)
       chordParser = do
         Tuple span (Tuple root intervals) <- spanned do
@@ -244,7 +266,10 @@ instance AtomParseable Note where
           chordName <- liftP $ Array.some (alphaNum <|> satisfy \c -> c == '7' || c == '9')
           let name = SCU.fromCharArray chordName
           case lookupChord name of
-            Just ints -> pure $ Tuple root ints
+            Just ints -> do
+              -- Parse optional modifiers (each prefixed with ')
+              mods <- liftP $ Array.many parseModifierGroup
+              pure $ Tuple root (applyModifiers (Array.concat mods) ints)
             Nothing -> liftP $ P.fail $ "unknown chord: " <> name
         let notes = map (\interval -> noteAtomPat span (root + interval)) intervals
         case Array.length notes of
@@ -253,6 +278,53 @@ instance AtomParseable Note where
                  Just n -> pure n
                  Nothing -> liftP $ P.fail "empty chord"
           _ -> pure $ TPat_Stack span notes
+
+      -- Parse a modifier group: 'i, 'ii, 'i2, 'o, 'd1, '5
+      parseModifierGroup :: ParserT String Identity (Array Modifier)
+      parseModifierGroup = do
+        _ <- char '\''
+        parseInvertMany <|> parseInvertN <|> parseOpen <|> parseDrop <|> parseRange
+
+      -- Parse multiple 'i' characters: 'ii = two inversions
+      parseInvertMany :: ParserT String Identity (Array Modifier)
+      parseInvertMany = PC.try do
+        is <- Array.some (char 'i')
+        PC.notFollowedBy digit  -- Not 'i2' form
+        pure $ Array.replicate (Array.length is) Invert
+
+      -- Parse 'i2' form: 'i followed by a number
+      parseInvertN :: ParserT String Identity (Array Modifier)
+      parseInvertN = PC.try do
+        _ <- char 'i'
+        n <- pInteger
+        pure $ Array.replicate n Invert
+
+      -- Parse 'o' for open voicing
+      parseOpen :: ParserT String Identity (Array Modifier)
+      parseOpen = do
+        os <- Array.some (char 'o')
+        pure $ Array.replicate (Array.length os) Open
+
+      -- Parse 'd1', 'd2' for drop voicing
+      parseDrop :: ParserT String Identity (Array Modifier)
+      parseDrop = do
+        _ <- char 'd'
+        n <- pInteger
+        pure [Drop n]
+
+      -- Parse a number alone as range
+      parseRange :: ParserT String Identity (Array Modifier)
+      parseRange = do
+        n <- pInteger
+        pure [Range n]
+
+      -- Parse a positive integer
+      pInteger :: ParserT String Identity Int
+      pInteger = do
+        digits <- Array.some digit
+        case Int.fromString (SCU.fromCharArray digits) of
+          Just n -> pure n
+          Nothing -> P.fail "expected integer"
 
       -- Create a single note atom pattern
       noteAtomPat :: SourceSpan -> Int -> TPat Note

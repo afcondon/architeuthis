@@ -39,6 +39,8 @@ import Tidal.Pattern.Types
   , pattern
   , query
   , silence
+  , class TidalEnum
+  , enumRange
   )
 
 -------------------------------------------------------------------------------
@@ -49,7 +51,9 @@ import Tidal.Pattern.Types
 -- |
 -- | This is the main entry point for pattern evaluation.
 -- | The resulting Pattern can be queried for events in any time arc.
-tpatToPattern :: forall a. TPat a -> Pattern a
+-- |
+-- | Requires TidalEnum for range operator (..) support.
+tpatToPattern :: forall a. TidalEnum a => TPat a -> Pattern a
 tpatToPattern = go
   where
     go :: TPat a -> Pattern a
@@ -67,7 +71,7 @@ tpatToPattern = go
       TPat_DegradeBy _ seed prob innerPat -> evalDegradeBy seed prob innerPat
       TPat_CycleChoose _ seed pats -> evalCycleChoose seed pats
       TPat_Euclid _ nPat kPat sPat innerPat -> evalEuclid nPat kPat sPat innerPat
-      TPat_EnumFromTo _ fromPat _ -> go fromPat  -- TODO: implement enumeration
+      TPat_EnumFromTo span fromPat toPat -> evalEnumFromTo span fromPat toPat
 
     -- Atom evaluation
     evalAtom :: Located a -> Pattern a
@@ -145,8 +149,27 @@ tpatToPattern = go
         toPat b = if b then go innerPat else silence
       in fastCat (map toPat rotated)
 
+    -- Enumeration evaluation: from .. to
+    evalEnumFromTo :: SourceSpan -> TPat a -> TPat a -> Pattern a
+    evalEnumFromTo span fromPat toPat =
+      case getConstantValue fromPat, getConstantValue toPat of
+        Just from, Just to ->
+          let values = enumRange from to
+              atoms = map (atomWith span) values
+          in fastCat atoms
+        _, _ -> go fromPat  -- Fallback if not constant
+
+    -- Extract constant value from atom pattern
+    getConstantValue :: TPat a -> Maybe a
+    getConstantValue = case _ of
+      TPat_Atom (Located _ v) -> Just v
+      TPat_Seq _ pats -> case Array.head pats of
+        Just p -> getConstantValue p
+        Nothing -> Nothing
+      _ -> Nothing
+
 -- | Evaluate a TPat to a Pattern (alias for tpatToPattern)
-evalTPat :: forall a. TPat a -> Pattern a
+evalTPat :: forall a. TidalEnum a => TPat a -> Pattern a
 evalTPat = tpatToPattern
 
 -------------------------------------------------------------------------------

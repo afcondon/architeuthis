@@ -22,6 +22,14 @@ module Tidal.Pattern.Core
   , overlay
   , append
   , fastAppend
+    -- * Transformations
+  , segment
+  , compress
+  , zoom
+  , every
+  , whenMod
+  , iter
+  , iter'
     -- * Filtering and selection
   , filterEvents
   , filterDigital
@@ -68,6 +76,7 @@ import Tidal.Pattern.Types
   ) as ArcExports
 import Tidal.Pattern.Types
   ( Arc(..)
+  , Context
   , Event(..)
   , Pattern
   , State(..)
@@ -287,6 +296,234 @@ append a b = cat [a, b]
 -- | Fast append - both patterns in one cycle
 fastAppend :: forall a. Pattern a -> Pattern a -> Pattern a
 fastAppend a b = fastCat [a, b]
+
+-------------------------------------------------------------------------------
+-- Transformations
+-------------------------------------------------------------------------------
+
+-- | Segment a pattern into n equal events per cycle
+-- |
+-- | `segment 4 pat` discretizes the pattern into 4 events per cycle,
+-- | sampling the pattern at each step.
+segment :: forall a. Int -> Pattern a -> Pattern a
+segment n pat
+  | n <= 0 = silence
+  | otherwise = pattern \(State st) ->
+      let
+        rate = fromInt n
+        cycleArcs = splitArcByCycles st.arc
+
+        processOneCycle :: Arc -> Array (Event a)
+        processOneCycle cycleArc =
+          let
+            cyc = sam (arcStart cycleArc)
+            -- Generate n sample points
+            indices = Array.range 0 (n - 1)
+            sampleAt i =
+              let
+                t = cyc + (fromInt i / rate)
+                tNext = cyc + (fromInt (i + 1) / rate)
+                sampleArc = Arc { start: t, stop: tNext }
+                -- Only include if it overlaps our query
+              in if arcOverlaps sampleArc cycleArc
+                 then
+                   -- Query at this instant
+                   case Array.head (query pat (State { arc: Arc { start: t, stop: t + one / (rate * fromInt 100) }, controls: st.controls })) of
+                     Nothing -> []
+                     Just evt -> [ Digital { context: getContext evt, whole: sampleArc, part: sectArc sampleArc cycleArc, value: eventValue evt } ]
+                 else []
+          in Array.concatMap sampleAt indices
+      in Array.concatMap processOneCycle cycleArcs
+  where
+    getContext :: Event a -> Context
+    getContext (Digital e) = e.context
+    getContext (Analog e) = e.context
+
+    sectArc :: Arc -> Arc -> Arc
+    sectArc (Arc a) (Arc b) =
+      Arc { start: max a.start b.start, stop: min a.stop b.stop }
+
+    arcOverlaps :: Arc -> Arc -> Boolean
+    arcOverlaps (Arc a) (Arc b) = a.start < b.stop && b.start < a.stop
+
+-- | Compress a pattern into a portion of each cycle
+-- |
+-- | `compress (0.25, 0.75) pat` squeezes the pattern into the middle half
+-- | of each cycle.
+compress :: forall a. Time -> Time -> Pattern a -> Pattern a
+compress s e pat
+  | s >= e = silence
+  | otherwise = pattern \(State st) ->
+      let
+        scale = e - s
+        -- Transform query time back to pattern time
+        cycleArcs = splitArcByCycles st.arc
+
+        processOneCycle :: Arc -> Array (Event a)
+        processOneCycle cycleArc =
+          let
+            cyc = sam (arcStart cycleArc)
+            compressedStart = cyc + s
+            compressedEnd = cyc + e
+
+            -- Check if query overlaps the compressed region
+            Arc { start: qStart, stop: qStop } = cycleArc
+          in if qStart >= compressedEnd || qStop <= compressedStart
+             then []
+             else
+               let
+                 -- Map query into pattern time (0-1)
+                 patStart = (max qStart compressedStart - compressedStart) / scale
+                 patStop = (min qStop compressedEnd - compressedStart) / scale
+                 patArc = Arc { start: cyc + patStart, stop: cyc + patStop }
+
+                 events = query pat (State st { arc = patArc })
+
+                 -- Map events back to compressed time
+                 mapEvent = case _ of
+                   Digital ev ->
+                     let
+                       Arc w = ev.whole
+                       Arc p = ev.part
+                     in Digital ev
+                          { whole = Arc { start: compressedStart + (w.start - cyc) * scale
+                                        , stop: compressedStart + (w.stop - cyc) * scale
+                                        }
+                          , part = Arc { start: compressedStart + (p.start - cyc) * scale
+                                       , stop: compressedStart + (p.stop - cyc) * scale
+                                       }
+                          }
+                   Analog ev ->
+                     let Arc p = ev.part
+                     in Analog ev
+                          { part = Arc { start: compressedStart + (p.start - cyc) * scale
+                                       , stop: compressedStart + (p.stop - cyc) * scale
+                                       }
+                          }
+               in map mapEvent events
+      in Array.concatMap processOneCycle cycleArcs
+
+-- | Zoom into a portion of a pattern
+-- |
+-- | `zoom (0.25, 0.75) pat` takes the middle half of the pattern
+-- | and stretches it to fill the whole cycle.
+zoom :: forall a. Time -> Time -> Pattern a -> Pattern a
+zoom s e pat
+  | s >= e = silence
+  | otherwise = pattern \(State st) ->
+      let
+        scale = e - s
+        cycleArcs = splitArcByCycles st.arc
+
+        processOneCycle :: Arc -> Array (Event a)
+        processOneCycle cycleArc =
+          let
+            cyc = sam (arcStart cycleArc)
+            Arc { start: qStart, stop: qStop } = cycleArc
+
+            -- Map query from (cyc..cyc+1) to (cyc+s..cyc+e)
+            patStart = cyc + s + (qStart - cyc) * scale
+            patStop = cyc + s + (qStop - cyc) * scale
+            patArc = Arc { start: patStart, stop: patStop }
+
+            events = query pat (State st { arc = patArc })
+
+            -- Map events back to full cycle
+            mapEvent = case _ of
+              Digital ev ->
+                let
+                  Arc w = ev.whole
+                  Arc p = ev.part
+                  mapTime t = cyc + (t - cyc - s) / scale
+                in Digital ev
+                     { whole = Arc { start: mapTime w.start, stop: mapTime w.stop }
+                     , part = Arc { start: mapTime p.start, stop: mapTime p.stop }
+                     }
+              Analog ev ->
+                let
+                  Arc p = ev.part
+                  mapTime t = cyc + (t - cyc - s) / scale
+                in Analog ev
+                     { part = Arc { start: mapTime p.start, stop: mapTime p.stop }
+                     }
+          in map mapEvent events
+      in Array.concatMap processOneCycle cycleArcs
+
+-- | Apply a function every n cycles
+-- |
+-- | `every 4 rev pat` reverses the pattern every 4th cycle
+every :: forall a. Int -> (Pattern a -> Pattern a) -> Pattern a -> Pattern a
+every n f pat
+  | n <= 0 = pat
+  | otherwise = pattern \(State st) ->
+      let
+        cycleArcs = splitArcByCycles st.arc
+        processOneCycle cycleArc =
+          let
+            cyc = floorInt (sam (arcStart cycleArc))
+            shouldApply = mod cyc n == 0
+            p = if shouldApply then f pat else pat
+          in query p (State st { arc = cycleArc })
+      in Array.concatMap processOneCycle cycleArcs
+  where
+    floorInt t = Int.floor (toNumber t)
+
+-- | Apply a function when cycle modulo matches
+-- |
+-- | `whenMod 8 (< 4) rev pat` reverses cycles 0-3 out of every 8
+whenMod :: forall a. Int -> (Int -> Boolean) -> (Pattern a -> Pattern a) -> Pattern a -> Pattern a
+whenMod n pred f pat = pattern \(State st) ->
+  let
+    cycleArcs = splitArcByCycles st.arc
+    processOneCycle cycleArc =
+      let
+        cyc = floorInt (sam (arcStart cycleArc))
+        cycMod = mod cyc n
+        shouldApply = pred cycMod
+        p = if shouldApply then f pat else pat
+      in query p (State st { arc = cycleArc })
+  in Array.concatMap processOneCycle cycleArcs
+  where
+    floorInt t = Int.floor (toNumber t)
+
+-- | Iterate through a pattern
+-- |
+-- | `iter 4 pat` divides the pattern into 4 parts and rotates through them
+-- | each cycle: cycle 0 plays from 0, cycle 1 from 1/4, cycle 2 from 1/2, etc.
+iter :: forall a. Int -> Pattern a -> Pattern a
+iter n pat
+  | n <= 0 = pat
+  | otherwise = pattern \(State st) ->
+      let
+        cycleArcs = splitArcByCycles st.arc
+        processOneCycle cycleArc =
+          let
+            cyc = floorInt (sam (arcStart cycleArc))
+            offset = fromInt (mod cyc n) / fromInt n
+            p = rotL offset pat
+          in query p (State st { arc = cycleArc })
+      in Array.concatMap processOneCycle cycleArcs
+  where
+    floorInt t = Int.floor (toNumber t)
+
+-- | Reverse iteration through a pattern
+-- |
+-- | `iter' 4 pat` is like `iter` but rotates in the opposite direction
+iter' :: forall a. Int -> Pattern a -> Pattern a
+iter' n pat
+  | n <= 0 = pat
+  | otherwise = pattern \(State st) ->
+      let
+        cycleArcs = splitArcByCycles st.arc
+        processOneCycle cycleArc =
+          let
+            cyc = floorInt (sam (arcStart cycleArc))
+            offset = fromInt (mod cyc n) / fromInt n
+            p = rotR offset pat
+          in query p (State st { arc = cycleArc })
+      in Array.concatMap processOneCycle cycleArcs
+  where
+    floorInt t = Int.floor (toNumber t)
 
 -------------------------------------------------------------------------------
 -- Filtering
