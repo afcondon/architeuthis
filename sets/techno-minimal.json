@@ -1,0 +1,9 @@
+{"name":"techno-minimal","tracks":[
+  {"name":"Four Floor","pattern":"bd*4","active":true,"channel":10,"group":"red","voiceType":{"type":"drums"}},
+  {"name":"Offbeat","pattern":"~ hh*4","active":true,"channel":10,"group":"blue","voiceType":{"type":"drums"}},
+  {"name":"Clap 2-4","pattern":"~ cp ~ cp","active":true,"channel":10,"group":"red","voiceType":{"type":"drums"}},
+  {"name":"Ride 16th","pattern":"rd*16","active":false,"channel":10,"group":"blue","voiceType":{"type":"drums"}},
+  {"name":"Perc Loop","pattern":"rim ~ ~ rim ~ rim ~ ~","active":false,"channel":10,"group":"green","voiceType":{"type":"drums"}},
+  {"name":"Sub Bass","pattern":"c2*4","active":false,"channel":2,"group":"none","voiceType":{"type":"notes"}},
+  {"name":"Stab","pattern":"~ ~ c4'minor ~","active":false,"channel":3,"group":"none","voiceType":{"type":"notes"}}
+]}

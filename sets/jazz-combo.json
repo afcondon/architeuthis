@@ -1,0 +1,8 @@
+{"name":"jazz-combo","tracks":[
+  {"name":"Ride Swing","pattern":"rd ~ rd rd ~ rd","active":true,"channel":10,"group":"none","voiceType":{"type":"drums"}},
+  {"name":"Hi-hat 2-4","pattern":"~ hh ~ hh","active":true,"channel":10,"group":"none","voiceType":{"type":"drums"}},
+  {"name":"Walking","pattern":"c3 e3 g3 a3","active":true,"channel":2,"group":"none","voiceType":{"type":"notes"}},
+  {"name":"Comping","pattern":"<c'major7 a'minor7 d'minor7 g'dom7>","active":false,"channel":3,"group":"none","voiceType":{"type":"notes"}},
+  {"name":"Brush","pattern":"sn? sn sn? sn","active":false,"channel":10,"group":"none","voiceType":{"type":"drums"}},
+  {"name":"Kick Sparse","pattern":"bd ~ ~ bd?","active":false,"channel":10,"group":"none","voiceType":{"type":"drums"}}
+]}

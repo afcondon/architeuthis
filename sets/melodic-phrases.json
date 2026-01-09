@@ -1,0 +1,8 @@
+{"name":"melodic-phrases","tracks":[
+  {"name":"Arpeggio","pattern":"c4 e4 g4 c5","active":true,"channel":1,"group":"none","voiceType":{"type":"notes"}},
+  {"name":"Bass Line","pattern":"c3 ~ g3 ~","active":true,"channel":2,"group":"none","voiceType":{"type":"notes"}},
+  {"name":"Chord Prog","pattern":"c'major e'minor a'minor g'major","active":false,"channel":3,"group":"none","voiceType":{"type":"notes"}},
+  {"name":"Pentatonic","pattern":"c4 d4 e4 g4 a4","active":false,"channel":1,"group":"none","voiceType":{"type":"notes"}},
+  {"name":"Chromatic","pattern":"c4 cs4 d4 ds4 e4","active":false,"channel":1,"group":"none","voiceType":{"type":"notes"}},
+  {"name":"Octave Jump","pattern":"c3 c4 c5 c4","active":false,"channel":2,"group":"none","voiceType":{"type":"notes"}}
+]}

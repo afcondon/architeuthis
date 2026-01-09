@@ -1,0 +1,8 @@
+{"name":"polyrhythm-lab","tracks":[
+  {"name":"3 vs 4","pattern":"{bd bd bd, sn sn sn sn}","active":true,"channel":10,"group":"none","voiceType":{"type":"drums"}},
+  {"name":"5 vs 4","pattern":"{hh hh hh hh hh, cp cp cp cp}","active":false,"channel":10,"group":"none","voiceType":{"type":"drums"}},
+  {"name":"Layered E","pattern":"[bd(3,8), sn(5,8), hh(7,8)]","active":true,"channel":10,"group":"none","voiceType":{"type":"drums"}},
+  {"name":"Offset","pattern":"bd(3,8,2)","active":false,"channel":10,"group":"none","voiceType":{"type":"drums"}},
+  {"name":"Dense Stack","pattern":"[bd, sn, hh, cp]","active":false,"channel":10,"group":"none","voiceType":{"type":"drums"}},
+  {"name":"Alternating","pattern":"<bd sn> <hh cp rim>","active":false,"channel":10,"group":"none","voiceType":{"type":"drums"}}
+]}

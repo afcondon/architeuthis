@@ -1,0 +1,8 @@
+{"name":"ambient-drift","tracks":[
+  {"name":"Sparse Pad","pattern":"c4/4","active":true,"channel":1,"group":"none","voiceType":{"type":"notes"}},
+  {"name":"Ghost Notes","pattern":"e4? g4? c5?","active":true,"channel":1,"group":"none","voiceType":{"type":"notes"}},
+  {"name":"Slow Chord","pattern":"c'major/2","active":false,"channel":2,"group":"none","voiceType":{"type":"notes"}},
+  {"name":"Random Perc","pattern":"rim? ~ cp? ~","active":false,"channel":10,"group":"none","voiceType":{"type":"drums"}},
+  {"name":"Deep Pulse","pattern":"bd/4","active":true,"channel":10,"group":"none","voiceType":{"type":"drums"}},
+  {"name":"Texture","pattern":"[hh?, ~, rim?]/2","active":false,"channel":10,"group":"none","voiceType":{"type":"drums"}}
+]}

@@ -1,0 +1,9 @@
+{"name":"euclidean-world","tracks":[
+  {"name":"Cinquillo","pattern":"bd(5,8)","active":true,"channel":10,"group":"none","voiceType":{"type":"drums"}},
+  {"name":"Tresillo","pattern":"sn(3,8)","active":true,"channel":10,"group":"none","voiceType":{"type":"drums"}},
+  {"name":"Aksak 9","pattern":"hh(4,9)","active":true,"channel":10,"group":"none","voiceType":{"type":"drums"}},
+  {"name":"Ruchenitza","pattern":"cp(3,7)","active":false,"channel":10,"group":"none","voiceType":{"type":"drums"}},
+  {"name":"West African","pattern":"rim(7,12)","active":false,"channel":10,"group":"none","voiceType":{"type":"drums"}},
+  {"name":"Venda","pattern":"lo(5,12)","active":false,"channel":10,"group":"none","voiceType":{"type":"drums"}},
+  {"name":"Bossa Nova","pattern":"bd(3,16)","active":false,"channel":10,"group":"none","voiceType":{"type":"drums"}}
+]}

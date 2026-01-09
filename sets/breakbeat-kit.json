@@ -1,0 +1,9 @@
+{"name":"breakbeat-kit","tracks":[
+  {"name":"Kick","pattern":"bd ~ ~ bd ~ ~ bd ~","active":true,"channel":10,"group":"red","voiceType":{"type":"drums"}},
+  {"name":"Snare","pattern":"~ ~ sn ~ ~ ~ sn ~","active":true,"channel":10,"group":"red","voiceType":{"type":"drums"}},
+  {"name":"Hi-hats","pattern":"hh*8","active":true,"channel":10,"group":"blue","voiceType":{"type":"drums"}},
+  {"name":"Open Hat","pattern":"~ ~ ~ oh ~ ~ ~ ~","active":false,"channel":10,"group":"blue","voiceType":{"type":"drums"}},
+  {"name":"Ride","pattern":"rd/2","active":false,"channel":10,"group":"blue","voiceType":{"type":"drums"}},
+  {"name":"Perc Fill","pattern":"~ ~ ~ ~ rim ~ cp ~","active":false,"channel":10,"group":"green","voiceType":{"type":"drums"}},
+  {"name":"Ghost","pattern":"~ sn? ~ ~ ~ sn? ~ ~","active":false,"channel":10,"group":"green","voiceType":{"type":"drums"}}
+]}
