@@ -3,7 +3,8 @@
 # Build workflow:
 #   1. rebar3 get-deps     - fetch Erlang dependencies (cowboy, ranch)
 #   2. rebar3 compile      - compile Erlang dependencies
-#   3. spago build         - PureScript → Erlang (.erl files in output/)
+#   3. spago build         - PureScript → CoreFn → Erlang (via purs-backend-erl)
+#                            CoreFn in output/, .erl files in output-erl/
 #   4. erlc                - compile .erl → .beam files in ebin/
 #
 # Usage:
@@ -22,7 +23,7 @@ help:
 	@echo "purerl-tidal build targets:"
 	@echo "  make           - full build (deps + ps + erl)"
 	@echo "  make deps      - fetch and compile Erlang dependencies"
-	@echo "  make ps        - compile PureScript to Erlang"
+	@echo "  make ps        - compile PureScript to Erlang (via purs-backend-erl)"
 	@echo "  make erl       - compile Erlang to beam (includes ps)"
 	@echo "  make test      - run the test suite"
 	@echo "  make run       - build and start the server"
@@ -37,16 +38,17 @@ deps:
 	@echo "==> Compiling Erlang dependencies..."
 	rebar3 compile
 
-# PureScript compilation (generates .erl files in output/)
+# PureScript compilation (spago invokes purs-backend-erl as backend)
+# Generates CoreFn in output/, then .erl files in output-erl/
 ps:
-	@echo "==> Building PureScript..."
+	@echo "==> Building PureScript (purs-backend-erl)..."
 	spago build
 
 # Erlang compilation (compiles .erl to .beam in ebin/)
 erl: ps
 	@echo "==> Compiling Erlang to BEAM..."
 	@mkdir -p ebin
-	@find output -name "*.erl" -exec erlc -o ebin {} \; 2>&1 | grep -v "Warning:" || true
+	@find output-erl -name "*.erl" -exec erlc -disable-feature maybe_expr -o ebin {} \; 2>&1 | grep -v "Warning:" || true
 	@echo "==> Build complete. BEAM files in ebin/"
 
 # Run tests
@@ -76,6 +78,7 @@ start:
 clean:
 	@echo "==> Cleaning PureScript output..."
 	rm -rf output
+	rm -rf output-erl
 	rm -rf ebin/*.beam
 
 # Clean everything
