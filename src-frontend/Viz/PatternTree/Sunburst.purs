@@ -13,22 +13,15 @@ import Prelude
 
 import Component.PatternTree (PatternTree(..))
 import Data.Array as Array
-import Data.Foldable (for_)
 import Data.Int as Int
 import Data.Maybe (Maybe(..))
 import Data.Number (cos, pi, sin, sqrt)
 import DataViz.Layout.Hierarchy.Partition (HierarchyData(..), PartitionNode(..), defaultPartitionConfig, hierarchy, partition, sunburstArcPath, flattenPartition, fixParallelLayout)
 import Effect (Effect)
-import Effect.Class (liftEffect)
-import PSD3.AST as T
-import PSD3.Expr.Friendly (attr, cx, cy, fill, fontSize, height, num, path, r, stroke, strokeWidth, text, textAnchor, textContent, viewBox, width, x, y)
-import PSD3.Internal.Behavior.Types (Behavior(..), ScaleExtent(..), defaultZoom, onClick)
-import PSD3.Internal.Capabilities.Selection (renderTree, select)
-import PSD3.Internal.Selection.Operations as Ops
-import PSD3.Internal.Selection.Types (ElementType(..), SEmpty)
-import PSD3.Interpreter.D3 (D3v2Selection_, reselectD3v2, runD3v2M)
-import Web.DOM.Element (Element)
-import Control.Monad (when)
+import Hylograph.HATS (Tree, elem, forEach, staticNum, staticStr, thunkedNum, thunkedStr, withBehaviors, onClick, onZoom) as H
+import Hylograph.HATS.InterpreterTick (rerender)
+import Hylograph.Internal.Behavior.Types (ScaleExtent(..), ZoomConfig(..))
+import Hylograph.Internal.Selection.Types (ElementType(..))
 
 -- | Hierarchy node data with path for click handling
 type HierarchyNodeData =
@@ -240,6 +233,19 @@ isCombinator nodeType = case combinatorBadge nodeType of
 -- | Named pattern for standalone sunburst visualization
 type NamedPattern = { name :: String, pattern :: PatternTree, trackIndex :: Int, active :: Boolean }
 
+-- | Processed sunburst data for rendering
+type SunburstData =
+  { name :: String
+  , nodes :: Array (PartitionNode HierarchyNodeData)
+  , leafNodes :: Array (PartitionNode HierarchyNodeData)
+  , centerX :: Number
+  , centerY :: Number
+  , radius :: Number
+  , idx :: Int
+  , trackIndex :: Int
+  , active :: Boolean
+  }
+
 -- | Draw multiple pattern trees as sunbursts side by side
 -- | onToggle callback is called with track index when center is clicked
 drawPatternForestSunburst :: String -> Array NamedPattern -> (Int -> Effect Unit) -> Effect Unit
@@ -291,293 +297,293 @@ drawPatternForestSunburst selector namedPatterns onToggle = do
 
   let sunburstData = Array.mapWithIndex processPattern namedPatterns
 
-  runD3v2M do
-    -- Clear the container first
-    Ops.clear selector
+  -- Zoom configuration
+  let zoomConfig = ZoomConfig
+        { scaleExtent: ScaleExtent 0.1 10.0
+        , targetSelector: "#pattern-sunburst-zoom-group"
+        }
 
-    container <- select selector :: _ (D3v2Selection_ SEmpty Element Unit)
-
-    -- Render each sunburst separately
-    -- First render the SVG container with pattern definitions
-    let
-      svgTree :: T.Tree Unit
-      svgTree =
-        T.named SVG "pattern-sunburst-svg"
-          [ width $ num chartWidth
-          , height $ num chartHeight
-          , viewBox 0.0 0.0 chartWidth chartHeight
-          , attr "class" $ text "pattern-forest-viz pattern-forest-sunburst"
+  -- Build the complete visualization tree
+  let
+    vizTree :: H.Tree
+    vizTree =
+      H.withBehaviors [ H.onZoom zoomConfig ] $
+        H.elem SVG
+          [ H.staticNum "width" chartWidth
+          , H.staticNum "height" chartHeight
+          , H.staticStr "viewBox" ("0 0 " <> show chartWidth <> " " <> show chartHeight)
+          , H.staticStr "class" "pattern-forest-viz pattern-forest-sunburst"
           ]
-          `T.withBehaviors` [ Zoom $ defaultZoom (ScaleExtent 0.1 10.0) "#pattern-sunburst-zoom-group" ]
-          `T.withChildren`
-            [ -- Pattern definitions for fast/slow visual treatment
-              T.named Defs "patterns" []
-                `T.withChildren`
-                  [ -- Fast pattern: diagonal stripes (compression feel)
-                    T.named PatternFill "fastPattern"
-                      [ attr "id" $ text "fastPattern"
-                      , attr "patternUnits" $ text "userSpaceOnUse"
-                      , width $ num 6.0
-                      , height $ num 6.0
-                      , attr "patternTransform" $ text "rotate(45)"
-                      ]
-                      `T.withChildren`
-                        [ T.elem Rect
-                            [ width $ num 3.0
-                            , height $ num 6.0
-                            , fill $ text "#E91E63"  -- Pink
-                            ]
-                        , T.elem Rect
-                            [ x $ num 3.0
-                            , width $ num 3.0
-                            , height $ num 6.0
-                            , fill $ text "#F48FB1"  -- Lighter pink
-                            ]
-                        ]
-                  , -- Slow pattern: horizontal gradient bands (expansion feel)
-                    T.named PatternFill "slowPattern"
-                      [ attr "id" $ text "slowPattern"
-                      , attr "patternUnits" $ text "userSpaceOnUse"
-                      , width $ num 8.0
-                      , height $ num 8.0
-                      ]
-                      `T.withChildren`
-                        [ T.elem Rect
-                            [ width $ num 8.0
-                            , height $ num 4.0
-                            , fill $ text "#00BCD4"  -- Cyan
-                            ]
-                        , T.elem Rect
-                            [ y $ num 4.0
-                            , width $ num 8.0
-                            , height $ num 4.0
-                            , fill $ text "#4DD0E1"  -- Lighter cyan
-                            ]
-                        ]
-                  , -- Euclidean pattern: dots for rhythmic distribution
-                    T.named PatternFill "euclidPattern"
-                      [ attr "id" $ text "euclidPattern"
-                      , attr "patternUnits" $ text "userSpaceOnUse"
-                      , width $ num 10.0
-                      , height $ num 10.0
-                      ]
-                      `T.withChildren`
-                        [ T.elem Rect
-                            [ width $ num 10.0
-                            , height $ num 10.0
-                            , fill $ text "#FFEB3B"  -- Yellow background
-                            ]
-                        , T.elem Circle
-                            [ cx $ num 5.0
-                            , cy $ num 5.0
-                            , r $ num 2.5
-                            , fill $ text "#FFF176"  -- Lighter yellow dot
-                            ]
-                        ]
-                  , -- Degrade pattern: checkerboard for probability/uncertainty
-                    T.named PatternFill "degradePattern"
-                      [ attr "id" $ text "degradePattern"
-                      , attr "patternUnits" $ text "userSpaceOnUse"
-                      , width $ num 8.0
-                      , height $ num 8.0
-                      ]
-                      `T.withChildren`
-                        [ T.elem Rect
-                            [ width $ num 8.0
-                            , height $ num 8.0
-                            , fill $ text "#795548"  -- Brown
-                            ]
-                        , T.elem Rect
-                            [ width $ num 4.0
-                            , height $ num 4.0
-                            , fill $ text "#A1887F"  -- Lighter brown
-                            ]
-                        , T.elem Rect
-                            [ x $ num 4.0
-                            , y $ num 4.0
-                            , width $ num 4.0
-                            , height $ num 4.0
-                            , fill $ text "#A1887F"  -- Lighter brown
-                            ]
-                        ]
-                  , -- Repeat pattern: vertical stripes for stutter/echo
-                    T.named PatternFill "repeatPattern"
-                      [ attr "id" $ text "repeatPattern"
-                      , attr "patternUnits" $ text "userSpaceOnUse"
-                      , width $ num 6.0
-                      , height $ num 6.0
-                      ]
-                      `T.withChildren`
-                        [ T.elem Rect
-                            [ width $ num 3.0
-                            , height $ num 6.0
-                            , fill $ text "#673AB7"  -- Deep purple
-                            ]
-                        , T.elem Rect
-                            [ x $ num 3.0
-                            , width $ num 3.0
-                            , height $ num 6.0
-                            , fill $ text "#9575CD"  -- Lighter purple
-                            ]
-                        ]
-                  , -- Elongate pattern: diagonal gradient for stretch
-                    T.named PatternFill "elongatePattern"
-                      [ attr "id" $ text "elongatePattern"
-                      , attr "patternUnits" $ text "userSpaceOnUse"
-                      , width $ num 12.0
-                      , height $ num 4.0
-                      ]
-                      `T.withChildren`
-                        [ T.elem Rect
-                            [ width $ num 12.0
-                            , height $ num 4.0
-                            , fill $ text "#009688"  -- Teal
-                            ]
-                        , T.elem Rect
-                            [ width $ num 4.0
-                            , height $ num 4.0
-                            , fill $ text "#4DB6AC"  -- Lighter teal
-                            ]
-                        , T.elem Rect
-                            [ x $ num 8.0
-                            , width $ num 4.0
-                            , height $ num 4.0
-                            , fill $ text "#4DB6AC"  -- Lighter teal
-                            ]
-                        ]
-                  ]
-            , T.named Group "zoom-group"
-                [ attr "id" $ text "pattern-sunburst-zoom-group"
-                , attr "class" $ text "zoom-group"
-                ]
-            ]
-
-    svgSel <- renderTree container svgTree
-    zoomGroupSel <- liftEffect $ reselectD3v2 "zoom-group" svgSel
-
-    -- Render each sunburst into the zoom group
-    for_ sunburstData \{ name, nodes, leafNodes, centerX, centerY, radius: r', idx, trackIndex, active } -> do
-      -- Opacity based on active state
-      let arcOpacity = if active then 0.85 else 0.25
-
-      -- Render arcs - filter out depth-0 nodes (root spans full circle, SVG arc limitation)
-      -- Depth > 0 nodes render fine; we'll add ring support for roots later
-      let nonRootNodes = Array.filter (\(PartNode n) -> n.depth > 0) nodes
-      let
-        arcsTree :: T.Tree (PartitionNode HierarchyNodeData)
-        arcsTree =
-          T.named Group ("sunburst-" <> show idx)
-            [ attr "transform" $ text ("translate(" <> show centerX <> "," <> show centerY <> ")") ]
-            `T.withChild`
-              ( T.joinData ("arcs-" <> show idx) "path" nonRootNodes $ \(PartNode node) ->
-                  let
-                    strokeStyle = sunburstStroke node.data_.nodeType
-                    pathIdx = case Array.last node.data_.path of
-                      Just i -> i
-                      Nothing -> 0
-                    fillColor = if node.data_.nodeType == "sound"
-                      then soundColorByIndex pathIdx
-                      else sunburstFill node.data_.nodeType
-                  in
-                    T.elem Path
-                      [ path $ text (sunburstArcPath node.x0 node.y0 node.x1 node.y1 r')
-                      , fill $ text fillColor
-                      , attr "fill-opacity" $ num arcOpacity
-                      , stroke $ text strokeStyle.color
-                      , strokeWidth $ num strokeStyle.width
-                      , attr "stroke-dasharray" $ text strokeStyle.dashArray
-                      , attr "class" $ text ("arc arc-" <> node.data_.nodeType)
-                      , attr "data-nodetype" $ text node.data_.nodeType
-                      , attr "data-depth" $ text (show node.depth)
-                      , attr "data-fill" $ text fillColor
-                      ]
-              )
-      _ <- renderTree zoomGroupSel arcsTree
-
-      -- Render center circle with track name (clickable to toggle)
-      -- Color the center based on root node type (layer 0 = center circle)
-      let
-        innerRadius = r' * 0.35  -- Inner hole radius
-        -- Find root node (depth 0) to get its type for coloring
-        rootNode = Array.find (\(PartNode n) -> n.depth == 0) nodes
-        rootType = case rootNode of
-          Just (PartNode n) -> n.data_.nodeType
-          Nothing -> "sequence"  -- fallback
-        -- Use root's color for center background when active
-        centerBg = if active
-          then sunburstColor rootType
-          else "#f5f5f5"
-        centerStroke = if active then "#fff" else "#ccc"
-        -- White text on colored background, dark on inactive
-        centerTextColor = if active then "#fff" else "#999"
-        centerTree :: T.Tree Unit
-        centerTree =
-          T.named Group ("center-" <> show idx)
-            [ attr "transform" $ text ("translate(" <> show centerX <> "," <> show centerY <> ")")
-            , attr "class" $ text "sunburst-center"
-            , attr "style" $ text "cursor: pointer;"
-            , attr "data-track-index" $ text (show trackIndex)
-            ]
-            `T.withBehaviors` [ onClick (onToggle trackIndex) ]
-            `T.withChildren`
-              [ T.elem Circle
-                  [ cx $ num 0.0
-                  , cy $ num 0.0
-                  , r $ num innerRadius
-                  , fill $ text centerBg
-                  , stroke $ text centerStroke
-                  , strokeWidth $ num 2.0
-                  , attr "class" $ text "center-circle"
-                  ]
-              , T.elem Text
-                  [ x $ num 0.0
-                  , y $ num 4.0  -- Slight offset for vertical centering
-                  , textContent $ text name
-                  , fontSize $ num 12.0
-                  , textAnchor $ text "middle"
-                  , fill $ text centerTextColor
-                  , attr "font-weight" $ text "600"
-                  , attr "class" $ text "center-label"
-                  ]
+          [ -- Pattern definitions for combinator visual treatment
+            patternDefs
+          , -- Zoom group containing all sunbursts
+            H.elem Group
+              [ H.staticStr "id" "pattern-sunburst-zoom-group"
+              , H.staticStr "class" "zoom-group"
               ]
-      _ <- renderTree zoomGroupSel centerTree
+              -- Render each sunburst as a child
+              (Array.concatMap (renderSunburst onToggle) sunburstData)
+          ]
 
-      -- Render sound labels on leaf arcs (only for sounds, not rests, and only if active)
-      when active do
-        let soundLeaves = Array.filter (\(PartNode n) -> n.data_.nodeType == "sound") leafNodes
-        let
-          soundLabelsTree :: T.Tree (PartitionNode HierarchyNodeData)
-          soundLabelsTree =
-            T.named Group ("sound-labels-" <> show idx)
-              [ attr "transform" $ text ("translate(" <> show centerX <> "," <> show centerY <> ")") ]
-              `T.withChild`
-                ( T.joinData ("labels-" <> show idx) "text" soundLeaves $ \(PartNode node) ->
-                    let
-                      -- Calculate midpoint angle and radius for label positioning
-                      midAngle = ((node.x0 + node.x1) / 2.0) * 2.0 * pi - (pi / 2.0)
-                      midRadius = ((node.y0 + node.y1) / 2.0) * r'
-                      labelX = cos midAngle * midRadius
-                      labelY = sin midAngle * midRadius
-                      -- Rotate text to follow arc angle
-                      rotateAngle = ((node.x0 + node.x1) / 2.0) * 360.0 - 90.0
-                      -- Flip text if on left side of circle
-                      finalRotate = if rotateAngle > 90.0 && rotateAngle < 270.0
-                        then rotateAngle + 180.0
-                        else rotateAngle
-                    in
-                      T.elem Text
-                        [ x $ num labelX
-                        , y $ num labelY
-                        , textContent $ text node.data_.label
-                        , fontSize $ num 9.0
-                        , textAnchor $ text "middle"
-                        , attr "dominant-baseline" $ text "middle"
-                        , fill $ text "#000"
-                        , attr "transform" $ text ("rotate(" <> show finalRotate <> "," <> show labelX <> "," <> show labelY <> ")")
-                        , attr "class" $ text "sound-label"
-                        ]
-                )
-        _ <- renderTree zoomGroupSel soundLabelsTree
-        pure unit
+  _ <- rerender selector vizTree
+  pure unit
 
-    pure unit
+-- | Render a single sunburst as an array of tree elements (arcs, center, labels)
+renderSunburst :: (Int -> Effect Unit) -> SunburstData -> Array H.Tree
+renderSunburst onToggle sb =
+  let
+    arcOpacity = if sb.active then 0.85 else 0.25
+    innerRadius = sb.radius * 0.35
+
+    -- Filter out depth-0 nodes (root spans full circle, SVG arc limitation)
+    nonRootNodes = Array.filter (\(PartNode n) -> n.depth > 0) sb.nodes
+
+    -- Find root node for center coloring
+    rootNode = Array.find (\(PartNode n) -> n.depth == 0) sb.nodes
+    rootType = case rootNode of
+      Just (PartNode n) -> n.data_.nodeType
+      Nothing -> "sequence"
+
+    centerBg = if sb.active then sunburstColor rootType else "#f5f5f5"
+    centerStroke = if sb.active then "#fff" else "#ccc"
+    centerTextColor = if sb.active then "#fff" else "#999"
+
+    -- Sound leaves for labels
+    soundLeaves = Array.filter (\(PartNode n) -> n.data_.nodeType == "sound") sb.leafNodes
+  in
+    [ -- Arcs group
+      H.elem Group
+        [ H.staticStr "transform" ("translate(" <> show sb.centerX <> "," <> show sb.centerY <> ")") ]
+        [ H.forEach ("arcs-" <> show sb.idx) Path nonRootNodes arcKey \(PartNode node) ->
+            let
+              strokeStyle = sunburstStroke node.data_.nodeType
+              pathIdx = case Array.last node.data_.path of
+                Just i -> i
+                Nothing -> 0
+              fillColor = if node.data_.nodeType == "sound"
+                then soundColorByIndex pathIdx
+                else sunburstFill node.data_.nodeType
+            in
+              H.elem Path
+                [ H.thunkedStr "d" (sunburstArcPath node.x0 node.y0 node.x1 node.y1 sb.radius)
+                , H.thunkedStr "fill" fillColor
+                , H.thunkedNum "fill-opacity" arcOpacity
+                , H.thunkedStr "stroke" strokeStyle.color
+                , H.thunkedNum "stroke-width" strokeStyle.width
+                , H.thunkedStr "stroke-dasharray" strokeStyle.dashArray
+                , H.thunkedStr "class" ("arc arc-" <> node.data_.nodeType)
+                ]
+                []
+        ]
+    , -- Center circle with track name (clickable)
+      H.withBehaviors [ H.onClick (onToggle sb.trackIndex) ] $
+        H.elem Group
+          [ H.staticStr "transform" ("translate(" <> show sb.centerX <> "," <> show sb.centerY <> ")")
+          , H.staticStr "class" "sunburst-center"
+          , H.staticStr "style" "cursor: pointer;"
+          ]
+          [ H.elem Circle
+              [ H.staticNum "cx" 0.0
+              , H.staticNum "cy" 0.0
+              , H.thunkedNum "r" innerRadius
+              , H.thunkedStr "fill" centerBg
+              , H.thunkedStr "stroke" centerStroke
+              , H.staticNum "stroke-width" 2.0
+              , H.staticStr "class" "center-circle"
+              ]
+              []
+          , H.elem Text
+              [ H.staticNum "x" 0.0
+              , H.staticNum "y" 4.0
+              , H.thunkedStr "textContent" sb.name
+              , H.staticNum "font-size" 12.0
+              , H.staticStr "text-anchor" "middle"
+              , H.thunkedStr "fill" centerTextColor
+              , H.staticStr "font-weight" "600"
+              , H.staticStr "class" "center-label"
+              ]
+              []
+          ]
+    ] <>
+    -- Sound labels (only when active)
+    if sb.active then
+      [ H.elem Group
+          [ H.staticStr "transform" ("translate(" <> show sb.centerX <> "," <> show sb.centerY <> ")") ]
+          [ H.forEach ("labels-" <> show sb.idx) Text soundLeaves labelKey \(PartNode node) ->
+              let
+                midAngle = ((node.x0 + node.x1) / 2.0) * 2.0 * pi - (pi / 2.0)
+                midRadius = ((node.y0 + node.y1) / 2.0) * sb.radius
+                labelX = cos midAngle * midRadius
+                labelY = sin midAngle * midRadius
+                rotateAngle = ((node.x0 + node.x1) / 2.0) * 360.0 - 90.0
+                finalRotate = if rotateAngle > 90.0 && rotateAngle < 270.0
+                  then rotateAngle + 180.0
+                  else rotateAngle
+              in
+                H.elem Text
+                  [ H.thunkedNum "x" labelX
+                  , H.thunkedNum "y" labelY
+                  , H.thunkedStr "textContent" node.data_.label
+                  , H.staticNum "font-size" 9.0
+                  , H.staticStr "text-anchor" "middle"
+                  , H.staticStr "dominant-baseline" "middle"
+                  , H.staticStr "fill" "#000"
+                  , H.thunkedStr "transform" ("rotate(" <> show finalRotate <> "," <> show labelX <> "," <> show labelY <> ")")
+                  , H.staticStr "class" "sound-label"
+                  ]
+                  []
+          ]
+      ]
+    else []
+  where
+  arcKey :: PartitionNode HierarchyNodeData -> String
+  arcKey (PartNode n) = show n.depth <> "-" <> show n.x0
+
+  labelKey :: PartitionNode HierarchyNodeData -> String
+  labelKey (PartNode n) = n.data_.label <> "-" <> show n.x0
+
+-- | Pattern definitions for combinator visual treatment
+patternDefs :: H.Tree
+patternDefs =
+  H.elem Defs []
+    [ -- Fast pattern: diagonal stripes (compression feel)
+      H.elem PatternFill
+        [ H.staticStr "id" "fastPattern"
+        , H.staticStr "patternUnits" "userSpaceOnUse"
+        , H.staticNum "width" 6.0
+        , H.staticNum "height" 6.0
+        , H.staticStr "patternTransform" "rotate(45)"
+        ]
+        [ H.elem Rect
+            [ H.staticNum "width" 3.0
+            , H.staticNum "height" 6.0
+            , H.staticStr "fill" "#E91E63"
+            ]
+            []
+        , H.elem Rect
+            [ H.staticNum "x" 3.0
+            , H.staticNum "width" 3.0
+            , H.staticNum "height" 6.0
+            , H.staticStr "fill" "#F48FB1"
+            ]
+            []
+        ]
+    , -- Slow pattern: horizontal gradient bands (expansion feel)
+      H.elem PatternFill
+        [ H.staticStr "id" "slowPattern"
+        , H.staticStr "patternUnits" "userSpaceOnUse"
+        , H.staticNum "width" 8.0
+        , H.staticNum "height" 8.0
+        ]
+        [ H.elem Rect
+            [ H.staticNum "width" 8.0
+            , H.staticNum "height" 4.0
+            , H.staticStr "fill" "#00BCD4"
+            ]
+            []
+        , H.elem Rect
+            [ H.staticNum "y" 4.0
+            , H.staticNum "width" 8.0
+            , H.staticNum "height" 4.0
+            , H.staticStr "fill" "#4DD0E1"
+            ]
+            []
+        ]
+    , -- Euclidean pattern: dots for rhythmic distribution
+      H.elem PatternFill
+        [ H.staticStr "id" "euclidPattern"
+        , H.staticStr "patternUnits" "userSpaceOnUse"
+        , H.staticNum "width" 10.0
+        , H.staticNum "height" 10.0
+        ]
+        [ H.elem Rect
+            [ H.staticNum "width" 10.0
+            , H.staticNum "height" 10.0
+            , H.staticStr "fill" "#FFEB3B"
+            ]
+            []
+        , H.elem Circle
+            [ H.staticNum "cx" 5.0
+            , H.staticNum "cy" 5.0
+            , H.staticNum "r" 2.5
+            , H.staticStr "fill" "#FFF176"
+            ]
+            []
+        ]
+    , -- Degrade pattern: checkerboard for probability/uncertainty
+      H.elem PatternFill
+        [ H.staticStr "id" "degradePattern"
+        , H.staticStr "patternUnits" "userSpaceOnUse"
+        , H.staticNum "width" 8.0
+        , H.staticNum "height" 8.0
+        ]
+        [ H.elem Rect
+            [ H.staticNum "width" 8.0
+            , H.staticNum "height" 8.0
+            , H.staticStr "fill" "#795548"
+            ]
+            []
+        , H.elem Rect
+            [ H.staticNum "width" 4.0
+            , H.staticNum "height" 4.0
+            , H.staticStr "fill" "#A1887F"
+            ]
+            []
+        , H.elem Rect
+            [ H.staticNum "x" 4.0
+            , H.staticNum "y" 4.0
+            , H.staticNum "width" 4.0
+            , H.staticNum "height" 4.0
+            , H.staticStr "fill" "#A1887F"
+            ]
+            []
+        ]
+    , -- Repeat pattern: vertical stripes for stutter/echo
+      H.elem PatternFill
+        [ H.staticStr "id" "repeatPattern"
+        , H.staticStr "patternUnits" "userSpaceOnUse"
+        , H.staticNum "width" 6.0
+        , H.staticNum "height" 6.0
+        ]
+        [ H.elem Rect
+            [ H.staticNum "width" 3.0
+            , H.staticNum "height" 6.0
+            , H.staticStr "fill" "#673AB7"
+            ]
+            []
+        , H.elem Rect
+            [ H.staticNum "x" 3.0
+            , H.staticNum "width" 3.0
+            , H.staticNum "height" 6.0
+            , H.staticStr "fill" "#9575CD"
+            ]
+            []
+        ]
+    , -- Elongate pattern: diagonal gradient for stretch
+      H.elem PatternFill
+        [ H.staticStr "id" "elongatePattern"
+        , H.staticStr "patternUnits" "userSpaceOnUse"
+        , H.staticNum "width" 12.0
+        , H.staticNum "height" 4.0
+        ]
+        [ H.elem Rect
+            [ H.staticNum "width" 12.0
+            , H.staticNum "height" 4.0
+            , H.staticStr "fill" "#009688"
+            ]
+            []
+        , H.elem Rect
+            [ H.staticNum "width" 4.0
+            , H.staticNum "height" 4.0
+            , H.staticStr "fill" "#4DB6AC"
+            ]
+            []
+        , H.elem Rect
+            [ H.staticNum "x" 8.0
+            , H.staticNum "width" 4.0
+            , H.staticNum "height" 4.0
+            , H.staticStr "fill" "#4DB6AC"
+            ]
+            []
+        ]
+    ]

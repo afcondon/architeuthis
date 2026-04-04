@@ -1,5 +1,6 @@
 -module(tidal_oSC@foreign).
 -export([startClient/1, stopClient/1, sendNote/3, sendSample/4]).
+-export([sendCV/3, sendCVSlew/4, sendGate/3, sendGateTrig/3]).
 
 %% Start UDP socket for OSC
 startClient(Config) ->
@@ -37,6 +38,54 @@ sendSample(Client, Sample, Cycle, Delta) ->
         gen_udp:send(Socket, Host, Port, Msg),
         unit
     end.
+
+%% ============================================
+%% CV/Gate functions for Expert Sleepers ES-9
+%% ============================================
+
+%% Send CV value to a channel
+%% Format: /tidal/cv <channel> <value>
+sendCV(Client, Channel, Value) ->
+    fun() ->
+        {Socket, Host, Port} = Client,
+        Msg = encode_osc(<<"/tidal/cv">>, [Channel, Value]),
+        gen_udp:send(Socket, Host, Port, Msg),
+        unit
+    end.
+
+%% Send CV with custom slew time
+%% Format: /tidal/cv/slew <channel> <value> <lag>
+sendCVSlew(Client, Channel, Value, Lag) ->
+    fun() ->
+        {Socket, Host, Port} = Client,
+        Msg = encode_osc(<<"/tidal/cv/slew">>, [Channel, Value, Lag]),
+        gen_udp:send(Socket, Host, Port, Msg),
+        unit
+    end.
+
+%% Send gate state (0 or 1)
+%% Format: /tidal/gate <channel> <state>
+sendGate(Client, Channel, State) ->
+    fun() ->
+        {Socket, Host, Port} = Client,
+        Msg = encode_osc(<<"/tidal/gate">>, [Channel, State]),
+        gen_udp:send(Socket, Host, Port, Msg),
+        unit
+    end.
+
+%% Trigger gate for a duration (ms)
+%% Format: /tidal/gate/trig <channel> <duration_ms>
+sendGateTrig(Client, Channel, DurationMs) ->
+    fun() ->
+        {Socket, Host, Port} = Client,
+        Msg = encode_osc(<<"/tidal/gate/trig">>, [Channel, DurationMs]),
+        gen_udp:send(Socket, Host, Port, Msg),
+        unit
+    end.
+
+%% ============================================
+%% OSC encoding helpers
+%% ============================================
 
 %% Encode an OSC message
 encode_osc(Address, Args) ->

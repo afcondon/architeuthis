@@ -147,7 +147,7 @@ handle_pattern_message(Text, SchedulerPid, State) ->
 
             %% Validate all patterns parse correctly
             AllValid = lists:all(fun({P, _C}) ->
-                case 'tidal_parse_parser@ps':parse(P) of
+                case ('tidal_parse_parser@ps':parse())(P) of
                     {right, _} -> true;
                     {left, _} -> false
                 end
@@ -170,7 +170,7 @@ handle_pattern_message(Text, SchedulerPid, State) ->
         {pattern, Pattern} ->
             %% Legacy: single pattern
             io:format("WebSocket: Extracted pattern: ~s~n", [Pattern]),
-            case 'tidal_parse_parser@ps':parse(Pattern) of
+            case ('tidal_parse_parser@ps':parse())(Pattern) of
                 {right, _} ->
                     SchedulerPid ! {updatePattern, Pattern},
                     Reply = {text, <<"OK: ", Pattern/binary>>},

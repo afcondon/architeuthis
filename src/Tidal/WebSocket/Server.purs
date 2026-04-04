@@ -37,10 +37,10 @@ type ServerConfig =
   , name :: String
   }
 
--- | Default server config (port 8080)
+-- | Default server config (port 3012)
 defaultServerConfig :: ServerConfig
 defaultServerConfig =
-  { port: 8080
+  { port: 3012
   , name: "tidal_ws"
   }
 

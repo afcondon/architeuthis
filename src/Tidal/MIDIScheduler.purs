@@ -1,11 +1,14 @@
 -- | MIDI-enabled scheduler for Tidal patterns
 -- |
 -- | Maps sample names to MIDI notes and sends them via sendmidi
+-- | Also sends gate triggers via OSC to SuperCollider for CV output
 module Tidal.MIDIScheduler
   ( MIDISchedulerConfig
+  , GateConfig
   , startMIDIScheduler
   , sampleToNote
   , defaultDrumMap
+  , defaultGateConfig
   ) where
 
 import Prelude
@@ -25,15 +28,34 @@ import Effect.Class (liftEffect)
 import Effect.Console (log)
 import Effect.Ref (Ref)
 import Effect.Ref as Ref
-import Erl.Kernel.Erlang (monotonicTime, monotonicStartTime, monotonicTimeDelta, nativeTimeToMilliseconds)
 import Erl.Process (Process, ProcessM, spawn, receive)
 import Erl.Process.Raw as Raw
 import Tidal.Eval.Interpret (tpatToPattern)
 import Tidal.MIDI (MIDIClient, MIDIConfig, startClient, scheduleDrumOnChannel)
+import Tidal.OSC as OSC
 import Tidal.Parse.Parser (parse)
 import Tidal.Pattern.Core (queryArc)
 import Tidal.Pattern.Types (Event(..), Pattern, Arc(..))
 import Tidal.Scheduler (sendAfter, currentTimeMs, TrackInfo, Msg(..))
+
+-- | Gate output configuration (for Expert Sleepers ES-9 via SuperCollider)
+type GateConfig =
+  { enabled :: Boolean      -- Whether to send gates
+  , oscHost :: String       -- SuperCollider host
+  , oscPort :: Int          -- SuperCollider OSC port
+  , channelOffset :: Int    -- Gate channel = MIDI channel - 10 + offset
+  , gateDuration :: Number  -- Gate duration in ms
+  }
+
+-- | Default gate configuration (disabled by default)
+defaultGateConfig :: GateConfig
+defaultGateConfig =
+  { enabled: false
+  , oscHost: "127.0.0.1"
+  , oscPort: 57120
+  , channelOffset: 0        -- Channel 10 -> gate 0, channel 11 -> gate 1, etc.
+  , gateDuration: 50.0      -- 50ms gate pulse
+  }
 
 -- | MIDI scheduler configuration
 type MIDISchedulerConfig =
@@ -43,6 +65,7 @@ type MIDISchedulerConfig =
   , midi :: MIDIConfig      -- MIDI output config
   , noteMap :: Map String Int  -- Sample name -> MIDI note
   , noteDuration :: Int     -- Note duration in ms
+  , gate :: GateConfig      -- Gate output config (optional)
   }
 
 -- | A parsed track with its pattern and channel
@@ -55,6 +78,7 @@ type MIDISchedulerState =
   , nextCycle :: R.Rational
   , tracks :: Array ParsedTrack  -- Multiple tracks, each with own channel
   , midiClient :: MIDIClient
+  , oscClient :: Maybe OSC.OSCClient  -- For gate output (if enabled)
   , lastTrigger :: R.Rational  -- Avoid double-triggering (global for simplicity)
   }
 
@@ -101,6 +125,14 @@ parseTrack { pattern: patStr, channel } =
 startMIDIScheduler :: MIDISchedulerConfig -> String -> Effect (Process Msg)
 startMIDIScheduler config patternStr = do
   midiClient <- startClient config.midi
+
+  -- Initialize OSC client if gate output is enabled
+  oscClient <- if config.gate.enabled
+    then do
+      client <- OSC.startClient { host: config.gate.oscHost, port: config.gate.oscPort }
+      pure (Just client)
+    else pure Nothing
+
   spawn do
     startTime <- liftEffect currentTimeMs
 
@@ -115,6 +147,7 @@ startMIDIScheduler config patternStr = do
       , nextCycle: zero
       , tracks: initialTrack
       , midiClient
+      , oscClient
       , lastTrigger: R.fromInt (-1)
       }
 
@@ -122,6 +155,8 @@ startMIDIScheduler config patternStr = do
     liftEffect $ log $ "Device: " <> config.midi.device
     liftEffect $ log $ "BPM: " <> show config.bpm
     liftEffect $ log $ "Pattern: " <> patternStr
+    when config.gate.enabled do
+      liftEffect $ log $ "Gate output: enabled (OSC " <> config.gate.oscHost <> ":" <> show config.gate.oscPort <> ")"
 
     pid <- liftEffect Raw.self
     liftEffect $ sendAfter config.scheduleInterval pid Tick
@@ -171,6 +206,17 @@ midiSchedulerLoop stateRef = do
 
                 liftEffect $ log $ "  ♪ " <> sample <> " → ch" <> show track.channel <> " note " <> show note <> " in " <> show delayInt <> "ms"
                 liftEffect $ scheduleDrumOnChannel state.midiClient track.channel note state.config.midi.defaultVelocity state.config.noteDuration delayInt
+
+                -- Send gate trigger if enabled
+                -- Gate channel derived from MIDI channel: ch10 -> gate 0, ch11 -> gate 1, etc.
+                when state.config.gate.enabled do
+                  case state.oscClient of
+                    Just osc -> do
+                      let gateChannel = track.channel - 10 + state.config.gate.channelOffset
+                      when (gateChannel >= 0 && gateChannel < 8) do
+                        liftEffect $ log $ "  ⚡ gate " <> show gateChannel <> " trig " <> show state.config.gate.gateDuration <> "ms"
+                        liftEffect $ OSC.sendGateTrig osc gateChannel state.config.gate.gateDuration
+                    Nothing -> pure unit
 
               -- Update last trigger
               liftEffect $ Ref.modify_ (_ { lastTrigger = eventCycle }) stateRef

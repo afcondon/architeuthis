@@ -5,6 +5,7 @@ bower_components/
 
 # Build output
 output/
+output-erl/
 dist/
 build/
 .psci_modules/

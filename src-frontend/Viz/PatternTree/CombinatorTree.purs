@@ -22,7 +22,6 @@ import Component.PatternTree (PatternTree(..), PatternMetrics, analyzePattern)
 import Control.Comonad.Cofree (head, tail)
 import D3.Viz.PatternTree.Sunburst (patternToHierarchy, sunburstColor)
 import Data.Array as Array
-import Data.Foldable (for_)
 import Data.Int as Int
 import Data.Maybe (Maybe(..), maybe)
 import Data.Number (sqrt)
@@ -35,14 +34,11 @@ import Data.Tree (Tree, mkTree)
 import DataViz.Layout.Hierarchy.Partition (PartitionNode(..), defaultPartitionConfig, hierarchy, partition, sunburstArcPath, flattenPartition, fixParallelLayout)
 import DataViz.Layout.Hierarchy.Tree (tree, defaultTreeConfig)
 import Effect (Effect)
-import PSD3.AST as T
-import PSD3.Expr.Friendly (attr, cx, cy, fill, fontSize, num, path, r, stroke, strokeWidth, text, textAnchor, textContent, viewBox, x, y)
-import PSD3.Internal.Behavior.Types (onClick)
-import PSD3.Internal.Behavior.FFI (attachZoomWithCallback_, ZoomTransform)
-import PSD3.Internal.Capabilities.Selection (renderTree, select)
-import PSD3.Internal.Selection.Operations as Ops
-import PSD3.Internal.Selection.Types (ElementType(..))
-import PSD3.Interpreter.D3 (runD3v2M)
+import Hylograph.Expr.Friendly (attr, cx, cy, fill, fontSize, num, path, r, stroke, strokeWidth, text, textAnchor, textContent, transform, viewBox, width, height, x, y)
+import Hylograph.HATS (Tree, elem, forEach, withBehaviors, onClick) as H
+import Hylograph.HATS.InterpreterTick (rerender)
+import Hylograph.Internal.Behavior.FFI (attachZoomWithCallback_, ZoomTransform)
+import Hylograph.Internal.Selection.Types (ElementType(..))
 import Web.DOM.NonElementParentNode (getElementById)
 import Web.HTML as Web.HTML
 import Web.HTML.HTMLDocument as HTMLDocument
@@ -174,6 +170,178 @@ labelPartsToString parts = String.joinWith " " $ Array.mapMaybe partToStr parts
   partToStr (PunctuationPart p) = Just p
 
 -- =============================================================================
+-- CHIMERIC TEMPLATES: Functions that return H.Tree for conditional rendering
+-- =============================================================================
+
+-- | Dispatch to the correct template based on node type
+-- | This replaces T.conditionalRender with pattern matching
+renderNode :: LayoutNode -> H.Tree
+renderNode node
+  | node.isPattern = miniSunburstTemplate node
+  | node.isPatternNode = patternNodeTemplate node
+  | otherwise = combinatorNodeTemplate node
+
+-- | Template for combinator nodes: subtle circles with prominent labels
+-- | Shows enabled/disabled state: purple when enabled, gray with strikethrough when disabled
+combinatorNodeTemplate :: LayoutNode -> H.Tree
+combinatorNodeTemplate node =
+  let bgColor = if node.enabled then "#f5f0f8" else "#e0e0e0"  -- Light purple or gray
+      strokeColor = if node.enabled then "#d0c0d8" else "#bdbdbd"  -- Purple or gray stroke
+      textColor = if node.enabled then "#5E35B1" else "#9E9E9E"  -- Deep purple or gray text
+      textDecor = if node.enabled then "none" else "line-through"  -- Strikethrough when disabled
+  in H.elem Group
+    [ attr "style" $ text "cursor: pointer;" ]
+    [ -- Subtle background circle
+      H.elem Circle
+        [ cx $ num 0.0
+        , cy $ num 0.0
+        , r $ num 10.0
+        , fill $ text bgColor
+        , stroke $ text strokeColor
+        , strokeWidth $ num 1.0
+        ]
+        []
+    -- Prominent label
+    , H.elem Text
+        [ x $ num 0.0
+        , y $ num 5.0
+        , textContent $ text node.label
+        , fontSize $ num 14.0
+        , textAnchor $ text "middle"
+        , fill $ text textColor
+        , attr "font-weight" $ text "700"
+        , attr "font-family" $ text "system-ui, sans-serif"
+        , attr "text-decoration" $ text textDecor
+        ]
+        []
+    ]
+
+-- | Template for pattern leaf nodes: mini sunburst diagrams with metrics
+miniSunburstTemplate :: LayoutNode -> H.Tree
+miniSunburstTemplate node =
+  case node.pattern of
+    Nothing -> combinatorNodeTemplate node  -- Fallback if no pattern
+    Just pattern ->
+      -- Build hierarchy from pattern
+      let hierData = patternToHierarchy pattern
+          partRoot = hierarchy hierData
+          config = defaultPartitionConfig { size = { width: 1.0, height: 1.0 }, padding = 0.01 }
+          partitioned = partition config partRoot
+          fixed = fixParallelLayout (\d -> d.nodeType == "parallel") partitioned
+          allNodes = flattenPartition fixed
+          nodes = Array.filter (\(PartNode n) -> n.depth > 0) allNodes
+
+          -- Find root for center color
+          rootNode = Array.find (\(PartNode n) -> n.depth == 0) allNodes
+          rootType = case rootNode of
+            Just (PartNode n) -> n.data_.nodeType
+            Nothing -> "sequence"
+
+          -- Build mini sunburst arcs
+          radius = 60.0
+          innerRadius = radius * 0.3
+
+          -- Compute metrics
+          metrics = analyzePattern pattern
+          metricsStr = formatMetrics metrics
+      in
+        -- Offset sunburst down by radius to clear combinator labels above
+        H.elem Group
+          [ transform $ text ("translate(0," <> show radius <> ")") ]
+          ( -- Arcs
+            map (\(PartNode n) ->
+              let arcPath = sunburstArcPath n.x0 n.y0 n.x1 n.y1 radius
+                  fillColor = sunburstColor n.data_.nodeType
+              in H.elem Path
+                [ path $ text arcPath
+                , fill $ text fillColor
+                , stroke $ text "#fff"
+                , strokeWidth $ num 0.5
+                ]
+                []
+            ) nodes
+            <>
+            -- Center circle with root color
+            [ H.elem Circle
+                [ cx $ num 0.0
+                , cy $ num 0.0
+                , r $ num innerRadius
+                , fill $ text (sunburstColor rootType)
+                , stroke $ text "#fff"
+                , strokeWidth $ num 1.0
+                ]
+                []
+            -- Label below sunburst
+            , H.elem Text
+                [ x $ num 0.0
+                , y $ num (radius + 14.0)
+                , textContent $ text node.label
+                , fontSize $ num 11.0
+                , textAnchor $ text "middle"
+                , fill $ text "#333"
+                , attr "font-weight" $ text "600"
+                ]
+                []
+            -- Metrics below label
+            , H.elem Text
+                [ x $ num 0.0
+                , y $ num (radius + 26.0)
+                , textContent $ text metricsStr
+                , fontSize $ num 9.0
+                , textAnchor $ text "middle"
+                , fill $ text "#666"
+                , attr "font-family" $ text "monospace"
+                ]
+                []
+            ]
+          )
+
+-- | Template for expanded pattern nodes in full tree mode
+-- | Each node is a colored circle with label based on its nodeType
+patternNodeTemplate :: LayoutNode -> H.Tree
+patternNodeTemplate node =
+  let fillColor = sunburstColor node.nodeType
+      radius = 12.0
+  in
+    H.elem Group
+      []
+      [ H.elem Circle
+          [ cx $ num 0.0
+          , cy $ num 0.0
+          , r $ num radius
+          , fill $ text fillColor
+          , stroke $ text "#fff"
+          , strokeWidth $ num 1.5
+          ]
+          []
+      -- Label below circle
+      , H.elem Text
+          [ x $ num 0.0
+          , y $ num (radius + 10.0)
+          , textContent $ text node.label
+          , fontSize $ num 9.0
+          , textAnchor $ text "middle"
+          , fill $ text "#333"
+          , attr "font-weight" $ text "500"
+          ]
+          []
+      ]
+
+-- | Format pattern metrics as a compact string
+formatMetrics :: PatternMetrics -> String
+formatMetrics m =
+  let densityPct = Int.round (m.density * 100.0)
+      speedStr = if m.speedFactor == 1.0 then ""
+                 else if m.speedFactor > 1.0 then " ×" <> show (Int.round m.speedFactor)
+                 else " ÷" <> show (Int.round (1.0 / m.speedFactor))
+      polyStr = if m.maxPolyphony > 1 then " ♪" <> show m.maxPolyphony else ""
+      flagsStr = (if m.hasEuclidean then " E" else "")
+              <> (if m.hasProbability then " ?" else "")
+  in show m.events <> "/" <> show m.slots <> " (" <> show densityPct <> "%)" <> polyStr <> speedStr <> flagsStr
+
+-- =============================================================================
+-- Drawing Functions
+-- =============================================================================
 
 -- | Draw a combinator tree with sunburst leaves
 -- | selector should be a CSS selector (e.g., "#container" or ".viz-area")
@@ -182,103 +350,80 @@ labelPartsToString parts = String.joinWith " " $ Array.mapMaybe partToStr parts
 drawCombinatorTree :: String -> Tree CombinatorNode -> ZoomTransform -> (ZoomTransform -> Effect Unit) -> Effect Unit
 drawCombinatorTree selector combTree initialZoom onZoomChange = do
   -- Layout parameters
-  let width = 1200.0
-  let height = 800.0
+  let chartWidth = 1200.0
+  let chartHeight = 800.0
   let margin = 80.0
 
   -- Convert to layout tree and apply tree layout
   let layoutTree = mapCombinatorTree combTree
-  let treeConfig = defaultTreeConfig { size = { width: width - margin * 2.0, height: height - margin * 2.0 } }
+  let treeConfig = defaultTreeConfig { size = { width: chartWidth - margin * 2.0, height: chartHeight - margin * 2.0 } }
   let positioned = tree treeConfig layoutTree
 
   -- Flatten tree to array of positioned nodes
   let flattenTree :: Tree LayoutNode -> Array LayoutNode
       flattenTree t = [head t] <> Array.concatMap flattenTree (Array.fromFoldable (tail t))
   let nodes = flattenTree positioned
-
-  -- Build the entire visualization tree declaratively with ConditionalRender
   let links = collectLinks positioned
 
-  -- SVG wrapper with zoom group
-  let svgTree :: T.Tree Unit
-      svgTree =
-        T.named SVG "combinator-tree-svg"
-          [ attr "width" $ text "100%"
-          , attr "height" $ text "100%"
-          , viewBox 0.0 0.0 width height
+  -- Build the complete visualization tree
+  let cssSelector = if String.take 1 selector == "#" then selector else "#" <> selector
+
+  let vizTree :: H.Tree
+      vizTree =
+        H.elem SVG
+          [ width $ text "100%"
+          , height $ text "100%"
+          , viewBox 0.0 0.0 chartWidth chartHeight
           , attr "class" $ text "combinator-tree-viz"
           , attr "id" $ text "combinator-tree-svg"
           ]
-          `T.withChild`
-            -- Zoom group - all content goes inside here
-            ( T.named Group "combinator-zoom-group"
-                [ attr "id" $ text "combinator-zoom-group"
-                , attr "class" $ text "zoom-group"
-                ]
-                `T.withChild`
-                  ( T.named Group "combinator-tree"
-                      [ attr "transform" $ text ("translate(" <> show margin <> "," <> show margin <> ")") ]
-                      `T.withChildren`
-                        [ -- Links first (behind nodes)
-                          T.named Group "links" []
-                            `T.withChildren`
-                              map (\link ->
-                                T.elem Path
-                                  [ path $ text (verticalLink link.sourceX link.sourceY link.targetX link.targetY)
-                                  , fill $ text "none"
-                                  , stroke $ text "#9E9E9E"
-                                  , strokeWidth $ num 2.0
-                                  ]
-                              ) links
-                        -- Nodes group placeholder (will be populated in step 2)
-                        , T.named Group "nodes" [ attr "id" $ text "combinator-nodes" ]
-                        ]
-                  )
-            )
+          [ -- Zoom group - all content goes inside here
+            H.elem Group
+              [ attr "id" $ text "combinator-zoom-group"
+              , attr "class" $ text "zoom-group"
+              ]
+              [ H.elem Group
+                  [ transform $ text ("translate(" <> show margin <> "," <> show margin <> ")") ]
+                  [ -- Links layer (behind nodes)
+                    H.elem Group
+                      [ attr "class" $ text "links" ]
+                      ( map (\link ->
+                          H.elem Path
+                            [ path $ text (verticalLink link.sourceX link.sourceY link.targetX link.targetY)
+                            , fill $ text "none"
+                            , stroke $ text "#9E9E9E"
+                            , strokeWidth $ num 2.0
+                            ]
+                            []
+                        ) links
+                      )
+                  -- Nodes layer with forEach
+                  , H.elem Group
+                      [ attr "class" $ text "nodes" ]
+                      [ H.forEach "combinator-nodes" Group nodes nodeKey \node ->
+                          H.elem Group
+                            [ transform $ text ("translate(" <> show node.x <> "," <> show node.y <> ")") ]
+                            [ renderNode node ]
+                      ]
+                  ]
+              ]
+          ]
 
-  -- Nodes tree: separate from scaffolding to allow different phantom types
-  let nodesTree :: T.Tree LayoutNode
-      nodesTree =
-        T.named Group "nodes-content" []
-          `T.withChild`
-            ( T.joinData "chimeric-nodes" "g" nodes $ \node ->
-                T.elem Group
-                  [ attr "transform" $ text ("translate(" <> show node.x <> "," <> show node.y <> ")") ]
-                  `T.withChildren`
-                    [ -- CHIMERIC RENDERING: ConditionalRender chooses template based on node type
-                      T.conditionalRender
-                        [ { predicate: \n -> n.isPattern
-                          , spec: miniSunburstTemplate
-                          }
-                        , { predicate: \n -> not n.isPattern
-                          , spec: combinatorNodeTemplate
-                          }
-                        ]
-                    ]
-            )
-
-  -- Render using two-step pattern: scaffolding first, then chimeric nodes
-  let cssSelector = if String.take 1 selector == "#" then selector else "#" <> selector
-  runD3v2M do
-    _ <- Ops.clear cssSelector
-    container <- select cssSelector
-    -- Step 1: Render SVG with scaffolding (Tree Unit) - links and placeholder nodes group
-    _ <- renderTree container svgTree
-    -- Step 2: Select nodes group and render chimeric tree (Tree LayoutNode)
-    -- This is where ConditionalRender chooses between combinator and sunburst templates
-    nodesGroup <- select "#combinator-nodes"
-    _ <- renderTree nodesGroup nodesTree
-    pure unit
+  _ <- rerender cssSelector vizTree
 
   -- Attach zoom behavior after rendering
   doc <- Web.HTML.window >>= Window.document
-  let node = HTMLDocument.toNonElementParentNode doc
-  maybeSvg <- getElementById "combinator-tree-svg" node
+  let docNode = HTMLDocument.toNonElementParentNode doc
+  maybeSvg <- getElementById "combinator-tree-svg" docNode
   case maybeSvg of
     Just svgElem -> do
       _ <- attachZoomWithCallback_ svgElem 0.1 10.0 "#combinator-zoom-group" initialZoom onZoomChange
       pure unit
     Nothing -> pure unit
+
+  where
+  nodeKey :: LayoutNode -> String
+  nodeKey n = n.label <> "-" <> show n.x <> "-" <> show n.y
 
 -- | Metadata for each tree in the forest
 type TreeMetadata =
@@ -317,7 +462,6 @@ drawCombinatorForest selector trees metadata onMuteToggle onLayoutToggle onCombi
   let startY = 80.0 + cellHeight / 2.0
 
   -- Process each tree: layout and collect positioned nodes/links
-  -- Zip trees with metadata to get trackIndex and active state
   let treesWithMeta = Array.zipWith (\t m -> { tree: t, meta: m }) trees metadata
   let processedTrees = Array.mapWithIndex (\idx { tree: combTree, meta } ->
         let col = idx `mod` cols
@@ -330,8 +474,8 @@ drawCombinatorForest selector trees metadata onMuteToggle onLayoutToggle onCombi
             treeWidth = treeSize - margin * 2.0
             -- Full tree mode needs more vertical space for expanded nodes
             treeHeight = if meta.useTreeLayout
-                         then treeWidth * 0.8  -- More vertical space for full tree
-                         else treeWidth * 0.5  -- Compact for chimera
+                         then treeWidth * 0.8
+                         else treeWidth * 0.5
             treeConfig = defaultTreeConfig { size = { width: treeWidth, height: treeHeight } }
             positioned = tree treeConfig layoutTree
             -- Flatten to nodes and links
@@ -341,14 +485,13 @@ drawCombinatorForest selector trees metadata onMuteToggle onLayoutToggle onCombi
             links = collectLinks positioned
 
             -- Enrich combinator nodes with trackIndex and combIndex
-            -- Count combinator nodes to assign indices
             enrichNodes :: List.List LayoutNode -> Int -> List.List LayoutNode
             enrichNodes List.Nil _ = List.Nil
             enrichNodes (n : rest) combIdx =
               if n.isPattern then
                 n : enrichNodes rest combIdx
               else if n.isPatternNode then
-                n : enrichNodes rest combIdx  -- Pattern nodes don't get combIndex
+                n : enrichNodes rest combIdx
               else
                 n { trackIndex = meta.trackIndex, combIndex = combIdx }
                   : enrichNodes rest (combIdx + 1)
@@ -357,231 +500,218 @@ drawCombinatorForest selector trees metadata onMuteToggle onLayoutToggle onCombi
             -- Find the sunburst node (pattern leaf) for button positioning
             sunburstNode = Array.find (\n -> n.isPattern) nodes
             -- Collect combinator nodes with their indices (for click handling)
-            -- Index corresponds to position in the combinator chain
             combinatorNodes = Array.mapWithIndex (\i n -> { combIndex: i, node: n })
                               $ Array.filter (\n -> not n.isPattern && not n.isPatternNode) nodes
             -- Find the root node (first node) for centering
             rootNode = Array.head nodes
-            -- Calculate root offset for centering: we want root.x to be at center
+            -- Calculate root offset for centering
             rootOffsetX = maybe 0.0 (\r -> treeWidth / 2.0 - r.x) rootNode
             -- Find bottom-most node for toggle button positioning
             bottomNode = Array.last $ Array.sortBy (\a b -> compare a.y b.y) nodes
         in { idx, centerX, centerY, nodes, links, treeSize, trackIndex: meta.trackIndex, active: meta.active, useTreeLayout: meta.useTreeLayout, sunburstNode, combinatorNodes, rootNode, rootOffsetX, bottomNode }
       ) treesWithMeta
 
-  -- Build SVG with all trees
-  let svgTree :: T.Tree Unit
-      svgTree =
-        T.named SVG "combinator-forest-svg"
-          [ attr "width" $ text "100%"
-          , attr "height" $ text "100%"
+  -- Build the complete visualization tree
+  let cssSelector = if String.take 1 selector == "#" then selector else "#" <> selector
+
+  let vizTree :: H.Tree
+      vizTree =
+        H.elem SVG
+          [ width $ text "100%"
+          , height $ text "100%"
           , viewBox 0.0 0.0 chartWidth chartHeight
           , attr "class" $ text "combinator-forest-viz"
           , attr "id" $ text "combinator-forest-svg"
           ]
-          `T.withChild`
-            -- Zoom group - all content goes inside here
-            ( T.named Group "forest-zoom-group"
-                [ attr "id" $ text "forest-zoom-group"
-                , attr "class" $ text "zoom-group"
-                ]
-                `T.withChildren`
-                  -- Create a group for each tree with links
-                  ( Array.concatMap (\t ->
-                      [ T.named Group ("tree-" <> show t.idx)
-                          -- Apply rootOffsetX to center tree on root node (not tree bounds)
-                          [ attr "transform" $ text ("translate(" <> show (t.centerX - t.treeSize / 2.0 + t.rootOffsetX) <> "," <> show (t.centerY - t.treeSize / 2.0) <> ")") ]
-                          `T.withChildren`
-                            [ -- Links for this tree
-                              T.named Group ("links-" <> show t.idx) []
-                                `T.withChildren`
-                                  map (\link ->
-                                    T.elem Path
-                                      [ path $ text (verticalLink link.sourceX link.sourceY link.targetX link.targetY)
-                                      , fill $ text "none"
-                                      , stroke $ text "#9E9E9E"
-                                      , strokeWidth $ num 1.5
-                                      ]
-                                  ) t.links
-                            -- Placeholder for nodes (will be filled in step 2)
-                            , T.named Group ("nodes-" <> show t.idx) [ attr "id" $ text ("forest-nodes-" <> show t.idx) ]
-                            ]
-                      ]
-                    ) processedTrees
-                  )
-            )
-
-  -- Render SVG scaffolding
-  let cssSelector = if String.take 1 selector == "#" then selector else "#" <> selector
-  runD3v2M do
-    _ <- Ops.clear cssSelector
-    container <- select cssSelector
-    _ <- renderTree container svgTree
-    pure unit
-
-  -- Render nodes for each tree (step 2 - chimeric rendering)
-  for_ processedTrees \t -> do
-    let nodesTree :: T.Tree LayoutNode
-        nodesTree =
-          T.named Group "nodes-content" []
-            `T.withChild`
-              ( T.joinData ("chimeric-nodes-" <> show t.idx) "g" t.nodes $ \node ->
-                  T.elem Group
-                    [ attr "transform" $ text ("translate(" <> show node.x <> "," <> show node.y <> ")") ]
-                    `T.withChildren`
-                      [ T.conditionalRender
-                          [ { predicate: \n -> n.isPattern
-                            , spec: miniSunburstTemplate  -- Chimera mode: render as sunburst
-                            }
-                          , { predicate: \n -> n.isPatternNode
-                            , spec: patternNodeTemplate  -- Full tree mode: render as colored node
-                            }
-                          , { predicate: \n -> not n.isPattern && not n.isPatternNode
-                            , spec: combinatorNodeTemplate  -- Combinator nodes
-                            }
+          [ -- Zoom group
+            H.elem Group
+              [ attr "id" $ text "forest-zoom-group"
+              , attr "class" $ text "zoom-group"
+              ]
+              ( -- Each tree as a group with links, nodes, and controls
+                Array.concatMap (\t ->
+                  [ -- Tree group with links and nodes
+                    H.elem Group
+                      [ transform $ text ("translate(" <> show (t.centerX - t.treeSize / 2.0 + t.rootOffsetX) <> "," <> show (t.centerY - t.treeSize / 2.0) <> ")") ]
+                      [ -- Links
+                        H.elem Group
+                          [ attr "class" $ text "links" ]
+                          ( map (\link ->
+                              H.elem Path
+                                [ path $ text (verticalLink link.sourceX link.sourceY link.targetX link.targetY)
+                                , fill $ text "none"
+                                , stroke $ text "#9E9E9E"
+                                , strokeWidth $ num 1.5
+                                ]
+                                []
+                            ) t.links
+                          )
+                      -- Nodes with forEach
+                      , H.elem Group
+                          [ attr "class" $ text "nodes" ]
+                          [ H.forEach ("nodes-" <> show t.idx) Group t.nodes (forestNodeKey t.idx) \node ->
+                              H.elem Group
+                                [ transform $ text ("translate(" <> show node.x <> "," <> show node.y <> ")") ]
+                                [ renderNode node ]
                           ]
                       ]
+                  ]
+                  -- Mute button (positioned at sunburst center)
+                  <> renderMuteButton t onMuteToggle
+                  -- Layout toggle button
+                  <> renderLayoutButton t onLayoutToggle
+                  -- Combinator click overlays
+                  <> renderCombinatorOverlays t onCombinatorToggle
+                ) processedTrees
               )
-    runD3v2M do
-      nodesGroup <- select ("#forest-nodes-" <> show t.idx)
-      _ <- renderTree nodesGroup nodesTree
-      pure unit
+          ]
 
-  -- Render mute buttons at the center of each sunburst (step 3)
-  for_ processedTrees \t -> do
-    case t.sunburstNode of
-      Just sn -> do
-        -- Position: tree offset + node position + sunburst center offset
-        let btnX = t.centerX - t.treeSize / 2.0 + sn.x
-        let btnY = t.centerY - t.treeSize / 2.0 + sn.y + 60.0  -- 60.0 is sunburst radius offset
-        let btnRadius = 18.0
-        let btnColor = if t.active then "#4CAF50" else "#757575"  -- Green when active, gray when muted
-        let btnIcon = if t.active then "▶" else "◼"  -- Play/stop icon
-        let muteBtn :: T.Tree Unit
-            muteBtn =
-              T.named Group ("mute-btn-" <> show t.trackIndex)
-                [ attr "transform" $ text ("translate(" <> show btnX <> "," <> show btnY <> ")")
-                , attr "class" $ text "mute-button"
-                , attr "style" $ text "cursor: pointer;"
-                ]
-                `T.withChildren`
-                  [ T.elem Circle
-                      [ cx $ num 0.0
-                      , cy $ num 0.0
-                      , r $ num btnRadius
-                      , fill $ text btnColor
-                      , stroke $ text "white"
-                      , strokeWidth $ num 2.0
-                      ]
-                  , T.elem Text
-                      [ x $ num 0.0
-                      , y $ num 5.0
-                      , textContent $ text btnIcon
-                      , fontSize $ num 14.0
-                      , fill $ text "white"
-                      , textAnchor $ text "middle"
-                      ]
-                  ]
-                `T.withBehaviors`
-                  [ onClick (onMuteToggle t.trackIndex) ]
-        runD3v2M do
-          zoomGroup <- select "#forest-zoom-group"
-          _ <- renderTree zoomGroup muteBtn
-          pure unit
-      Nothing -> pure unit
+  _ <- rerender cssSelector vizTree
 
-  -- Render layout toggle buttons for each tree (step 3.5)
-  -- Position: centered horizontally below the tree/sunburst
-  for_ processedTrees \t -> do
-    case { root: t.rootNode, bottom: t.bottomNode } of
-      { root: Just root, bottom: Just bottom } -> do
-        -- Center horizontally on root (applying same offset as tree)
-        let btnX = t.centerX - t.treeSize / 2.0 + t.rootOffsetX + root.x
-        -- Below the bottom node: for chimera add extra space for sunburst+metrics, for tree less
-        let bottomOffset = if t.useTreeLayout then 35.0 else 115.0  -- Sunburst is ~60 + metrics ~40
-        let btnY = t.centerY - t.treeSize / 2.0 + bottom.y + bottomOffset
-        let btnRadius = 10.0
-        -- Blue for chimera (sunburst), purple for full tree
-        let btnColor = if t.useTreeLayout then "#7B68EE" else "#2196F3"
-        -- Icon: sunburst symbol for chimera, tree symbol for tree mode
-        let btnIcon = if t.useTreeLayout then "◉" else "⬡"  -- What clicking will switch TO
-        let layoutBtn :: T.Tree Unit
-            layoutBtn =
-              T.named Group ("layout-btn-" <> show t.trackIndex)
-                [ attr "transform" $ text ("translate(" <> show btnX <> "," <> show btnY <> ")")
-                , attr "class" $ text "layout-toggle-btn"
-                , attr "style" $ text "cursor: pointer;"
-                ]
-                `T.withChildren`
-                  [ T.elem Circle
-                      [ cx $ num 0.0
-                      , cy $ num 0.0
-                      , r $ num btnRadius
-                      , fill $ text btnColor
-                      , stroke $ text "white"
-                      , strokeWidth $ num 1.5
-                      ]
-                  , T.elem Text
-                      [ x $ num 0.0
-                      , y $ num 3.5
-                      , textContent $ text btnIcon
-                      , fontSize $ num 10.0
-                      , fill $ text "white"
-                      , textAnchor $ text "middle"
-                      ]
-                  ]
-                `T.withBehaviors`
-                  [ onClick (onLayoutToggle t.trackIndex) ]
-        runD3v2M do
-          zoomGroup <- select "#forest-zoom-group"
-          _ <- renderTree zoomGroup layoutBtn
-          pure unit
-      _ -> pure unit
-
-  -- Render combinator click overlays (step 4)
-  for_ processedTrees \t -> do
-    for_ t.combinatorNodes \cNode -> do
-      -- Position: tree offset + node position
-      let clickX = t.centerX - t.treeSize / 2.0 + cNode.node.x
-      let clickY = t.centerY - t.treeSize / 2.0 + cNode.node.y
-      let clickRadius = 12.0  -- Slightly larger than the visible circle for easier clicking
-      let clickOverlay :: T.Tree Unit
-          clickOverlay =
-            T.named Group ("comb-click-" <> show t.trackIndex <> "-" <> show cNode.combIndex)
-              [ attr "transform" $ text ("translate(" <> show clickX <> "," <> show clickY <> ")")
-              , attr "class" $ text "combinator-click-overlay"
-              ]
-              `T.withChild`
-                T.elem Circle
-                  [ cx $ num 0.0
-                  , cy $ num 0.0
-                  , r $ num clickRadius
-                  , fill $ text "transparent"
-                  , attr "style" $ text "cursor: pointer;"
-                  ]
-              `T.withBehaviors`
-                [ onClick (onCombinatorToggle t.trackIndex cNode.combIndex) ]
-      runD3v2M do
-        zoomGroup <- select "#forest-zoom-group"
-        _ <- renderTree zoomGroup clickOverlay
-        pure unit
-
-  -- NOTE: SVG Tangle number overlays removed for now - D3 zoom captures mouse events
-  -- Use the Tangle output panel for adjusting numeric parameters instead.
-  -- Future: could use physical MIDI controllers mapped to parameters
-
-  -- Attach zoom behavior
+  -- Attach zoom behavior after rendering
   doc <- Web.HTML.window >>= Window.document
-  let node = HTMLDocument.toNonElementParentNode doc
-  maybeSvg <- getElementById "combinator-forest-svg" node
+  let docNode = HTMLDocument.toNonElementParentNode doc
+  maybeSvg <- getElementById "combinator-forest-svg" docNode
   case maybeSvg of
     Just svgElem -> do
       _ <- attachZoomWithCallback_ svgElem 0.1 10.0 "#forest-zoom-group" initialZoom onZoomChange
       pure unit
     Nothing -> pure unit
 
+  where
+  forestNodeKey :: Int -> LayoutNode -> String
+  forestNodeKey treeIdx n = show treeIdx <> "-" <> n.label <> "-" <> show n.x
+
+-- | Render mute button at sunburst center
+renderMuteButton :: forall r.
+  { sunburstNode :: Maybe LayoutNode
+  , centerX :: Number
+  , centerY :: Number
+  , treeSize :: Number
+  , trackIndex :: Int
+  , active :: Boolean
+  | r
+  } -> (Int -> Effect Unit) -> Array H.Tree
+renderMuteButton t onMuteToggle =
+  case t.sunburstNode of
+    Just sn ->
+      let btnX = t.centerX - t.treeSize / 2.0 + sn.x
+          btnY = t.centerY - t.treeSize / 2.0 + sn.y + 60.0
+          btnRadius = 18.0
+          btnColor = if t.active then "#4CAF50" else "#757575"
+          btnIcon = if t.active then "▶" else "◼"
+      in [ H.withBehaviors [ H.onClick (onMuteToggle t.trackIndex) ] $
+             H.elem Group
+               [ transform $ text ("translate(" <> show btnX <> "," <> show btnY <> ")")
+               , attr "class" $ text "mute-button"
+               , attr "style" $ text "cursor: pointer;"
+               ]
+               [ H.elem Circle
+                   [ cx $ num 0.0
+                   , cy $ num 0.0
+                   , r $ num btnRadius
+                   , fill $ text btnColor
+                   , stroke $ text "white"
+                   , strokeWidth $ num 2.0
+                   ]
+                   []
+               , H.elem Text
+                   [ x $ num 0.0
+                   , y $ num 5.0
+                   , textContent $ text btnIcon
+                   , fontSize $ num 14.0
+                   , fill $ text "white"
+                   , textAnchor $ text "middle"
+                   ]
+                   []
+               ]
+         ]
+    Nothing -> []
+
+-- | Render layout toggle button below tree
+renderLayoutButton :: forall r.
+  { rootNode :: Maybe LayoutNode
+  , bottomNode :: Maybe LayoutNode
+  , centerX :: Number
+  , centerY :: Number
+  , treeSize :: Number
+  , rootOffsetX :: Number
+  , trackIndex :: Int
+  , useTreeLayout :: Boolean
+  | r
+  } -> (Int -> Effect Unit) -> Array H.Tree
+renderLayoutButton t onLayoutToggle =
+  case { root: t.rootNode, bottom: t.bottomNode } of
+    { root: Just root, bottom: Just bottom } ->
+      let btnX = t.centerX - t.treeSize / 2.0 + t.rootOffsetX + root.x
+          bottomOffset = if t.useTreeLayout then 35.0 else 115.0
+          btnY = t.centerY - t.treeSize / 2.0 + bottom.y + bottomOffset
+          btnRadius = 10.0
+          btnColor = if t.useTreeLayout then "#7B68EE" else "#2196F3"
+          btnIcon = if t.useTreeLayout then "◉" else "⬡"
+      in [ H.withBehaviors [ H.onClick (onLayoutToggle t.trackIndex) ] $
+             H.elem Group
+               [ transform $ text ("translate(" <> show btnX <> "," <> show btnY <> ")")
+               , attr "class" $ text "layout-toggle-btn"
+               , attr "style" $ text "cursor: pointer;"
+               ]
+               [ H.elem Circle
+                   [ cx $ num 0.0
+                   , cy $ num 0.0
+                   , r $ num btnRadius
+                   , fill $ text btnColor
+                   , stroke $ text "white"
+                   , strokeWidth $ num 1.5
+                   ]
+                   []
+               , H.elem Text
+                   [ x $ num 0.0
+                   , y $ num 3.5
+                   , textContent $ text btnIcon
+                   , fontSize $ num 10.0
+                   , fill $ text "white"
+                   , textAnchor $ text "middle"
+                   ]
+                   []
+               ]
+         ]
+    _ -> []
+
+-- | Render transparent click overlays for combinator nodes
+renderCombinatorOverlays :: forall r.
+  { combinatorNodes :: Array { combIndex :: Int, node :: LayoutNode }
+  , centerX :: Number
+  , centerY :: Number
+  , treeSize :: Number
+  , trackIndex :: Int
+  | r
+  } -> (Int -> Int -> Effect Unit) -> Array H.Tree
+renderCombinatorOverlays t onCombinatorToggle =
+  map (\cNode ->
+    let clickX = t.centerX - t.treeSize / 2.0 + cNode.node.x
+        clickY = t.centerY - t.treeSize / 2.0 + cNode.node.y
+        clickRadius = 12.0
+    in H.withBehaviors [ H.onClick (onCombinatorToggle t.trackIndex cNode.combIndex) ] $
+         H.elem Group
+           [ transform $ text ("translate(" <> show clickX <> "," <> show clickY <> ")")
+           , attr "class" $ text "combinator-click-overlay"
+           ]
+           [ H.elem Circle
+               [ cx $ num 0.0
+               , cy $ num 0.0
+               , r $ num clickRadius
+               , fill $ text "transparent"
+               , attr "style" $ text "cursor: pointer;"
+               ]
+               []
+           ]
+  ) t.combinatorNodes
+
+-- =============================================================================
+-- Helper Functions
+-- =============================================================================
+
 -- | Map CombinatorNode tree to layout tree
--- | Initial x, y, depth values don't matter - they'll be overwritten by tree layout
 mapCombinatorTree :: Tree CombinatorNode -> Tree LayoutNode
 mapCombinatorTree t =
   let val = case head t of
@@ -589,186 +719,24 @@ mapCombinatorTree t =
           { label, isPattern: false, isPatternNode: false, nodeType: "combinator"
           , enabled, pattern: Nothing
           , x: 0.0, y: 0.0, depth: 0
-          , trackIndex: -1, combIndex: -1  -- Set after layout
+          , trackIndex: -1, combIndex: -1
           }
         PatternLeaf name pat ->
           { label: name, isPattern: true, isPatternNode: false, nodeType: "pattern"
           , enabled: true, pattern: Just pat
           , x: 0.0, y: 0.0, depth: 0
-          , trackIndex: -1, combIndex: -1  -- Set after layout
+          , trackIndex: -1, combIndex: -1
           }
         PatternNode label nodeType ->
           { label, isPattern: false, isPatternNode: true, nodeType
           , enabled: true, pattern: Nothing
           , x: 0.0, y: 0.0, depth: 0
-          , trackIndex: -1, combIndex: -1  -- Set after layout
+          , trackIndex: -1, combIndex: -1
           }
       children = map mapCombinatorTree (tail t)
   in mkTree val children
 
--- =============================================================================
--- CHIMERIC TEMPLATES: Functions that return Tree LayoutNode for ConditionalRender
--- =============================================================================
-
--- | Template for combinator nodes: subtle circles with prominent labels
--- | Used by ConditionalRender when node.isPattern == false
--- | Shows enabled/disabled state: purple when enabled, gray with strikethrough when disabled
-combinatorNodeTemplate :: LayoutNode -> T.Tree LayoutNode
-combinatorNodeTemplate node =
-  let bgColor = if node.enabled then "#f5f0f8" else "#e0e0e0"  -- Light purple or gray
-      strokeColor = if node.enabled then "#d0c0d8" else "#bdbdbd"  -- Purple or gray stroke
-      textColor = if node.enabled then "#5E35B1" else "#9E9E9E"  -- Deep purple or gray text
-      textDecor = if node.enabled then "none" else "line-through"  -- Strikethrough when disabled
-  in T.named Group ("comb-" <> node.label) [ attr "style" $ text "cursor: pointer;" ]
-    `T.withChildren`
-      [ -- Subtle background circle
-        T.elem Circle
-          [ cx $ num 0.0
-          , cy $ num 0.0
-          , r $ num 10.0  -- Smaller
-          , fill $ text bgColor
-          , stroke $ text strokeColor
-          , strokeWidth $ num 1.0
-          ]
-      -- Prominent label
-      , T.elem Text
-          [ x $ num 0.0
-          , y $ num 5.0
-          , textContent $ text node.label
-          , fontSize $ num 14.0  -- Even larger
-          , textAnchor $ text "middle"
-          , fill $ text textColor
-          , attr "font-weight" $ text "700"  -- Bold
-          , attr "font-family" $ text "system-ui, sans-serif"
-          , attr "text-decoration" $ text textDecor
-          ]
-      ]
-
--- | Template for pattern leaf nodes: mini sunburst diagrams with metrics
--- | Used by ConditionalRender when node.isPattern == true
-miniSunburstTemplate :: LayoutNode -> T.Tree LayoutNode
-miniSunburstTemplate node =
-  case node.pattern of
-    Nothing -> combinatorNodeTemplate node  -- Fallback if no pattern
-    Just pattern ->
-      -- Build hierarchy from pattern
-      let hierData = patternToHierarchy pattern
-          partRoot = hierarchy hierData
-          config = defaultPartitionConfig { size = { width: 1.0, height: 1.0 }, padding = 0.01 }
-          partitioned = partition config partRoot
-          fixed = fixParallelLayout (\d -> d.nodeType == "parallel") partitioned
-          allNodes = flattenPartition fixed
-          nodes = Array.filter (\(PartNode n) -> n.depth > 0) allNodes
-
-          -- Find root for center color
-          rootNode = Array.find (\(PartNode n) -> n.depth == 0) allNodes
-          rootType = case rootNode of
-            Just (PartNode n) -> n.data_.nodeType
-            Nothing -> "sequence"
-
-          -- Build mini sunburst arcs - 50% bigger
-          radius = 60.0
-          innerRadius = radius * 0.3
-          arcs = map (\(PartNode n) ->
-                let arcPath = sunburstArcPath n.x0 n.y0 n.x1 n.y1 radius
-                    fillColor = sunburstColor n.data_.nodeType
-                in { path: arcPath, fill: fillColor }
-              ) nodes
-
-          -- Compute metrics
-          metrics = analyzePattern pattern
-          metricsStr = formatMetrics metrics
-      in
-        -- Offset sunburst down by radius to clear combinator labels above
-        T.named Group ("mini-sunburst-" <> node.label)
-          [ attr "transform" $ text ("translate(0," <> show radius <> ")") ]
-          `T.withChildren`
-            ( -- Arcs
-              map (\arc ->
-                T.elem Path
-                  [ path $ text arc.path
-                  , fill $ text arc.fill
-                  , stroke $ text "#fff"
-                  , strokeWidth $ num 0.5
-                  ]
-              ) arcs
-              <>
-              -- Center circle with root color
-              [ T.elem Circle
-                  [ cx $ num 0.0
-                  , cy $ num 0.0
-                  , r $ num innerRadius
-                  , fill $ text (sunburstColor rootType)
-                  , stroke $ text "#fff"
-                  , strokeWidth $ num 1.0
-                  ]
-              -- Label below sunburst
-              , T.elem Text
-                  [ x $ num 0.0
-                  , y $ num (radius + 14.0)
-                  , textContent $ text node.label
-                  , fontSize $ num 11.0
-                  , textAnchor $ text "middle"
-                  , fill $ text "#333"
-                  , attr "font-weight" $ text "600"
-                  ]
-              -- Metrics below label
-              , T.elem Text
-                  [ x $ num 0.0
-                  , y $ num (radius + 26.0)
-                  , textContent $ text metricsStr
-                  , fontSize $ num 9.0
-                  , textAnchor $ text "middle"
-                  , fill $ text "#666"
-                  , attr "font-family" $ text "monospace"
-                  ]
-              ]
-            )
-
--- | Template for expanded pattern nodes in full tree mode
--- | Each node is a colored circle with label based on its nodeType
--- | Used when patterns are expanded into tree nodes (not rendered as sunburst)
-patternNodeTemplate :: LayoutNode -> T.Tree LayoutNode
-patternNodeTemplate node =
-  let fillColor = sunburstColor node.nodeType
-      radius = 12.0  -- Smaller than sunburst for compact tree layout
-  in
-    T.named Group ("pattern-node-" <> node.label)
-      []
-      `T.withChildren`
-        [ T.elem Circle
-            [ cx $ num 0.0
-            , cy $ num 0.0
-            , r $ num radius
-            , fill $ text fillColor
-            , stroke $ text "#fff"
-            , strokeWidth $ num 1.5
-            ]
-        -- Label below circle
-        , T.elem Text
-            [ x $ num 0.0
-            , y $ num (radius + 10.0)
-            , textContent $ text node.label
-            , fontSize $ num 9.0
-            , textAnchor $ text "middle"
-            , fill $ text "#333"
-            , attr "font-weight" $ text "500"
-            ]
-        ]
-
--- | Format pattern metrics as a compact string
-formatMetrics :: PatternMetrics -> String
-formatMetrics m =
-  let densityPct = Int.round (m.density * 100.0)
-      speedStr = if m.speedFactor == 1.0 then ""
-                 else if m.speedFactor > 1.0 then " ×" <> show (Int.round m.speedFactor)
-                 else " ÷" <> show (Int.round (1.0 / m.speedFactor))
-      polyStr = if m.maxPolyphony > 1 then " ♪" <> show m.maxPolyphony else ""
-      flagsStr = (if m.hasEuclidean then " E" else "")
-              <> (if m.hasProbability then " ?" else "")
-  in show m.events <> "/" <> show m.slots <> " (" <> show densityPct <> "%)" <> polyStr <> speedStr <> flagsStr
-
--- | Collect all links from tree (parent-child pairs for drawing connections)
+-- | Collect all links from tree
 collectLinks :: Tree LayoutNode -> Array { sourceX :: Number, sourceY :: Number, targetX :: Number, targetY :: Number }
 collectLinks t =
   let node = head t
@@ -788,13 +756,12 @@ verticalLink x0 y0 x1 y1 =
      <> " " <> show x1 <> "," <> show midY
      <> " " <> show x1 <> "," <> show y1
 
+-- =============================================================================
+-- Example and Test
+-- =============================================================================
+
 -- | Example combinator tree for testing
 -- | Represents: jux rev $ slow 2 [bd sd:3, ~ hh] # [hh*4]
--- | Structure:
--- |   jux rev
--- |   ├── slow 2
--- |   │   └── [bd sd:3, ~ hh] (pattern)
--- |   └── [hh*4] (pattern)
 exampleCombinatorTree :: Tree CombinatorNode
 exampleCombinatorTree =
   mkTree (Combinator "jux rev" true)
@@ -814,8 +781,6 @@ exampleCombinatorTree =
     )
 
 -- | Test function: draws the example combinator tree on the given selector
--- | Use this from the browser console or from a test button
--- | Example: testCombinatorTree "combinator-test-svg"
 testCombinatorTree :: String -> Effect Unit
 testCombinatorTree selector = drawCombinatorTree selector exampleCombinatorTree ReExports.identityZoom (const $ pure unit)
 
@@ -829,12 +794,11 @@ type Combinator =
 type TrackInfo =
   { name :: String
   , pattern :: PatternTree
-  , combinators :: Array Combinator  -- Combinators wrapping this pattern (outermost first)
-  , expandPattern :: Boolean  -- true = full tree, false = chimera (sunburst leaf)
+  , combinators :: Array Combinator
+  , expandPattern :: Boolean
   }
 
 -- | Convert a PatternTree to a tree of PatternNode for full tree rendering
--- | This expands the pattern structure into tree nodes instead of rendering as sunburst
 patternToTree :: PatternTree -> Tree CombinatorNode
 patternToTree pattern = case pattern of
   Sound name ->
@@ -861,45 +825,25 @@ patternToTree pattern = case pattern of
     mkTree (PatternNode ("@" <> show n) "elongate") (patternToTree child : List.Nil)
 
 -- | Build an array of combinator trees from tracks
--- | Each track becomes its own tree (a chain of combinator nodes ending in a pattern)
--- | Per-track expandPattern field controls rendering:
--- |   expandPattern = false (chimera): pattern is a single PatternLeaf (renders as sunburst)
--- |   expandPattern = true (tree): pattern is expanded into PatternNode tree
--- | Example input:
--- |   [ { name: "L4-poly", pattern: ..., combinators: ["jux rev", "chop 4"], expandPattern: false }
--- |   , { name: "L6-tabla", pattern: ..., combinators: ["slow 6"], expandPattern: true }
--- |   ]
--- | Produces:
--- |   [ jux rev → chop 4 → L4-poly (sunburst)  -- chimera
--- |   , slow 6 → par → [bd, hh, ...]            -- full tree
--- |   ]
 buildCombinatorTreesFromTracks :: Array TrackInfo -> Array (Tree CombinatorNode)
 buildCombinatorTreesFromTracks = map trackToTree
   where
-    -- Convert a single track to a combinator chain
     trackToTree :: TrackInfo -> Tree CombinatorNode
     trackToTree track =
       case Array.uncons track.combinators of
-        -- No combinators - just the pattern
         Nothing -> makePatternEnd track
-        -- Has combinators - build the chain
         Just { head: firstComb, tail: restCombs } ->
           mkTree (Combinator firstComb.label firstComb.enabled) (buildChain restCombs track : List.Nil)
 
-    -- Build the rest of the combinator chain
     buildChain :: Array Combinator -> TrackInfo -> Tree CombinatorNode
     buildChain combs track =
       case Array.uncons combs of
-        -- No more combinators - end with pattern
         Nothing -> makePatternEnd track
-        -- More combinators in chain
         Just { head: c, tail: rest } ->
           mkTree (Combinator c.label c.enabled) (buildChain rest track : List.Nil)
 
-    -- Create the pattern end: either a PatternLeaf (chimera) or expanded tree (full tree)
-    -- Uses per-track expandPattern field
     makePatternEnd :: TrackInfo -> Tree CombinatorNode
     makePatternEnd track =
       if track.expandPattern
-        then patternToTree track.pattern  -- Expand into tree nodes
-        else mkTree (PatternLeaf track.name track.pattern) List.Nil  -- Single sunburst leaf
+        then patternToTree track.pattern
+        else mkTree (PatternLeaf track.name track.pattern) List.Nil

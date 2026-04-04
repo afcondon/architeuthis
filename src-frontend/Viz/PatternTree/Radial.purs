@@ -14,14 +14,10 @@ import Data.Tree (Tree, mkTree)
 import DataViz.Layout.Hierarchy.Link (linkBezierRadialCartesian)
 import DataViz.Layout.Hierarchy.Tree (tree, defaultTreeConfig)
 import Effect (Effect)
-import Effect.Class (liftEffect)
-import PSD3.AST as T
-import PSD3.Expr.Friendly (attr, cx, cy, fill, fontSize, height, num, path, r, stroke, strokeWidth, text, textAnchor, textContent, viewBox, width, x, y)
-import PSD3.Internal.Behavior.Types (Behavior(..), ScaleExtent(..), defaultZoom)
-import PSD3.Internal.Capabilities.Selection (renderTree, select)
-import PSD3.Internal.Selection.Types (ElementType(..), SEmpty)
-import PSD3.Interpreter.D3 (D3v2Selection_, reselectD3v2, runD3v2M)
-import Web.DOM.Element (Element)
+import Hylograph.HATS (Tree, elem, forEach, staticNum, staticStr, thunkedNum, thunkedStr, withBehaviors, onZoom) as H
+import Hylograph.HATS.InterpreterTick (rerender)
+import Hylograph.Internal.Behavior.Types (ScaleExtent(..), ZoomConfig(..))
+import Hylograph.Internal.Selection.Types (ElementType(..))
 import D3.Viz.PatternTree.Types (PatternNode, LinkDatum)
 import D3.Viz.PatternTree.Layout (patternForestToTree, makeForestLinks, makeForestNodes, nodeColor)
 
@@ -76,92 +72,87 @@ drawPatternForestRadial selector patterns = do
   let nodes = makeForestNodes radialTree
   let links = makeForestLinks radialTree
 
-  runD3v2M do
-    container <- select selector :: _ (D3v2Selection_ SEmpty Element Unit)
+  -- Zoom configuration
+  let zoomConfig = ZoomConfig
+        { scaleExtent: ScaleExtent 0.1 10.0
+        , targetSelector: "#pattern-forest-zoom-group"
+        }
 
-    -- First tree: SVG container with zoom and links
-    let
-      linksTree :: T.Tree LinkDatum
-      linksTree =
-        T.named SVG "pattern-forest-svg"
-        [ width $ num chartSize
-        , height $ num chartSize
-        , viewBox 0.0 0.0 chartSize chartSize
-        , attr "class" $ text "pattern-forest-viz pattern-forest-radial"
-        ]
-        `T.withBehaviors` [ Zoom $ defaultZoom (ScaleExtent 0.1 10.0) "#pattern-forest-zoom-group" ]
-        `T.withChild`
-          ( T.named Group "zoomContainer"
-              [ attr "class" $ text "forest-zoom-container" ]
-              `T.withChild`
-                ( T.named Group "zoom-group"
-                    [ attr "id" $ text "pattern-forest-zoom-group"
-                    , attr "class" $ text "zoom-group"
-                    , attr "transform" $ text ("translate(" <> show centerX <> "," <> show centerY <> ")")
-                    ]
-                    `T.withChild`
-                      ( T.named Group "chartGroup"
-                          [ attr "class" $ text "forest-content" ]
-                          `T.withChild`
-                            ( T.named Group "linksGroup"
-                                [ attr "class" $ text "links" ]
-                                `T.withChild`
-                                  ( T.joinData "links" "path" links $ \link ->
-                                      T.elem Path
-                                        [ path $ text ( linkBezierRadialCartesian
-                                                link.source.x
-                                                link.source.y
-                                                link.target.x
-                                                link.target.y
-                                            )
-                                        , fill $ text "none"
-                                        , stroke $ text "#ccc"
-                                        , strokeWidth $ num 2.0
-                                        , attr "class" $ text "link"
-                                        ]
-                                  )
-                            )
-                      )
-                )
-          )
-
-    -- Render links first
-    linksSelections <- renderTree container linksTree
-
-    -- Second tree: Nodes on top
-    chartGroupSel <- liftEffect $ reselectD3v2 "chartGroup" linksSelections
-
-    let
-      nodesTree :: T.Tree PatternNode
-      nodesTree =
-        T.named Group "nodesGroup"
-        [ attr "class" $ text "nodes" ]
-        `T.withChild`
-          ( T.joinData "nodeGroups" "g" nodes $ \node ->
-              T.named Group ("node-" <> node.label)
-                [ attr "class" $ text ("node node-" <> node.nodeType) ]
-                `T.withChildren`
-                  [ T.elem Circle
-                      [ cx $ num node.x
-                      , cy $ num node.y
-                      , r $ num 8.0
-                      , fill $ text (nodeColor node.nodeType)
-                      , stroke $ text "#fff"
-                      , strokeWidth $ num 2.0
-                      ]
-                  , T.elem Text
-                      [ x $ num node.x
-                      , y $ num (node.y - 14.0)
-                      , textContent $ text node.label
-                      , fontSize $ num 13.0
-                      , textAnchor $ text "middle"
-                      , fill $ text "#000"
-                      , attr "font-weight" $ text "bold"
-                      , attr "class" $ text "pattern-node-label"
+  -- Combined visualization tree
+  let
+    vizTree :: H.Tree
+    vizTree =
+      H.withBehaviors [ H.onZoom zoomConfig ] $
+        H.elem SVG
+          [ H.staticNum "width" chartSize
+          , H.staticNum "height" chartSize
+          , H.staticStr "viewBox" ("0 0 " <> show chartSize <> " " <> show chartSize)
+          , H.staticStr "class" "pattern-forest-viz pattern-forest-radial"
+          ]
+          [ H.elem Group
+              [ H.staticStr "class" "forest-zoom-container" ]
+              [ H.elem Group
+                  [ H.staticStr "id" "pattern-forest-zoom-group"
+                  , H.staticStr "class" "zoom-group"
+                  , H.staticStr "transform" ("translate(" <> show centerX <> "," <> show centerY <> ")")
+                  ]
+                  [ H.elem Group
+                      [ H.staticStr "class" "forest-content" ]
+                      [ -- Links layer
+                        H.elem Group
+                          [ H.staticStr "class" "links" ]
+                          [ H.forEach "links" Path links linkKey \link ->
+                              H.elem Path
+                                [ H.thunkedStr "d" (linkBezierRadialCartesian
+                                    link.source.x
+                                    link.source.y
+                                    link.target.x
+                                    link.target.y)
+                                , H.staticStr "fill" "none"
+                                , H.staticStr "stroke" "#ccc"
+                                , H.staticNum "stroke-width" 2.0
+                                , H.staticStr "class" "link"
+                                ]
+                                []
+                          ]
+                      , -- Nodes layer (on top)
+                        H.elem Group
+                          [ H.staticStr "class" "nodes" ]
+                          [ H.forEach "nodeGroups" Group nodes nodeKey \node ->
+                              H.elem Group
+                                [ H.staticStr "class" ("node node-" <> node.nodeType) ]
+                                [ H.elem Circle
+                                    [ H.thunkedNum "cx" node.x
+                                    , H.thunkedNum "cy" node.y
+                                    , H.staticNum "r" 8.0
+                                    , H.thunkedStr "fill" (nodeColor node.nodeType)
+                                    , H.staticStr "stroke" "#fff"
+                                    , H.staticNum "stroke-width" 2.0
+                                    ]
+                                    []
+                                , H.elem Text
+                                    [ H.thunkedNum "x" node.x
+                                    , H.thunkedNum "y" (node.y - 14.0)
+                                    , H.thunkedStr "textContent" node.label
+                                    , H.staticNum "font-size" 13.0
+                                    , H.staticStr "text-anchor" "middle"
+                                    , H.staticStr "fill" "#000"
+                                    , H.staticStr "font-weight" "bold"
+                                    , H.staticStr "class" "pattern-node-label"
+                                    ]
+                                    []
+                                ]
+                          ]
                       ]
                   ]
-          )
+              ]
+          ]
 
-    -- Render nodes on top
-    _ <- renderTree chartGroupSel nodesTree
-    pure unit
+  _ <- rerender selector vizTree
+  pure unit
+  where
+  linkKey :: LinkDatum -> String
+  linkKey link = show link.source.x <> "-" <> show link.target.x
+
+  nodeKey :: PatternNode -> String
+  nodeKey node = node.label

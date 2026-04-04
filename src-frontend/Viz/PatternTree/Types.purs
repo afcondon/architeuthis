@@ -13,7 +13,7 @@ module D3.Viz.PatternTree.Types
 import Prelude
 
 import Component.PatternTree (PatternTree)
-import PSD3.Internal.Behavior.FFI as BehaviorFFI
+import Hylograph.Internal.Behavior.FFI as BehaviorFFI
 
 -- | Node data for visualization
 type PatternNode =
