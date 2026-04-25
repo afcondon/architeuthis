@@ -1,5 +1,20 @@
 # CV Output Setup for Expert Sleepers ES-9
 
+> **Superseded.** The SuperCollider layer documented here has been replaced
+> by a sibling Rust CV router living in its own repo at
+> `~/work/afc-work/cv-router/` (Marginalia project 185). It speaks the same
+> OSC protocol on :57120 and opens CoreAudio on the ES-9 directly via `cpal`,
+> with no SuperCollider startup ceremony.
+>
+> The sibling repos in the post-2026-04-25 constellation:
+>
+> - `cv-router` (MIT, sibling repo) — Rust audio router for ES-9
+> - `link-spike` (GPLv2+, sibling repo) — Ableton Link client; sends OSC to cv-router
+> - `es9-config` (MIT, sibling repo) — typed PureScript model + DSL for ES-9 config
+>
+> This file is kept as a reference for the SuperCollider path during the
+> migration period; the canonical CV/Gate runtime is now `cv-router`.
+
 This document captures all the nitty-gritty details for getting CV/Gate output from Tidal patterns to a modular synth via the Expert Sleepers ES-9.
 
 ## Architecture
@@ -58,8 +73,8 @@ If you create both a CV synth and a Gate synth on the same output bus, they inte
 The Makefile now includes this, but if builds seem stale:
 
 ```bash
-cd showcases/psd3-tilted-radio/purerl-tidal
-find output -name "*.erl" -exec erlc -o ebin {} \;
+cd /Users/afc/work/afc-work/purescript-ports/purerl-tidal
+find output-erl -name "*.erl" -exec erlc -disable-feature maybe_expr -o ebin {} \;
 ```
 
 ### 5. rebar3 Shell Code Path
@@ -67,7 +82,7 @@ find output -name "*.erl" -exec erlc -o ebin {} \;
 The purerl-compiled beam files are in `ebin/` but rebar3 shell doesn't automatically include it:
 
 ```erlang
-code:add_path("/Users/afc/work/afc-work/PSD3-Repos/showcases/psd3-tilted-radio/purerl-tidal/ebin").
+code:add_path("/Users/afc/work/afc-work/purescript-ports/purerl-tidal/ebin").
 ```
 
 ---
@@ -77,8 +92,8 @@ code:add_path("/Users/afc/work/afc-work/PSD3-Repos/showcases/psd3-tilted-radio/p
 ### Step 1: Build
 
 ```bash
-cd /Users/afc/work/afc-work/PSD3-Repos
-make app-tilted-radio
+cd /Users/afc/work/afc-work/purescript-ports/purerl-tidal
+make
 ```
 
 ### Step 2: Start SuperCollider
@@ -105,7 +120,7 @@ s.options.numOutputBusChannels; // 16
 
 Open and evaluate (Cmd+Enter on entire file):
 ```
-/Users/afc/work/afc-work/PSD3-Repos/showcases/psd3-tilted-radio/purerl-tidal/supercollider/tidal-cv-engine.scd
+/Users/afc/work/afc-work/purescript-ports/purerl-tidal/supercollider/tidal-cv-engine.scd
 ```
 
 You should see:
@@ -130,13 +145,13 @@ Test it works:
 lsof -ti:8080 | xargs kill -9 2>/dev/null
 
 # Start rebar3 shell
-cd /Users/afc/work/afc-work/PSD3-Repos/showcases/psd3-tilted-radio/purerl-tidal
+cd /Users/afc/work/afc-work/purescript-ports/purerl-tidal
 rebar3 shell
 ```
 
 In Erlang shell:
 ```erlang
-code:add_path("/Users/afc/work/afc-work/PSD3-Repos/showcases/psd3-tilted-radio/purerl-tidal/ebin").
+code:add_path("/Users/afc/work/afc-work/purescript-ports/purerl-tidal/ebin").
 ('main@ps':main())().
 ```
 
@@ -179,14 +194,14 @@ Watch ES-9 jack 1 flash with each drum hit!
 ### Gate output not appearing in Erlang console
 
 1. Check for "Gate output: enabled" at startup
-2. If missing, rebuild: `make app-tilted-radio`
+2. If missing, rebuild: `make`
 3. Check beam files are fresh: `ls -la ebin/main@ps.beam`
 
 ### "undefined function" in Erlang
 
 Add the code path:
 ```erlang
-code:add_path("/Users/afc/work/afc-work/PSD3-Repos/showcases/psd3-tilted-radio/purerl-tidal/ebin").
+code:add_path("/Users/afc/work/afc-work/purescript-ports/purerl-tidal/ebin").
 ```
 
 ### Port 8080 already in use
