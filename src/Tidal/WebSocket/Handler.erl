@@ -141,6 +141,8 @@ try_parse_prefixed(<<"gate ", Rest/binary>>) ->
     try_parse_num_pattern(gate, Rest);
 try_parse_prefixed(<<"cv ", Rest/binary>>) ->
     try_parse_num_pattern(cv, Rest);
+try_parse_prefixed(<<"esx ", Rest/binary>>) ->
+    try_parse_num_pattern(esx, Rest);
 try_parse_prefixed(_) ->
     none.
 
@@ -182,6 +184,17 @@ handle_pattern_message(Text, SchedulerPid, State) ->
                 {left, Err} ->
                     ErrBin = list_to_binary(io_lib:format("~p", [Err])),
                     Reply = {text, <<"ERROR: cv parse: ", ErrBin/binary>>},
+                    {reply, Reply, State}
+            end;
+        {esx, Slot, Pattern} ->
+            case ('tidal_parse_parser@ps':parse())(Pattern) of
+                {right, _} ->
+                    SchedulerPid ! {updateESXTrack, Slot, Pattern},
+                    Reply = {text, <<"OK: esx ", (integer_to_binary(Slot))/binary, " ", Pattern/binary>>},
+                    {reply, Reply, State};
+                {left, Err} ->
+                    ErrBin = list_to_binary(io_lib:format("~p", [Err])),
+                    Reply = {text, <<"ERROR: esx parse: ", ErrBin/binary>>},
                     {reply, Reply, State}
             end;
         none ->

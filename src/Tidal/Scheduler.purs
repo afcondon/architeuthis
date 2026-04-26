@@ -65,6 +65,7 @@ data Msg
   | UpdateTracks (Array TrackInfo)  -- Update multiple tracks, each with own channel
   | UpdateGateTrack Int String   -- Replace gate track at channel idx with pattern
   | UpdateCVTrack Int String     -- Replace CV track at bus idx with pattern
+  | UpdateESXTrack Int String    -- Replace ESX-8CV track at slot idx (0-7) with pattern
   | Stop              -- Stop the scheduler
 
 -- | FFI for erlang:send_after
@@ -195,6 +196,10 @@ schedulerLoop stateRef = do
 
     UpdateCVTrack _ _ -> do
       -- Base scheduler has no concept of CV; ignore.
+      schedulerLoop stateRef
+
+    UpdateESXTrack _ _ -> do
+      -- Base scheduler has no concept of ESX-8CV either; ignore.
       schedulerLoop stateRef
 
     Stop -> do

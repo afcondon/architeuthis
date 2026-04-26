@@ -20,6 +20,7 @@ module Tidal.OSC
   , sendGateTrigAt
   , sendGateTrigAfter
   , sendCVAfter
+  , sendESXAfter
   ) where
 
 import Prelude
@@ -117,3 +118,10 @@ foreign import sendGateTrigAfter :: OSCClient -> Int -> Number -> Number -> Effe
 -- | corresponding gate trigger fires, so the receiving module sees the
 -- | new pitch settled by the time it samples the trigger.
 foreign import sendCVAfter :: OSCClient -> Int -> Number -> Number -> Effect Unit
+
+-- | BEAM-side delayed ESX-8CV update. Same shape as `sendCVAfter` but
+-- | targets `/esx <slot 0..7> <value>` for cv-router's Silent Way encoder
+-- | (drives one of 8 CV outputs on an ESX-8CV plugged into ES-5 expansion
+-- | port 2). Value range: -1.0..1.0 (mapped to ±2048 i12 in cv-router).
+-- | Auto-enables Silent Way mode on cv-router on first send.
+foreign import sendESXAfter :: OSCClient -> Int -> Number -> Number -> Effect Unit

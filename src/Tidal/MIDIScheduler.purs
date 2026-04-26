@@ -175,12 +175,21 @@ type MIDISchedulerConfig =
 -- | A parsed track. Two flavors:
 -- |   GateTrack — sample-name pattern fires gates (and optional pre-set CVs
 -- |     via sampleCVMap) at a given gate channel.
+-- |     `fanout = true`  → legacy semantics: sample name selects gate channel
+-- |       via sampleGateMap (e.g. `bd → 0, sn → 1`). Used by `UpdatePattern` /
+-- |       `UpdateTracks` so old single-pattern strings keep working.
+-- |     `fanout = false` → prefix semantics: the channel field is taken
+-- |       literally regardless of sample name. Used by `UpdateGateTrack` so
+-- |       `gate 7 bd*4` fires on gate 7, not whatever `bd` maps to.
 -- |   CVTrack — numeric pattern emits sustained /cv updates on a bus. Tokens
 -- |     are parsed lazily from String to Number; non-numeric tokens
 -- |     (including "~" for rest) skip the emit.
 data ParsedTrack
-  = GateTrack { pattern :: Pattern String, channel :: Int }
+  = GateTrack { pattern :: Pattern String, channel :: Int, fanout :: Boolean }
   | CVTrack   { pattern :: Pattern String, bus :: Int }
+  -- | ESX-8CV track on cv-router's Silent Way encoder. `slot` is 0..7,
+  -- | one per ESX-8CV physical output. Tokens are numeric (-1.0..1.0).
+  | ESXTrack  { pattern :: Pattern String, slot :: Int }
 
 -- | Internal state
 type MIDISchedulerState =
@@ -229,7 +238,7 @@ sampleToNote noteMap sample =
 parseTrack :: TrackInfo -> Maybe ParsedTrack
 parseTrack { pattern: patStr, channel } =
   case parse patStr of
-    Right ast -> Just (GateTrack { pattern: tpatToPattern ast, channel })
+    Right ast -> Just (GateTrack { pattern: tpatToPattern ast, channel, fanout: true })
     Left _ -> Nothing
 
 -- | Start MIDI scheduler
@@ -249,7 +258,7 @@ startMIDIScheduler config patternStr = do
 
     -- Initialize with a single gate track using default channel
     let initialTrack = case parse patternStr of
-          Right ast -> [GateTrack { pattern: tpatToPattern ast, channel: config.midi.channel }]
+          Right ast -> [GateTrack { pattern: tpatToPattern ast, channel: config.midi.channel, fanout: true }]
           Left _ -> []
 
     stateRef <- liftEffect $ Ref.new
@@ -309,6 +318,7 @@ midiSchedulerLoop stateRef = do
           let pattern = case track of
                 GateTrack g -> g.pattern
                 CVTrack c -> c.pattern
+                ESXTrack e -> e.pattern
           let events = queryArc pattern fromCycle toCycle
           for_ events \event -> do
             let eventCycle = eventStartCycle event
@@ -331,9 +341,15 @@ midiSchedulerLoop stateRef = do
                       when state.config.gate.enabled do
                         case state.oscClient of
                           Just osc -> do
-                            let gateChannel = case Map.lookup token state.config.gate.sampleGateMap of
-                                  Just gc -> gc
-                                  Nothing -> g.channel - 10 + state.config.gate.channelOffset
+                            let gateChannel =
+                                  if g.fanout
+                                    -- Legacy: sample-name fanout via sampleGateMap;
+                                    -- fall back to MIDI-channel-to-gate translation.
+                                    then case Map.lookup token state.config.gate.sampleGateMap of
+                                      Just gc -> gc
+                                      Nothing -> g.channel - 10 + state.config.gate.channelOffset
+                                    -- Prefix path: take channel literally.
+                                    else g.channel
                             when (gateChannel >= 0 && gateChannel < 8) do
                               -- Pre-set CV (V/oct etc.) before the gate trigger
                               case Map.lookup token state.config.gate.sampleCVMap of
@@ -358,6 +374,17 @@ midiSchedulerLoop stateRef = do
                       Nothing -> pure unit
                     Nothing -> pure unit
 
+                ESXTrack e ->
+                  -- ESX-8CV slot — same numeric-pattern semantics as CVTrack
+                  -- but reaches cv-router's Silent Way encoder via /esx.
+                  case Number.fromString token of
+                    Just value -> case state.oscClient of
+                      Just osc -> do
+                        liftEffect $ log $ "  ⌇ esx slot " <> show e.slot <> " = " <> show value <> " in " <> show delayInt <> "ms"
+                        liftEffect $ OSC.sendESXAfter osc e.slot value delayClamped
+                      Nothing -> pure unit
+                    Nothing -> pure unit
+
       liftEffect $ Ref.modify_ (_ { nextCycle = toCycle }) stateRef
 
       pid <- liftEffect Raw.self
@@ -375,7 +402,7 @@ midiSchedulerLoop stateRef = do
             _ -> Nothing) state.tracks
       let channel = fromMaybe state.config.midi.channel firstGateChannel
       let newTracks = case parse patStr of
-            Right ast -> [GateTrack { pattern: tpatToPattern ast, channel }]
+            Right ast -> [GateTrack { pattern: tpatToPattern ast, channel, fanout: true }]
             Left _ -> state.tracks
       liftEffect $ Ref.write (state { tracks = newTracks }) stateRef
       liftEffect $ log $ "Pattern updated: " <> patStr
@@ -385,7 +412,7 @@ midiSchedulerLoop stateRef = do
       -- Single gate pattern, replaces all existing tracks.
       state <- liftEffect $ Ref.read stateRef
       let newTracks = case parse patStr of
-            Right ast -> [GateTrack { pattern: tpatToPattern ast, channel: newChannel }]
+            Right ast -> [GateTrack { pattern: tpatToPattern ast, channel: newChannel, fanout: true }]
             Left _ -> state.tracks
       liftEffect $ Ref.write (state { tracks = newTracks }) stateRef
       liftEffect $ log $ "Pattern updated: " <> patStr <> " (channel " <> show newChannel <> ")"
@@ -396,10 +423,10 @@ midiSchedulerLoop stateRef = do
       state <- liftEffect $ Ref.read stateRef
       case parse patStr of
         Right ast -> do
-          let newTrack = GateTrack { pattern: tpatToPattern ast, channel: ch }
+          let newTrack = GateTrack { pattern: tpatToPattern ast, channel: ch, fanout: false }
           let isOther = case _ of
                 GateTrack g -> g.channel /= ch
-                CVTrack _ -> true
+                _           -> true
           let newTracks = Array.filter isOther state.tracks <> [newTrack]
           liftEffect $ Ref.write (state { tracks = newTracks }) stateRef
           liftEffect $ log $ "gate ch " <> show ch <> ": " <> patStr
@@ -415,12 +442,28 @@ midiSchedulerLoop stateRef = do
           let newTrack = CVTrack { pattern: tpatToPattern ast, bus }
           let isOther = case _ of
                 CVTrack c -> c.bus /= bus
-                GateTrack _ -> true
+                _         -> true
           let newTracks = Array.filter isOther state.tracks <> [newTrack]
           liftEffect $ Ref.write (state { tracks = newTracks }) stateRef
           liftEffect $ log $ "cv bus " <> show bus <> ": " <> patStr
         Left _ ->
           liftEffect $ log $ "cv parse error: " <> patStr
+      midiSchedulerLoop stateRef
+
+    UpdateESXTrack slot patStr -> do
+      -- Replace just the ESX-8CV track at this slot; leave others untouched.
+      state <- liftEffect $ Ref.read stateRef
+      case parse patStr of
+        Right ast -> do
+          let newTrack = ESXTrack { pattern: tpatToPattern ast, slot }
+          let isOther = case _ of
+                ESXTrack e -> e.slot /= slot
+                _          -> true
+          let newTracks = Array.filter isOther state.tracks <> [newTrack]
+          liftEffect $ Ref.write (state { tracks = newTracks }) stateRef
+          liftEffect $ log $ "esx slot " <> show slot <> ": " <> patStr
+        Left _ ->
+          liftEffect $ log $ "esx parse error: " <> patStr
       midiSchedulerLoop stateRef
 
     UpdateTracks trackInfos -> do
@@ -432,6 +475,7 @@ midiSchedulerLoop stateRef = do
       for_ newTracks \t -> case t of
         GateTrack g -> liftEffect $ log $ "  - gate ch " <> show g.channel
         CVTrack c -> liftEffect $ log $ "  - cv bus " <> show c.bus
+        ESXTrack e -> liftEffect $ log $ "  - esx slot " <> show e.slot
       midiSchedulerLoop stateRef
 
     Stop -> do

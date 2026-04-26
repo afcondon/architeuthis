@@ -1,6 +1,6 @@
 -module(tidal_oSC@foreign).
 -export([startClient/1, stopClient/1, sendNote/3, sendSample/4]).
--export([sendCV/3, sendCVSlew/4, sendGate/3, sendGateTrig/3, sendGateTrigAt/4, sendGateTrigAfter/4, sendCVAfter/4]).
+-export([sendCV/3, sendCVSlew/4, sendGate/3, sendGateTrig/3, sendGateTrigAt/4, sendGateTrigAfter/4, sendCVAfter/4, sendESXAfter/4]).
 
 %% Start UDP socket for OSC
 startClient(Config) ->
@@ -133,6 +133,26 @@ sendCVAfter(Client, Bus, Value, DelayMs) ->
             case gen_udp:open(0, [binary]) of
                 {ok, Socket} ->
                     Msg = encode_osc(<<"/cv">>, [Bus, Value]),
+                    gen_udp:send(Socket, Host, Port, Msg),
+                    gen_udp:close(Socket);
+                _ ->
+                    ok
+            end
+        end),
+        unit
+    end.
+
+%% BEAM-side delayed ESX-8CV update. Same robustness model as sendCVAfter.
+%% /esx <slot> <value> reaches the Silent Way encoder in cv-router.
+sendESXAfter(Client, Slot, Value, DelayMs) ->
+    fun() ->
+        {_StoredSocket, Host, Port} = Client,
+        DelayInt = max(0, round(DelayMs)),
+        spawn(fun() ->
+            timer:sleep(DelayInt),
+            case gen_udp:open(0, [binary]) of
+                {ok, Socket} ->
+                    Msg = encode_osc(<<"/esx">>, [Slot, Value]),
                     gen_udp:send(Socket, Host, Port, Msg),
                     gen_udp:close(Socket);
                 _ ->
