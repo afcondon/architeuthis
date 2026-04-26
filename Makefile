@@ -60,16 +60,16 @@ test: erl
 
 # Start the server (with rebuild)
 run: erl
-	@echo "==> Starting purerl-tidal server on port 8080..."
-	@echo "    WebSocket: ws://localhost:8080/ws"
+	@echo "==> Starting purerl-tidal server on port 3012..."
+	@echo "    WebSocket: ws://localhost:3012/ws"
 	@echo "    Press Ctrl+C to stop"
 	ERL_LIBS="_build/default/lib" erl -pa ebin -noshell \
 		-eval 'F = main@ps:main(), F()'
 
 # Start the server (no rebuild)
 start:
-	@echo "==> Starting purerl-tidal server on port 8080..."
-	@echo "    WebSocket: ws://localhost:8080/ws"
+	@echo "==> Starting purerl-tidal server on port 3012..."
+	@echo "    WebSocket: ws://localhost:3012/ws"
 	@echo "    Press Ctrl+C to stop"
 	ERL_LIBS="_build/default/lib" erl -pa ebin -noshell \
 		-eval 'F = main@ps:main(), F()'

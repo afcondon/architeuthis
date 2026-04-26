@@ -1,9 +1,15 @@
 -- | WebSocket handler for live pattern updates
 -- |
--- | Receives pattern strings from clients and forwards to scheduler
--- | Supports two message formats:
--- |   1. Plain pattern string: "bd sn hh cp"
--- |   2. JSON with per-track channels: {"tracks":[...],"combined":"bd sn, hh"}
+-- | Receives pattern strings from clients and forwards to scheduler.
+-- | Supports four message formats:
+-- |   1. `gate <ch> <pattern>`  — set gate track on channel <ch>; replaces
+-- |      only that channel, leaves other tracks untouched. Live-coding shape.
+-- |   2. `cv <bus> <pattern>`   — set CV track on bus <bus>; tokens are numeric
+-- |      and emitted as sustained `/cv` updates. Same per-track replacement.
+-- |   3. Plain pattern string: "bd sn hh cp" — legacy single-pattern update;
+-- |      replaces ALL tracks with one gate track.
+-- |   4. JSON with per-track channels: {"tracks":[...],"combined":"bd sn, hh"}
+-- |      — legacy, mostly unused now.
 module Tidal.WebSocket.Handler
   ( Config
   , HandlerState
@@ -15,8 +21,10 @@ import Prelude
 
 import Attribute (Attribute(..), Behaviour)
 import Data.Either (Either(..))
+import Data.Int as Int
 import Data.Maybe (Maybe(..))
 import Data.String as String
+import Data.String.Pattern (Pattern(..))
 import Effect (Effect)
 import Effect.Class (liftEffect)
 import Effect.Console (log)
@@ -62,6 +70,32 @@ extractUntilQuote remaining acc =
     else if first == "\"" then acc  -- Found closing quote
     else extractUntilQuote rest (acc <> first)
 
+-- | Parse an incoming text message into a scheduler Msg.
+-- | Returns Left with a human-readable error if anything fails to parse.
+parseInputMessage :: String -> Either String Msg
+parseInputMessage text =
+  case String.stripPrefix (Pattern "gate ") text of
+    Just rest -> parsePrefixed rest UpdateGateTrack "gate"
+    Nothing -> case String.stripPrefix (Pattern "cv ") text of
+      Just rest -> parsePrefixed rest UpdateCVTrack "cv"
+      Nothing ->
+        let pattern = extractPattern text
+        in case parse pattern of
+          Right _ -> Right (UpdatePattern pattern)
+          Left err -> Left ("legacy parse: " <> show err)
+  where
+  parsePrefixed rest ctor name =
+    case String.indexOf (Pattern " ") rest of
+      Nothing -> Left (name <> " expects: " <> name <> " <num> <pattern>")
+      Just idx ->
+        let numStr = String.take idx rest
+            pat = String.drop (idx + 1) rest
+        in case Int.fromString numStr of
+          Nothing -> Left (name <> " <num> not parsed: '" <> numStr <> "'")
+          Just n -> case parse pat of
+            Right _ -> Right (ctor n pat)
+            Left err -> Left (name <> " pattern parse error: " <> show err)
+
 -- | Configuration passed to init
 type Config =
   { schedulerPid :: Process Msg
@@ -97,40 +131,29 @@ websocket_handle = mkEffectFn2 \inFrame state -> do
   case WS.decodeInFrame inFrame of
     WS.TextFrame text -> do
       log $ "WebSocket: Received message: " <> text
-      -- Extract pattern from message (handles JSON or plain text)
-      let pattern = extractPattern text
-      log $ "WebSocket: Extracted pattern: " <> pattern
-      -- Validate the pattern before sending
-      case parse pattern of
-        Right _ -> do
-          -- Valid pattern - send to scheduler
-          send state.schedulerPid (UpdatePattern pattern)
-          let response = WS.outFrame (WS.TextFrame ("OK: " <> pattern))
-          pure $ WS.replyResult state (List.singleton response)
-        Left err -> do
-          log $ "WebSocket: Parse error: " <> show err
-          let response = WS.outFrame (WS.TextFrame ("ERROR: " <> show err))
-          pure $ WS.replyResult state (List.singleton response)
+      handleText state text
 
     WS.BinaryFrame bin -> do
-      -- Try to decode as UTF-8 text
       let text = binaryToString bin
       log $ "WebSocket: Received binary message: " <> text
-      let pattern = extractPattern text
-      case parse pattern of
-        Right _ -> do
-          send state.schedulerPid (UpdatePattern pattern)
-          let response = WS.outFrame (WS.TextFrame ("OK: " <> pattern))
-          pure $ WS.replyResult state (List.singleton response)
-        Left err -> do
-          let response = WS.outFrame (WS.TextFrame ("ERROR: " <> show err))
-          pure $ WS.replyResult state (List.singleton response)
+      handleText state text
 
     WS.PingFrame _ -> do
       pure $ WS.okResult state
 
     WS.PongFrame _ -> do
       pure $ WS.okResult state
+  where
+  handleText st text =
+    case parseInputMessage text of
+      Right msg -> do
+        send st.schedulerPid msg
+        let response = WS.outFrame (WS.TextFrame ("OK: " <> text))
+        pure $ WS.replyResult st (List.singleton response)
+      Left err -> do
+        log $ "WebSocket: " <> err
+        let response = WS.outFrame (WS.TextFrame ("ERROR: " <> err))
+        pure $ WS.replyResult st (List.singleton response)
 
 -- | Handle Erlang messages sent to WebSocket process
 websocket_info :: WS.InfoHandler String HandlerState

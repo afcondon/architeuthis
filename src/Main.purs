@@ -21,11 +21,11 @@ main = do
   -- Gate output config for ES-9 (via SuperCollider)
   let gateConfig :: GateConfig
       gateConfig = defaultGateConfig
-        { enabled = true          -- Enable gate output to SuperCollider
+        { enabled = true          -- Phase 1b: CV/Gate via SuperCollider → ES-9
         , oscHost = "127.0.0.1"
-        , oscPort = 57120         -- sclang default port
-        , channelOffset = 0       -- ch10 -> gate 0, ch11 -> gate 1, etc.
-        , gateDuration = 50.0     -- 50ms gate pulse
+        , oscPort = 57120
+        , channelOffset = 9        -- ch 1 → gate 0 (formula: channel - 10 + offset)
+        , gateDuration = 50.0
         }
 
   -- MIDI + Gate config
@@ -34,7 +34,7 @@ main = do
         { bpm: 120.0
         , lookAhead: 100.0
         , scheduleInterval: 50
-        , midi: { device: "IAC Driver Tidal", channel: 10, defaultVelocity: 100 }
+        , midi: { device: "AUDIO4c USB2", channel: 1, defaultVelocity: 100 }
         , noteMap: defaultDrumMap
         , noteDuration: 50
         , gate: gateConfig
@@ -50,7 +50,7 @@ main = do
 
   log ""
   log "Live coding ready! Send patterns via WebSocket:"
-  log "  ws://localhost:8080/ws"
+  log "  ws://localhost:3012/ws"
   log ""
   log "Example patterns:"
   log "  ws.send('bd sn hh cp')     // basic 4/4"

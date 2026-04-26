@@ -135,8 +135,60 @@ websocket_handle({binary, Bin}, State) ->
 websocket_handle(_Frame, State) ->
     {ok, State}.
 
-%% Handle pattern messages (existing logic, refactored into function)
+%% Try to parse "gate <ch> <pattern>" or "cv <bus> <pattern>" prefix.
+%% Returns {gate, Ch, Pattern} | {cv, Bus, Pattern} | none.
+try_parse_prefixed(<<"gate ", Rest/binary>>) ->
+    try_parse_num_pattern(gate, Rest);
+try_parse_prefixed(<<"cv ", Rest/binary>>) ->
+    try_parse_num_pattern(cv, Rest);
+try_parse_prefixed(_) ->
+    none.
+
+try_parse_num_pattern(Tag, Rest) ->
+    case binary:split(Rest, <<" ">>) of
+        [NumBin, Pattern] ->
+            try
+                Num = binary_to_integer(NumBin),
+                {Tag, Num, Pattern}
+            catch
+                error:badarg -> none
+            end;
+        _ ->
+            none
+    end.
+
+%% Handle pattern messages. New path: recognise "gate <ch>" / "cv <bus>"
+%% prefixes for per-track replacement (live-coding shape). Otherwise
+%% fall through to the legacy single-pattern / multi-track JSON parser.
 handle_pattern_message(Text, SchedulerPid, State) ->
+    case try_parse_prefixed(Text) of
+        {gate, Ch, Pattern} ->
+            case ('tidal_parse_parser@ps':parse())(Pattern) of
+                {right, _} ->
+                    SchedulerPid ! {updateGateTrack, Ch, Pattern},
+                    Reply = {text, <<"OK: gate ", (integer_to_binary(Ch))/binary, " ", Pattern/binary>>},
+                    {reply, Reply, State};
+                {left, Err} ->
+                    ErrBin = list_to_binary(io_lib:format("~p", [Err])),
+                    Reply = {text, <<"ERROR: gate parse: ", ErrBin/binary>>},
+                    {reply, Reply, State}
+            end;
+        {cv, Bus, Pattern} ->
+            case ('tidal_parse_parser@ps':parse())(Pattern) of
+                {right, _} ->
+                    SchedulerPid ! {updateCVTrack, Bus, Pattern},
+                    Reply = {text, <<"OK: cv ", (integer_to_binary(Bus))/binary, " ", Pattern/binary>>},
+                    {reply, Reply, State};
+                {left, Err} ->
+                    ErrBin = list_to_binary(io_lib:format("~p", [Err])),
+                    Reply = {text, <<"ERROR: cv parse: ", ErrBin/binary>>},
+                    {reply, Reply, State}
+            end;
+        none ->
+            handle_legacy_pattern_message(Text, SchedulerPid, State)
+    end.
+
+handle_legacy_pattern_message(Text, SchedulerPid, State) ->
     case parse_message(Text) of
         {tracks, Tracks} ->
             %% Multiple tracks with individual channels

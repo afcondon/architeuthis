@@ -1,6 +1,6 @@
 -module(tidal_oSC@foreign).
 -export([startClient/1, stopClient/1, sendNote/3, sendSample/4]).
--export([sendCV/3, sendCVSlew/4, sendGate/3, sendGateTrig/3]).
+-export([sendCV/3, sendCVSlew/4, sendGate/3, sendGateTrig/3, sendGateTrigAt/4, sendGateTrigAfter/4, sendCVAfter/4]).
 
 %% Start UDP socket for OSC
 startClient(Config) ->
@@ -73,13 +73,72 @@ sendGate(Client, Channel, State) ->
         unit
     end.
 
-%% Trigger gate for a duration (ms)
+%% Trigger gate for a duration (ms) — fires immediately on receipt
 %% Format: /tidal/gate/trig <channel> <duration_ms>
 sendGateTrig(Client, Channel, DurationMs) ->
     fun() ->
         {Socket, Host, Port} = Client,
         Msg = encode_osc(<<"/tidal/gate/trig">>, [Channel, DurationMs]),
         gen_udp:send(Socket, Host, Port, Msg),
+        unit
+    end.
+
+%% Sample-accurate scheduled gate trigger.
+%% Maps gate channel (0-7) to direct bus (8-15) for panel jacks 1-8.
+%% Value 0.5 matches cv-router's SAFETY_SCALE (gate high ~5V).
+%% Format: /cv/trig/at <bus> <value> <duration_ms> <delay_ms>
+sendGateTrigAt(Client, Channel, DurationMs, DelayMs) ->
+    fun() ->
+        {Socket, Host, Port} = Client,
+        Bus = 8 + Channel,
+        Value = 0.5,
+        Msg = encode_osc(<<"/cv/trig/at">>, [Bus, Value, DurationMs, DelayMs]),
+        gen_udp:send(Socket, Host, Port, Msg),
+        unit
+    end.
+
+%% BEAM-side delayed gate trigger. Spawns a one-shot process that sleeps
+%% DelayMs then opens a fresh UDP socket, sends /tidal/gate/trig, closes.
+%% The socket is short-lived per-send rather than reusing the Client's
+%% long-lived socket, because the long-lived socket has been observed to
+%% silently die when cv-router restarts (no error, just stops delivering).
+%% gen_udp:open(0) is microseconds, so the per-send overhead is negligible
+%% and we get robust recovery across cv-router restarts for free.
+sendGateTrigAfter(Client, Channel, DurationMs, DelayMs) ->
+    fun() ->
+        {_StoredSocket, Host, Port} = Client,
+        DelayInt = max(0, round(DelayMs)),
+        spawn(fun() ->
+            timer:sleep(DelayInt),
+            case gen_udp:open(0, [binary]) of
+                {ok, Socket} ->
+                    Msg = encode_osc(<<"/tidal/gate/trig">>, [Channel, DurationMs]),
+                    gen_udp:send(Socket, Host, Port, Msg),
+                    gen_udp:close(Socket);
+                _ ->
+                    ok
+            end
+        end),
+        unit
+    end.
+
+%% BEAM-side delayed CV update. Same robustness model as sendGateTrigAfter
+%% — fresh socket per send so cv-router restarts don't silently break us.
+sendCVAfter(Client, Bus, Value, DelayMs) ->
+    fun() ->
+        {_StoredSocket, Host, Port} = Client,
+        DelayInt = max(0, round(DelayMs)),
+        spawn(fun() ->
+            timer:sleep(DelayInt),
+            case gen_udp:open(0, [binary]) of
+                {ok, Socket} ->
+                    Msg = encode_osc(<<"/cv">>, [Bus, Value]),
+                    gen_udp:send(Socket, Host, Port, Msg),
+                    gen_udp:close(Socket);
+                _ ->
+                    ok
+            end
+        end),
         unit
     end.
 

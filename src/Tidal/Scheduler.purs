@@ -63,6 +63,8 @@ data Msg
   | UpdatePattern String  -- Update the pattern (legacy, uses default channel)
   | UpdatePatternWithChannel String Int  -- Update pattern with specific MIDI channel
   | UpdateTracks (Array TrackInfo)  -- Update multiple tracks, each with own channel
+  | UpdateGateTrack Int String   -- Replace gate track at channel idx with pattern
+  | UpdateCVTrack Int String     -- Replace CV track at bus idx with pattern
   | Stop              -- Stop the scheduler
 
 -- | FFI for erlang:send_after
@@ -180,6 +182,19 @@ schedulerLoop stateRef = do
       let combined = stack patterns
       liftEffect $ Ref.write (state { pattern = combined }) stateRef
       liftEffect $ log $ "Tracks updated: " <> show (Array.length tracks) <> " tracks"
+      schedulerLoop stateRef
+
+    UpdateGateTrack _ patStr -> do
+      -- Base scheduler treats GateTrack the same as a single pattern update.
+      state <- liftEffect $ Ref.read stateRef
+      let newPat = case parse patStr of
+            Right ast -> tpatToPattern ast
+            Left _ -> state.pattern
+      liftEffect $ Ref.write (state { pattern = newPat }) stateRef
+      schedulerLoop stateRef
+
+    UpdateCVTrack _ _ -> do
+      -- Base scheduler has no concept of CV; ignore.
       schedulerLoop stateRef
 
     Stop -> do
