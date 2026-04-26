@@ -6,6 +6,24 @@
 -- | geometry (gate channels, CV buses, ESX slots, future MIDI) lives in a
 -- | separately-managed registry.
 -- |
+-- | ## Parallel implementation note
+-- |
+-- | This is the SERVER-SIDE copy of the binding types. The client-side copy
+-- | lives at `tidal-protocol/src/TidalProtocol/Binding.purs` (a separate,
+-- | MIT-licensed package consumed by tidal-cli, the browser editor, and any
+-- | VS Code extension).
+-- |
+-- | The two MUST stay in sync. They can't be unified into one package today
+-- | because purerl-tidal compiles via purs-backend-erl on an older package
+-- | set (erl-0.15.3-20220629), while tidal-protocol uses the modern registry
+-- | (76.1.1) for browser/Node targets. Bridging the two package sets is a
+-- | future job.
+-- |
+-- | When you change something here, change it there too:
+-- |   - PrimAction / CVMapping constructors
+-- |   - parseAction / parseCompoundAction
+-- |   - The wire format for `bind <name> <action-spec>`
+-- |
 -- | Adding a new modulation kind = adding a `PrimAction` constructor.
 -- | Backward-compat is preserved because the dispatcher pattern-matches on
 -- | constructors; old bindings keep working as new ones are added.
