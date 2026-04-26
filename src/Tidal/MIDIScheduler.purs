@@ -36,6 +36,7 @@ import Effect.Ref as Ref
 import Erl.Process (Process, ProcessM, spawn, receive)
 import Erl.Process.Raw as Raw
 import Tidal.Eval.Interpret (tpatToPattern)
+import Tidal.Binding as Binding
 import Tidal.MIDI (MIDIClient, MIDIConfig, startClient, scheduleDrumOnChannel)
 import Tidal.OSC as OSC
 import Tidal.Parse.Parser (parse)
@@ -190,6 +191,11 @@ data ParsedTrack
   -- | ESX-8CV track on cv-router's Silent Way encoder. `slot` is 0..7,
   -- | one per ESX-8CV physical output. Tokens are numeric (-1.0..1.0).
   | ESXTrack  { pattern :: Pattern String, slot :: Int }
+  -- | A pattern dispatched via a named binding. The binding is a list of
+  -- | PrimActions; each pattern event fires every action. Replaces the
+  -- | hardcoded `gate <ch>` / `cv <bus>` dispatch when the user has
+  -- | registered a name like `kick` or `plaits`.
+  | BoundTrack { pattern :: Pattern String, name :: String, binding :: Binding.Binding }
 
 -- | Internal state
 type MIDISchedulerState =
@@ -200,6 +206,8 @@ type MIDISchedulerState =
   , midiClient :: MIDIClient
   , oscClient :: Maybe OSC.OSCClient  -- For gate output (if enabled)
   , lastTrigger :: R.Rational  -- Avoid double-triggering (global for simplicity)
+  , bindings :: Binding.BindingRegistry  -- Named-action registry (kick, plaits, …)
+  , slots :: Map String Number           -- Param/input slot env (modulation values)
   }
 
 -- | Default drum map (General MIDI drum notes)
@@ -269,6 +277,8 @@ startMIDIScheduler config patternStr = do
       , midiClient
       , oscClient
       , lastTrigger: R.fromInt (-1)
+      , bindings: Binding.defaultRegistry
+      , slots: Map.empty
       }
 
     liftEffect $ log $ "MIDI Scheduler started"
@@ -319,6 +329,7 @@ midiSchedulerLoop stateRef = do
                 GateTrack g -> g.pattern
                 CVTrack c -> c.pattern
                 ESXTrack e -> e.pattern
+                BoundTrack b -> b.pattern
           let events = queryArc pattern fromCycle toCycle
           for_ events \event -> do
             let eventCycle = eventStartCycle event
@@ -384,6 +395,35 @@ midiSchedulerLoop stateRef = do
                         liftEffect $ OSC.sendESXAfter osc e.slot value delayClamped
                       Nothing -> pure unit
                     Nothing -> pure unit
+
+                BoundTrack b ->
+                  -- Run the binding's PrimAction list. CVs fire first
+                  -- (with cvLeadMs head start) so V/oct settles before
+                  -- the gate trigger. Subsequent action types (Midi,
+                  -- Envelope, etc.) plug in here without changing the
+                  -- track-iteration shape.
+                  case state.oscClient of
+                    Nothing -> pure unit
+                    Just osc -> do
+                      let cvLead = state.config.gate.cvLeadMs
+                      let cvDelay = max 0.0 (delayClamped - cvLead)
+                      for_ b.binding \action -> case action of
+                        Binding.CV bus mapping ->
+                          case interpretCV mapping token of
+                            Just value -> do
+                              liftEffect $ log $ "  〰 [" <> b.name <> "] cv bus " <> show bus <> " = " <> show value
+                              liftEffect $ OSC.sendCVAfter osc bus value cvDelay
+                            Nothing -> pure unit
+                        Binding.ESX slot ->
+                          case Number.fromString token of
+                            Just value -> do
+                              liftEffect $ log $ "  ⌇ [" <> b.name <> "] esx slot " <> show slot <> " = " <> show value
+                              liftEffect $ OSC.sendESXAfter osc slot value delayClamped
+                            Nothing -> pure unit
+                        Binding.Gate ch ->
+                          when (token /= "~") do
+                            liftEffect $ log $ "  ⚡ [" <> b.name <> "] gate " <> show ch <> " in " <> show delayInt <> "ms"
+                            liftEffect $ OSC.sendGateTrigAfter osc ch state.config.gate.gateDuration delayClamped
 
       liftEffect $ Ref.modify_ (_ { nextCycle = toCycle }) stateRef
 
@@ -476,10 +516,101 @@ midiSchedulerLoop stateRef = do
         GateTrack g -> liftEffect $ log $ "  - gate ch " <> show g.channel
         CVTrack c -> liftEffect $ log $ "  - cv bus " <> show c.bus
         ESXTrack e -> liftEffect $ log $ "  - esx slot " <> show e.slot
+        BoundTrack b -> liftEffect $ log $ "  - bound: " <> b.name
+      midiSchedulerLoop stateRef
+
+    AddBinding name actionSpec -> do
+      state <- liftEffect $ Ref.read stateRef
+      case Binding.parseCompoundAction actionSpec of
+        Left err ->
+          liftEffect $ log $ "bind " <> name <> ": ✗ " <> err
+        Right binding -> do
+          let newRegistry = Map.insert name binding state.bindings
+          liftEffect $ Ref.write (state { bindings = newRegistry }) stateRef
+          liftEffect $ log $ "bind " <> name <> ": " <> actionSpec
+      midiSchedulerLoop stateRef
+
+    RemoveBinding name -> do
+      state <- liftEffect $ Ref.read stateRef
+      let newRegistry = Map.delete name state.bindings
+      liftEffect $ Ref.write (state { bindings = newRegistry }) stateRef
+      liftEffect $ log $ "unbind " <> name
+      midiSchedulerLoop stateRef
+
+    PlayByName name patStr fullText -> do
+      state <- liftEffect $ Ref.read stateRef
+      case Map.lookup name state.bindings of
+        Just binding ->
+          case parse patStr of
+            Left _ ->
+              liftEffect $ log $ "play '" <> name <> "' parse error: " <> patStr
+            Right ast -> do
+              let newTrack = BoundTrack
+                    { pattern: tpatToPattern ast
+                    , name
+                    , binding
+                    }
+              let isOther = case _ of
+                    BoundTrack b -> b.name /= name
+                    _            -> true
+              let newTracks = Array.filter isOther state.tracks <> [newTrack]
+              liftEffect $ Ref.write (state { tracks = newTracks }) stateRef
+              liftEffect $ log $ name <> ": " <> patStr
+        Nothing -> do
+          -- Fallback: treat fullText as a legacy whole-message pattern.
+          -- This preserves backward compat for `bd sn hh cp`-style messages
+          -- when no binding has shadowed the first word. The legacy path
+          -- replaces ALL tracks (gate + CV) with a single GateTrack.
+          liftEffect $ log $ "(no binding '" <> name <> "', falling back to legacy pattern)"
+          let firstGateChannel = Array.findMap (case _ of
+                GateTrack g -> Just g.channel
+                _ -> Nothing) state.tracks
+          let channel = fromMaybe state.config.midi.channel firstGateChannel
+          let newTracks = case parse fullText of
+                Right ast -> [GateTrack { pattern: tpatToPattern ast, channel, fanout: true }]
+                Left _ -> state.tracks
+          liftEffect $ Ref.write (state { tracks = newTracks }) stateRef
+          liftEffect $ log $ "Pattern updated (legacy): " <> fullText
+      midiSchedulerLoop stateRef
+
+    SetSlot name value -> do
+      state <- liftEffect $ Ref.read stateRef
+      let newSlots = Map.insert name value state.slots
+      liftEffect $ Ref.write (state { slots = newSlots }) stateRef
+      liftEffect $ log $ "slot " <> name <> " = " <> show value
       midiSchedulerLoop stateRef
 
     Stop -> do
       liftEffect $ log "MIDI Scheduler stopped"
+
+-- | Interpret a pattern token according to a CV mapping mode.
+-- |   LiteralValue   → parse as Number
+-- |   NoteNameVoct   → parse as note name → 1V/oct on ±10V→±1.0 scale
+-- |   SampleNameMap  → lookup
+interpretCV :: Binding.CVMapping -> String -> Maybe Number
+interpretCV = case _ of
+  Binding.LiteralValue -> Number.fromString
+  Binding.NoteNameVoct -> \tok ->
+    case Map.lookup tok noteNameMidi of
+      Just midi -> Just (voctValue midi)
+      Nothing -> Nothing
+  Binding.SampleNameMap m -> \tok -> Map.lookup tok m
+
+-- | Note name → MIDI number (C-1 = 0, C0 = 12, C4 = 60, etc.).
+-- | Covers C3..C6 (the range used by `defaultSampleCVMap` previously).
+noteNameMidi :: Map String Int
+noteNameMidi = Map.fromFoldable
+  [ Tuple "c3" 48,  Tuple "cs3" 49, Tuple "d3" 50,  Tuple "ds3" 51
+  , Tuple "e3" 52,  Tuple "f3" 53,  Tuple "fs3" 54, Tuple "g3" 55
+  , Tuple "gs3" 56, Tuple "a3" 57,  Tuple "as3" 58, Tuple "b3" 59
+  , Tuple "c4" 60,  Tuple "cs4" 61, Tuple "d4" 62,  Tuple "ds4" 63
+  , Tuple "e4" 64,  Tuple "f4" 65,  Tuple "fs4" 66, Tuple "g4" 67
+  , Tuple "gs4" 68, Tuple "a4" 69,  Tuple "as4" 70, Tuple "b4" 71
+  , Tuple "c5" 72,  Tuple "cs5" 73, Tuple "d5" 74,  Tuple "ds5" 75
+  , Tuple "e5" 76,  Tuple "f5" 77,  Tuple "fs5" 78, Tuple "g5" 79
+  , Tuple "gs5" 80, Tuple "a5" 81,  Tuple "as5" 82, Tuple "b5" 83
+  , Tuple "c6" 84
+  ]
 
 -- | Get cycle start time from event
 eventStartCycle :: Event String -> R.Rational

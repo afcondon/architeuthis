@@ -66,6 +66,17 @@ data Msg
   | UpdateGateTrack Int String   -- Replace gate track at channel idx with pattern
   | UpdateCVTrack Int String     -- Replace CV track at bus idx with pattern
   | UpdateESXTrack Int String    -- Replace ESX-8CV track at slot idx (0-7) with pattern
+  -- Named bindings (Tidal.Binding.PrimAction). Action specs come in as
+  -- pre-formatted strings the scheduler parses, so binding errors show up
+  -- in the BEAM logs rather than requiring an Erlang-side parser.
+  | AddBinding String String      -- name, action-spec (e.g. "gate 6 + cv 15 voct")
+  | RemoveBinding String          -- name
+  -- Named-binding dispatch with legacy fallback. If name is registered,
+  -- play the patternStr through the binding; if not, treat fullText as
+  -- a legacy whole-message pattern (so `bd sn hh cp` still works for
+  -- users without bindings).
+  | PlayByName String String String  -- name, patternStr, fullText
+  | SetSlot String Number         -- slot name, current value (input bindings scaffold)
   | Stop              -- Stop the scheduler
 
 -- | FFI for erlang:send_after
@@ -201,6 +212,14 @@ schedulerLoop stateRef = do
     UpdateESXTrack _ _ -> do
       -- Base scheduler has no concept of ESX-8CV either; ignore.
       schedulerLoop stateRef
+
+    -- Named-binding messages have no meaning in the base scheduler
+    -- (it has no binding registry, no PrimAction dispatcher, no slot env).
+    -- Ignore so the Cowboy handler can broadcast to either scheduler kind.
+    AddBinding _ _ -> schedulerLoop stateRef
+    RemoveBinding _ -> schedulerLoop stateRef
+    PlayByName _ _ _ -> schedulerLoop stateRef
+    SetSlot _ _ -> schedulerLoop stateRef
 
     Stop -> do
       liftEffect $ log "Scheduler stopped"

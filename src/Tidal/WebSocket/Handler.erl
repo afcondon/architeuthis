@@ -135,14 +135,44 @@ websocket_handle({binary, Bin}, State) ->
 websocket_handle(_Frame, State) ->
     {ok, State}.
 
-%% Try to parse "gate <ch> <pattern>" or "cv <bus> <pattern>" prefix.
-%% Returns {gate, Ch, Pattern} | {cv, Bus, Pattern} | none.
+%% Try to parse one of the built-in verb prefixes.
+%% Returns one of:
+%%   {gate, Ch, Pattern}       — fire gates on cv-router
+%%   {cv, Bus, Pattern}        — emit /cv updates
+%%   {esx, Slot, Pattern}      — emit /esx updates (Silent Way → ESX-8CV)
+%%   {bind, Name, ActionSpec}  — register a named binding
+%%   {unbind, Name}            — remove a named binding
+%%   {slot, Name, Value}       — set an input slot value (manual)
+%%   none                      — try named-binding dispatch via play_or_legacy
 try_parse_prefixed(<<"gate ", Rest/binary>>) ->
     try_parse_num_pattern(gate, Rest);
 try_parse_prefixed(<<"cv ", Rest/binary>>) ->
     try_parse_num_pattern(cv, Rest);
 try_parse_prefixed(<<"esx ", Rest/binary>>) ->
     try_parse_num_pattern(esx, Rest);
+try_parse_prefixed(<<"bind ", Rest/binary>>) ->
+    %% bind <name> <action-spec>; action-spec runs to end of line.
+    case binary:split(Rest, <<" ">>) of
+        [Name, ActionSpec] -> {bind, Name, ActionSpec};
+        _ -> none
+    end;
+try_parse_prefixed(<<"unbind ", Rest/binary>>) ->
+    %% unbind <name>
+    Name = binary_part(Rest, 0, byte_size(Rest)),
+    case binary:match(Name, <<" ">>) of
+        nomatch -> {unbind, Name};
+        _ -> none
+    end;
+try_parse_prefixed(<<"slot ", Rest/binary>>) ->
+    %% slot <name> <value>
+    case binary:split(Rest, <<" ">>) of
+        [Name, ValueBin] ->
+            case parse_number(ValueBin) of
+                {ok, Value} -> {slot, Name, Value};
+                error -> none
+            end;
+        _ -> none
+    end;
 try_parse_prefixed(_) ->
     none.
 
@@ -157,6 +187,29 @@ try_parse_num_pattern(Tag, Rest) ->
             end;
         _ ->
             none
+    end.
+
+%% Parse a binary as a float, accepting either "1.5" or "1" (integer literal).
+parse_number(Bin) ->
+    try
+        FloatVal = binary_to_float(Bin),
+        {ok, FloatVal}
+    catch
+        error:badarg ->
+            try
+                IntVal = binary_to_integer(Bin),
+                {ok, float(IntVal)}
+            catch
+                error:badarg -> error
+            end
+    end.
+
+%% Split "<word> <rest>" into {Word, Rest}, or treat single-word input as
+%% {Word, <<>>}. Used for named-binding dispatch fallback.
+split_first_word(Text) ->
+    case binary:split(Text, <<" ">>) of
+        [Word, Rest] -> {Word, Rest};
+        [Word] -> {Word, <<>>}
     end.
 
 %% Handle pattern messages. New path: recognise "gate <ch>" / "cv <bus>"
@@ -197,8 +250,32 @@ handle_pattern_message(Text, SchedulerPid, State) ->
                     Reply = {text, <<"ERROR: esx parse: ", ErrBin/binary>>},
                     {reply, Reply, State}
             end;
+        {bind, Name, ActionSpec} ->
+            SchedulerPid ! {addBinding, Name, ActionSpec},
+            Reply = {text, <<"OK: bind ", Name/binary, " ", ActionSpec/binary>>},
+            {reply, Reply, State};
+        {unbind, Name} ->
+            SchedulerPid ! {removeBinding, Name},
+            Reply = {text, <<"OK: unbind ", Name/binary>>},
+            {reply, Reply, State};
+        {slot, Name, Value} ->
+            SchedulerPid ! {setSlot, Name, Value},
+            ValueBin = list_to_binary(io_lib:format("~p", [Value])),
+            Reply = {text, <<"OK: slot ", Name/binary, " ", ValueBin/binary>>},
+            {reply, Reply, State};
         none ->
-            handle_legacy_pattern_message(Text, SchedulerPid, State)
+            %% Not a built-in verb. Try named-binding dispatch, falling back
+            %% to legacy whole-text pattern if the name isn't registered.
+            %% JSON messages (`{...}`) bypass this path; they're legacy.
+            case Text of
+                <<"{", _/binary>> ->
+                    handle_legacy_pattern_message(Text, SchedulerPid, State);
+                _ ->
+                    {Word, Rest} = split_first_word(Text),
+                    SchedulerPid ! {playByName, Word, Rest, Text},
+                    Reply = {text, <<"OK: dispatched '", Word/binary, "'">>},
+                    {reply, Reply, State}
+            end
     end.
 
 handle_legacy_pattern_message(Text, SchedulerPid, State) ->

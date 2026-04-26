@@ -1,0 +1,183 @@
+-- | Named bindings: a map from user-given names (`kick`, `plaits`, `filter`)
+-- | to lists of `PrimAction` that fire on each pattern event.
+-- |
+-- | This is the dispatch-layer primitive that lets pattern source code stay
+-- | musical (`kick "bd*4"`, `plaits "c4 e4 g4"`) while the cv-router
+-- | geometry (gate channels, CV buses, ESX slots, future MIDI) lives in a
+-- | separately-managed registry.
+-- |
+-- | Adding a new modulation kind = adding a `PrimAction` constructor.
+-- | Backward-compat is preserved because the dispatcher pattern-matches on
+-- | constructors; old bindings keep working as new ones are added.
+module Tidal.Binding
+  ( PrimAction(..)
+  , CVMapping(..)
+  , Binding
+  , BindingRegistry
+  , defaultRegistry
+  , parseAction
+  , parseCompoundAction
+  ) where
+
+import Prelude
+
+import Data.Array as Array
+import Data.Either (Either(..))
+import Data.Int as Int
+import Data.Map (Map)
+import Data.Map as Map
+import Data.Maybe (Maybe(..))
+import Data.String (Pattern(..), trim)
+import Data.String as String
+import Data.Tuple (Tuple(..))
+
+-- ---------------------------------------------------------------------------
+-- Types
+-- ---------------------------------------------------------------------------
+
+-- | How to interpret a pattern token's text content as a CV value.
+-- |
+-- |   * `LiteralValue`   — token is a numeric string (e.g. "0.5", "-0.3");
+-- |                        non-numeric tokens (incl. "~") skip the emit and
+-- |                        the bus stays at its last value (sample-and-hold).
+-- |   * `NoteNameVoct`   — token is a note name like "c4", "ds5", "fs3";
+-- |                        emits 1V/oct CV on the ES-9 ±10V → digital ±1.0
+-- |                        scale (`midi/120`). Non-recognized note names
+-- |                        skip the emit.
+-- |   * `SampleNameMap`  — explicit lookup table for arbitrary tokens
+-- |                        (rarely useful — `NoteNameVoct` covers the
+-- |                        common pitched-voice case).
+data CVMapping
+  = LiteralValue
+  | NoteNameVoct
+  | SampleNameMap (Map String Number)
+
+derive instance eqCVMapping :: Eq CVMapping
+
+-- | One primitive emission per pattern event.
+-- |
+-- | A `Binding` is a list of these; on each pattern event the dispatcher
+-- | runs through the list in order. Compound bindings like `plaits =
+-- | gate 6 + cv 15 voct` are encoded as `[Gate 6, CV 15 NoteNameVoct]`.
+-- |
+-- | Adding a new modulation kind (MIDI note, pitch bend, envelope) means
+-- | adding a constructor here and a dispatcher branch — no change to the
+-- | binding registry shape, no churn for existing actions.
+data PrimAction
+  = Gate Int                     -- gate channel 0..7 → cv-router /tidal/gate
+  | CV Int CVMapping             -- bus 0..15, value mapping → cv-router /cv
+  | ESX Int                      -- ESX-8CV slot 0..7 → cv-router /esx
+
+derive instance eqPrimAction :: Eq PrimAction
+
+-- | A binding: the list of primitive actions to fire on each event of the
+-- | pattern dispatched to this binding's name.
+type Binding = Array PrimAction
+
+-- | The full registry mapping names to bindings.
+type BindingRegistry = Map String Binding
+
+-- ---------------------------------------------------------------------------
+-- Default registry — preserves the current `defaultSampleGateMap` /
+-- `defaultSampleCVMap` behaviour as user-visible bindings.
+-- ---------------------------------------------------------------------------
+
+-- | Drum aliases mapped to gate channels 0..7 (matching cv-router's bus
+-- | layout where panel jacks 1..8 = gate ch 0..7). Mirrors the GM-drum
+-- | aliases in `MIDIScheduler.defaultSampleGateMap`.
+drumBindings :: Array (Tuple String Binding)
+drumBindings =
+  [ Tuple "bd"    [Gate 0]
+  , Tuple "kick"  [Gate 0]
+  , Tuple "sn"    [Gate 1]
+  , Tuple "snare" [Gate 1]
+  , Tuple "hh"    [Gate 2]
+  , Tuple "hihat" [Gate 2]
+  , Tuple "ho"    [Gate 3]
+  , Tuple "oh"    [Gate 3]
+  , Tuple "cp"    [Gate 3]
+  , Tuple "clap"  [Gate 3]
+  , Tuple "rim"   [Gate 4]
+  , Tuple "lt"    [Gate 5]
+  , Tuple "tom"   [Gate 5]
+  , Tuple "mt"    [Gate 5]
+  , Tuple "ht"    [Gate 6]
+  , Tuple "cy"    [Gate 7]
+  , Tuple "crash" [Gate 7]
+  , Tuple "rd"    [Gate 7]
+  , Tuple "ride"  [Gate 7]
+  ]
+
+-- | The Plaits voice: gate ch 6 + V/oct on bus 15. Replaces the implicit
+-- | note-name-→-Plaits behaviour previously hardcoded in
+-- | `defaultSampleGateMap` / `defaultSampleCVMap`.
+plaitsBinding :: Tuple String Binding
+plaitsBinding = Tuple "plaits" [Gate 6, CV 15 NoteNameVoct]
+
+-- | Default registry. Drum aliases + Plaits. Loaded into the scheduler
+-- | state at startup. Users can add/replace via the `bind` WS verb.
+defaultRegistry :: BindingRegistry
+defaultRegistry = Map.fromFoldable (drumBindings <> [plaitsBinding])
+
+-- ---------------------------------------------------------------------------
+-- Parsing — turn a `bind <name> <action-spec>` text body into a Binding.
+-- ---------------------------------------------------------------------------
+
+-- | Parse an action-spec body (text after `bind <name> `) into a Binding.
+-- | Compound forms join with ` + ` (single-space delimited). Each part
+-- | parses via `parseAction`.
+-- |
+-- | Examples (just the right-hand side):
+-- |   `gate 0`                          → Right [Gate 0]
+-- |   `cv 15 voct`                      → Right [CV 15 NoteNameVoct]
+-- |   `esx 2`                           → Right [ESX 2]
+-- |   `gate 6 + cv 15 voct`             → Right [Gate 6, CV 15 NoteNameVoct]
+parseCompoundAction :: String -> Either String Binding
+parseCompoundAction body =
+  let
+    parts = map trim (String.split (Pattern "+") body)
+    step acc part = case acc of
+      Left e -> Left e
+      Right xs -> case parseAction part of
+        Left e -> Left e
+        Right a -> Right (Array.snoc xs a)
+  in
+    Array.foldl step (Right []) parts
+
+-- | Parse a single primitive-action spec.
+-- |
+-- |   `gate <int>`              → Gate
+-- |   `cv <int> [literal|voct]` → CV (default: literal)
+-- |   `esx <int>`               → ESX
+parseAction :: String -> Either String PrimAction
+parseAction s =
+  case String.split (Pattern " ") (trim s) of
+    ["gate", chStr] ->
+      case Int.fromString chStr of
+        Just ch -> Right (Gate ch)
+        Nothing -> Left ("gate: expected integer channel, got '" <> chStr <> "'")
+
+    ["cv", busStr] ->
+      case Int.fromString busStr of
+        Just bus -> Right (CV bus LiteralValue)
+        Nothing -> Left ("cv: expected integer bus, got '" <> busStr <> "'")
+
+    ["cv", busStr, modeStr] ->
+      case Int.fromString busStr, parseMapping modeStr of
+        Just bus, Just mode -> Right (CV bus mode)
+        Nothing, _ -> Left ("cv: expected integer bus, got '" <> busStr <> "'")
+        _, Nothing -> Left ("cv: expected mapping mode (literal|voct), got '" <> modeStr <> "'")
+
+    ["esx", slotStr] ->
+      case Int.fromString slotStr of
+        Just slot -> Right (ESX slot)
+        Nothing -> Left ("esx: expected integer slot, got '" <> slotStr <> "'")
+
+    other ->
+      Left ("unrecognized action: '" <> String.joinWith " " other <> "'")
+
+parseMapping :: String -> Maybe CVMapping
+parseMapping = case _ of
+  "literal" -> Just LiteralValue
+  "voct"    -> Just NoteNameVoct
+  _         -> Nothing
