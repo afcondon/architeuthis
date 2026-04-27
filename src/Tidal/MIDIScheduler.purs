@@ -37,7 +37,7 @@ import Erl.Process (Process, ProcessM, spawn, receive)
 import Erl.Process.Raw as Raw
 import Tidal.Eval.Interpret (tpatToPattern)
 import Tidal.Binding as Binding
-import Tidal.MIDI (MIDIClient, MIDIConfig, startClient, scheduleDrumOnChannel)
+import Tidal.MIDI (MIDIClient, MIDIConfig, startClient, scheduleDrumOnChannel, scheduleNoteOnDevice, scheduleCCOnDevice)
 import Tidal.OSC as OSC
 import Tidal.Transform (Transform(..), applyTransforms)
 import Tidal.Parse.Parser (parse)
@@ -212,6 +212,8 @@ type MIDISchedulerState =
   , lastTrigger :: R.Rational  -- Avoid double-triggering (global for simplicity)
   , bindings :: Binding.BindingRegistry  -- Named-action registry (kick, plaits, …)
   , slots :: Map String Number           -- Param/input slot env (modulation values)
+  , midiDevices :: Map String String     -- alias → real MIDI device name
+                                          -- (registered via `midi-device` verb)
   }
 
 -- | Default drum map (General MIDI drum notes)
@@ -283,6 +285,7 @@ startMIDIScheduler config patternStr = do
       , lastTrigger: R.fromInt (-1)
       , bindings: Binding.defaultRegistry
       , slots: Map.empty
+      , midiDevices: Map.empty
       }
 
     liftEffect $ log $ "MIDI Scheduler started"
@@ -403,34 +406,63 @@ midiSchedulerLoop stateRef = do
                       Nothing -> pure unit
                     Nothing -> pure unit
 
-                BoundTrack b ->
+                BoundTrack b -> do
                   -- Run the binding's PrimAction list. CVs fire first
                   -- (with cvLeadMs head start) so V/oct settles before
-                  -- the gate trigger. Subsequent action types (Midi,
-                  -- Envelope, etc.) plug in here without changing the
-                  -- track-iteration shape.
-                  case state.oscClient of
-                    Nothing -> pure unit
-                    Just osc -> do
-                      let cvLead = state.config.gate.cvLeadMs
-                      let cvDelay = max 0.0 (delayClamped - cvLead)
-                      for_ b.binding \action -> case action of
-                        Binding.CV bus mapping ->
-                          case interpretCV mapping token of
-                            Just value -> do
-                              liftEffect $ log $ "  〰 [" <> b.name <> "] cv bus " <> show bus <> " = " <> show value
-                              liftEffect $ OSC.sendCVAfter osc bus value cvDelay
-                            Nothing -> pure unit
-                        Binding.ESX slot ->
-                          case Number.fromString token of
-                            Just value -> do
-                              liftEffect $ log $ "  ⌇ [" <> b.name <> "] esx slot " <> show slot <> " = " <> show value
-                              liftEffect $ OSC.sendESXAfter osc slot value delayClamped
-                            Nothing -> pure unit
-                        Binding.Gate ch ->
-                          when (token /= "~") do
+                  -- the gate trigger. MIDI dispatch lives alongside —
+                  -- different destinations, same per-event loop.
+                  let cvLead = state.config.gate.cvLeadMs
+                  let cvDelay = max 0.0 (delayClamped - cvLead)
+                  for_ b.binding \action -> case action of
+                    Binding.CV bus mapping ->
+                      case state.oscClient, interpretCV mapping token of
+                        Just osc, Just value -> do
+                          liftEffect $ log $ "  〰 [" <> b.name <> "] cv bus " <> show bus <> " = " <> show value
+                          liftEffect $ OSC.sendCVAfter osc bus value cvDelay
+                        _, _ -> pure unit
+                    Binding.ESX slot ->
+                      case state.oscClient, Number.fromString token of
+                        Just osc, Just value -> do
+                          liftEffect $ log $ "  ⌇ [" <> b.name <> "] esx slot " <> show slot <> " = " <> show value
+                          liftEffect $ OSC.sendESXAfter osc slot value delayClamped
+                        _, _ -> pure unit
+                    Binding.Gate ch ->
+                      when (token /= "~") do
+                        case state.oscClient of
+                          Just osc -> do
                             liftEffect $ log $ "  ⚡ [" <> b.name <> "] gate " <> show ch <> " in " <> show delayInt <> "ms"
                             liftEffect $ OSC.sendGateTrigAfter osc ch state.config.gate.gateDuration delayClamped
+                          Nothing -> pure unit
+                    Binding.MidiNote m ->
+                      when (token /= "~") do
+                        case Map.lookup m.device state.midiDevices of
+                          Nothing ->
+                            liftEffect $ log $ "  ✗ [" <> b.name <> "] midi-note: unknown device alias '" <> m.device <> "'"
+                          Just deviceName -> do
+                            -- Token can override the binding's defaultNote with
+                            -- a note name (c4, e4, etc.). Falls back to the
+                            -- binding's defaultNote for trigger-style tokens
+                            -- (bd, sn, etc.) so drum patterns work.
+                            let note = case Map.lookup token noteNameMidi of
+                                  Just n -> n
+                                  Nothing -> m.defaultNote
+                            liftEffect $ log $ "  ♪ [" <> b.name <> "] midi " <> deviceName <> " ch" <> show m.channel <> " note " <> show note
+                            liftEffect $ scheduleNoteOnDevice deviceName m.channel note m.velocity state.config.noteDuration delayInt
+                    Binding.MidiCC m ->
+                      case Number.fromString token of
+                        Nothing -> pure unit  -- ~ rest or non-numeric → skip
+                        Just raw ->
+                          case Map.lookup m.device state.midiDevices of
+                            Nothing ->
+                              liftEffect $ log $ "  ✗ [" <> b.name <> "] midi-cc: unknown device alias '" <> m.device <> "'"
+                            Just deviceName -> do
+                              -- Pattern values 0..1 → MIDI 0..127. Clamp to
+                              -- safe range; CC values >127 or <0 silently
+                              -- truncated by sendmidi anyway, but explicit
+                              -- clamp gives predictable behaviour.
+                              let value7bit = clamp7bit (raw * 127.0)
+                              liftEffect $ log $ "  ◇ [" <> b.name <> "] midi " <> deviceName <> " ch" <> show m.channel <> " cc" <> show m.cc <> " = " <> show value7bit
+                              liftEffect $ scheduleCCOnDevice deviceName m.channel m.cc value7bit delayInt
 
       liftEffect $ Ref.modify_ (_ { nextCycle = toCycle }) stateRef
 
@@ -598,6 +630,13 @@ midiSchedulerLoop stateRef = do
       liftEffect $ log "hush"
       midiSchedulerLoop stateRef
 
+    RegisterMidiDevice alias deviceName -> do
+      state <- liftEffect $ Ref.read stateRef
+      let newDevices = Map.insert alias deviceName state.midiDevices
+      liftEffect $ Ref.write (state { midiDevices = newDevices }) stateRef
+      liftEffect $ log $ "midi-device " <> alias <> " = " <> deviceName
+      midiSchedulerLoop stateRef
+
     Stop -> do
       liftEffect $ log "MIDI Scheduler stopped"
 
@@ -623,6 +662,13 @@ specToTransform = case _ of
   SpecOffset n  -> Offset n
   SpecInvert    -> Invert
   SpecScale a b -> Scale a b
+
+-- | Clamp a Number to MIDI's 7-bit range [0..127] and floor it.
+clamp7bit :: Number -> Int
+clamp7bit n
+  | n < 0.0   = 0
+  | n > 127.0 = 127
+  | otherwise = Int.floor n
 
 -- | Render a transform pipeline for log output, e.g. "  | offset -0.5".
 showTransforms :: Array Transform -> String

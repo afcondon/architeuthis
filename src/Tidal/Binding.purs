@@ -85,6 +85,16 @@ data PrimAction
   = Gate Int                     -- gate channel 0..7 → cv-router /tidal/gate
   | CV Int CVMapping             -- bus 0..15, value mapping → cv-router /cv
   | ESX Int                      -- ESX-8CV slot 0..7 → cv-router /esx
+  -- MIDI primitives — device-aware. The `device` field is an alias
+  -- registered via `midi-device <alias> <real-name>`; lets the same
+  -- binding shape target FH-2, iPad-AUM, Yarns, IAC bus, etc. by
+  -- swapping aliases.
+  | MidiNote { device :: String, channel :: Int, defaultNote :: Int, velocity :: Int }
+  -- ^ Fires a MIDI note. Token name "c4"/"e4"/etc overrides defaultNote;
+  --   "~" rests; otherwise uses defaultNote (so `bd*4` triggers the
+  --   default-note repeatedly, useful for drum-machine patterns).
+  | MidiCC { device :: String, channel :: Int, cc :: Int }
+  -- ^ Sends a MIDI CC. Numeric tokens 0..1 scale to 0..127.
 
 derive instance eqPrimAction :: Eq PrimAction
 
@@ -191,8 +201,35 @@ parseAction s =
         Just slot -> Right (ESX slot)
         Nothing -> Left ("esx: expected integer slot, got '" <> slotStr <> "'")
 
+    -- midi-note <alias> <ch> <note> [velocity]
+    ["midi-note", device, chStr, noteStr] ->
+      parseMidiNote device chStr noteStr "100"
+    ["midi-note", device, chStr, noteStr, velStr] ->
+      parseMidiNote device chStr noteStr velStr
+
+    -- midi-cc <alias> <ch> <cc>
+    ["midi-cc", device, chStr, ccStr] ->
+      case Int.fromString chStr, Int.fromString ccStr of
+        Just ch, Just cc -> Right (MidiCC { device, channel: ch, cc })
+        Nothing, _ -> Left ("midi-cc: expected integer channel, got '" <> chStr <> "'")
+        _, Nothing -> Left ("midi-cc: expected integer cc, got '" <> ccStr <> "'")
+
     other ->
       Left ("unrecognized action: '" <> String.joinWith " " other <> "'")
+
+-- | Helper for the midi-note variants — packs a typed Int validation
+-- | and emits a sensible error message per missing field.
+parseMidiNote :: String -> String -> String -> String -> Either String PrimAction
+parseMidiNote device chStr noteStr velStr =
+  case Int.fromString chStr, Int.fromString noteStr, Int.fromString velStr of
+    Just ch, Just note, Just vel ->
+      Right (MidiNote { device, channel: ch, defaultNote: note, velocity: vel })
+    Nothing, _, _ ->
+      Left ("midi-note: expected integer channel, got '" <> chStr <> "'")
+    _, Nothing, _ ->
+      Left ("midi-note: expected integer note, got '" <> noteStr <> "'")
+    _, _, Nothing ->
+      Left ("midi-note: expected integer velocity, got '" <> velStr <> "'")
 
 parseMapping :: String -> Maybe CVMapping
 parseMapping = case _ of

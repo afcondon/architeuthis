@@ -1,5 +1,7 @@
 -module(tidal_mIDI@foreign).
--export([listDevices/0, startClient/1, stopClient/1, noteOn/3, noteOff/2, sendDrum/4, scheduleDrum/5, scheduleDrumOnChannel/6]).
+-export([listDevices/0, startClient/1, stopClient/1, noteOn/3, noteOff/2,
+         sendDrum/4, scheduleDrum/5, scheduleDrumOnChannel/6,
+         scheduleNoteOnDevice/6, scheduleCCOnDevice/5]).
 
 %% Path to sendmidi binary
 -define(SENDMIDI, os:getenv("HOME") ++ "/bin/sendmidi").
@@ -145,6 +147,44 @@ scheduleDrumOnChannel(Client, Channel, Note, Velocity, DurationMs, DelayMs) ->
                 "~s dev \"~s\" ch ~B off ~B",
                 [?SENDMIDI, Device, Channel, Note])),
             os:cmd(OffCmd)
+        end),
+        unit
+    end.
+
+%% Schedule a MIDI note on an arbitrary device, identified by its real
+%% MIDI port name (the alias resolution happens scheduler-side; this
+%% function gets the resolved name). One-shot sendmidi calls so we
+%% don't need a persistent port per device.
+scheduleNoteOnDevice(Device, Channel, Note, Velocity, DurationMs, DelayMs) ->
+    fun() ->
+        DeviceStr = binary_to_list(Device),
+        spawn(fun() ->
+            timer:sleep(DelayMs),
+            OnCmd = lists:flatten(io_lib:format(
+                "~s dev \"~s\" ch ~B on ~B ~B",
+                [?SENDMIDI, DeviceStr, Channel, Note, Velocity])),
+            io:format("MIDI> [~s] ~s~n", [DeviceStr, OnCmd]),
+            os:cmd(OnCmd),
+            timer:sleep(DurationMs),
+            OffCmd = lists:flatten(io_lib:format(
+                "~s dev \"~s\" ch ~B off ~B",
+                [?SENDMIDI, DeviceStr, Channel, Note])),
+            os:cmd(OffCmd)
+        end),
+        unit
+    end.
+
+%% Schedule a MIDI CC on an arbitrary device. Value is 0-127 (7-bit).
+scheduleCCOnDevice(Device, Channel, CC, Value, DelayMs) ->
+    fun() ->
+        DeviceStr = binary_to_list(Device),
+        spawn(fun() ->
+            timer:sleep(DelayMs),
+            Cmd = lists:flatten(io_lib:format(
+                "~s dev \"~s\" ch ~B cc ~B ~B",
+                [?SENDMIDI, DeviceStr, Channel, CC, Value])),
+            io:format("MIDI> [~s] ~s~n", [DeviceStr, Cmd]),
+            os:cmd(Cmd)
         end),
         unit
     end.

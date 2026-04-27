@@ -149,6 +149,14 @@ try_parse_prefixed(<<"hush">>) -> {hush};
 try_parse_prefixed(<<"hush ", _/binary>>) -> {hush};
 try_parse_prefixed(<<"silence">>) -> {hush};
 try_parse_prefixed(<<"silence ", _/binary>>) -> {hush};
+try_parse_prefixed(<<"midi-device ", Rest/binary>>) ->
+    %% midi-device <alias> <rest-of-line>; rest-of-line is the real
+    %% MIDI port name, can contain spaces ("AUDIO4c USB2").
+    case binary:split(Rest, <<" ">>) of
+        [Alias, DeviceName] when DeviceName =/= <<>> ->
+            {midi_device, Alias, DeviceName};
+        _ -> none
+    end;
 try_parse_prefixed(<<"gate ", Rest/binary>>) ->
     try_parse_num_pattern(gate, Rest);
 try_parse_prefixed(<<"cv ", Rest/binary>>) ->
@@ -347,6 +355,10 @@ handle_pattern_message(Text, SchedulerPid, State) ->
         {hush} ->
             SchedulerPid ! {hush},
             Reply = {text, <<"OK: hush">>},
+            {reply, Reply, State};
+        {midi_device, Alias, DeviceName} ->
+            SchedulerPid ! {registerMidiDevice, Alias, DeviceName},
+            Reply = {text, <<"OK: midi-device ", Alias/binary, " = ", DeviceName/binary>>},
             {reply, Reply, State};
         none ->
             %% Not a built-in verb. Try named-binding dispatch, falling back

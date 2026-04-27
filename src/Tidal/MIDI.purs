@@ -14,6 +14,8 @@ module Tidal.MIDI
   , sendDrum
   , scheduleDrum
   , scheduleDrumOnChannel
+  , scheduleNoteOnDevice
+  , scheduleCCOnDevice
   , listDevices
   ) where
 
@@ -70,3 +72,18 @@ foreign import scheduleDrum :: MIDIClient -> Int -> Int -> Int -> Int -> Effect 
 -- | Schedule drum trigger on a specific channel (overrides client default)
 -- | scheduleDrumOnChannel client channel note velocity durationMs delayMs
 foreign import scheduleDrumOnChannel :: MIDIClient -> Int -> Int -> Int -> Int -> Int -> Effect Unit
+
+-- | Schedule a MIDI note on an arbitrary device by name. Bypasses
+-- | MIDIClient — opens a one-shot sendmidi process for note-on +
+-- | scheduled note-off. Used by binding-dispatch's MidiNote PrimAction
+-- | so the same scheduler can target FH-2, AUDIO4c USB2 (iPad), Yarns,
+-- | etc. without holding open a port per device.
+-- |
+-- | scheduleNoteOnDevice device channel note velocity durationMs delayMs
+foreign import scheduleNoteOnDevice
+  :: String -> Int -> Int -> Int -> Int -> Int -> Effect Unit
+
+-- | Schedule a MIDI CC on an arbitrary device by name.
+-- | scheduleCCOnDevice device channel cc value7bit delayMs
+foreign import scheduleCCOnDevice
+  :: String -> Int -> Int -> Int -> Int -> Effect Unit
