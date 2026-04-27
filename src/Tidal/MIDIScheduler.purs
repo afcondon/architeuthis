@@ -396,10 +396,15 @@ midiSchedulerLoop stateRef = do
                     liftEffect $ Ref.modify_ (_ { lastTrigger = eventCycle }) stateRef
 
                 CVTrack c ->
-                  -- CVTrack tokens are numeric; non-numeric (incl. ~ rest)
-                  -- skip the emit and the bus stays at its last value (S&H).
-                  -- `transforms` (e.g. [Offset -0.5]) apply post-parse.
-                  case Number.fromString token of
+                  -- CVTrack tokens are either numeric (literal voltages) or
+                  -- note names (translated to V/oct via noteNameMidi). `~` and
+                  -- unknown tokens skip the emit so the bus stays at its last
+                  -- value (S&H). `transforms` (e.g. [Offset -0.5]) apply
+                  -- post-parse, post-translation.
+                  let mRaw = case Number.fromString token of
+                        Just n -> Just n
+                        Nothing -> voctValue <$> Map.lookup token noteNameMidi
+                  in case mRaw of
                     Just raw -> case state.oscClient of
                       Just osc -> do
                         let value = applyTransforms c.transforms raw
@@ -512,7 +517,7 @@ midiSchedulerLoop stateRef = do
                         -- non-trivial decay or release feel "stuck high then
                         -- drop". Future polish: parameterise per-track.
                         liftEffect $ log $ "  ♪ fh2-trigger v" <> show f.voice <> " → " <> dev.name <> " ch" <> show channel <> " note " <> show note <> " in " <> show adjustedDelay <> "ms"
-                        liftEffect $ scheduleNoteOnDevice dev.name channel note 100 600 adjustedDelay
+                        liftEffect $ scheduleNoteOnDevice dev.name channel note 100 200 adjustedDelay
 
       liftEffect $ Ref.modify_ (_ { nextCycle = toCycle }) stateRef
 
@@ -722,9 +727,11 @@ midiSchedulerLoop stateRef = do
       midiSchedulerLoop stateRef
 
     Fh2Shape voice a d s r -> do
-      -- Live ADSR: send 4 CCs (70/71/72/73) on the voice's MIDI channel.
-      -- Convention matches the FH-2 Configurator default mapping the user
-      -- sets up once; thereafter fh2-shape drives them from Tidal.
+      -- Live ADSR: send 4 CCs on the voice's MIDI channel. CC numbers are
+      -- offset per-MCV so each voice has its own ADSR controls:
+      --   MCV 0 -> 70/71/72/73, MCV 1 -> 74/75/76/77, MCV 2 -> 78..81, etc.
+      -- The user sets up the mapping once in the FH-2 Configurator's
+      -- Envelopes form; thereafter fh2-shape drives them from Tidal.
       state <- liftEffect $ Ref.read stateRef
       case Map.lookup voice state.fh2VoiceChannels of
         Nothing ->
@@ -733,14 +740,17 @@ midiSchedulerLoop stateRef = do
           let dev = fromMaybe { name: "FH-2", latencyMs: 0.0 }
                       (Map.lookup "fh2" state.midiDevices)
               clamp v = if v < 0 then 0 else if v > 127 then 127 else v
+              ccA = 70 + 4 * voice
+              ccD = ccA + 1
+              ccS = ccA + 2
+              ccR = ccA + 3
           liftEffect $ log $ "fh2-shape v" <> show voice <> " ch" <> show channel
+            <> " CCs " <> show ccA <> "-" <> show ccR
             <> ": A=" <> show a <> " D=" <> show d <> " S=" <> show s <> " R=" <> show r
-          -- Fire all 4 CCs immediately (delay 0). scheduleCCOnDevice will
-          -- spawn one process per CC; the FH-2 sees them within a few ms.
-          liftEffect $ scheduleCCOnDevice dev.name channel 70 (clamp a) 0
-          liftEffect $ scheduleCCOnDevice dev.name channel 71 (clamp d) 0
-          liftEffect $ scheduleCCOnDevice dev.name channel 72 (clamp s) 0
-          liftEffect $ scheduleCCOnDevice dev.name channel 73 (clamp r) 0
+          liftEffect $ scheduleCCOnDevice dev.name channel ccA (clamp a) 0
+          liftEffect $ scheduleCCOnDevice dev.name channel ccD (clamp d) 0
+          liftEffect $ scheduleCCOnDevice dev.name channel ccS (clamp s) 0
+          liftEffect $ scheduleCCOnDevice dev.name channel ccR (clamp r) 0
       midiSchedulerLoop stateRef
 
     Stop -> do

@@ -918,9 +918,13 @@ escape_json_string_loop(<<C, Rest/binary>>, Acc) ->
 %% The fh2-config binary lives at a known path; if you move it, update
 %% here too. (Could be made configurable via app env later.)
 fh2_set_envelope(Voice, Output, Channel) ->
+    %% Uses the composite --set-envelope-with-ccs verb so registering an
+    %% envelope voice also pushes the ADSR CC mappings (CCs 70+4V..73+4V
+    %% on `Channel`). One read/modify/write cycle on the FH-2 — no
+    %% configurator GUI interaction needed for ADSR.
     Path = "/Users/afc/work/afc-work/music/expert-sleepers/fh2-config",
     Cmd = io_lib:format(
-        "cd ~s && spago run -- --set-envelope ~B ~B ~B 2>&1",
+        "cd ~s && spago run -- --set-envelope-with-ccs ~B ~B ~B 2>&1",
         [Path, Voice, Output, Channel]),
     Output0 = os:cmd(lists:flatten(Cmd)),
     io:format("[fh2-envelope shell-out] voice=~B output=~B ch=~B done~n~ts~n",
