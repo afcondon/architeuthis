@@ -200,6 +200,12 @@ data ParsedTrack
   -- | hardcoded `gate <ch>` / `cv <bus>` dispatch when the user has
   -- | registered a name like `kick` or `plaits`.
   | BoundTrack { pattern :: Pattern String, name :: String, binding :: Binding.Binding }
+  -- | FH-2 trigger track. Each pattern token fires a MIDI note on the FH-2
+  -- | for the given voice. The voice's MIDI channel is looked up from
+  -- | `state.fh2VoiceChannels` at dispatch time (registered via
+  -- | `fh2-envelope`). Note name in the token (e.g. `c4`) overrides the
+  -- | default trigger note; bare tokens (e.g. `bd`) fall back to MIDI 60.
+  | Fh2TriggerTrack { pattern :: Pattern String, voice :: Int }
 
 -- | Internal state
 type MIDISchedulerState =
@@ -217,6 +223,9 @@ type MIDISchedulerState =
                                           -- Latency is subtracted from the delay
                                           -- at dispatch so slow destinations fire
                                           -- on-time relative to the scheduler's tick.
+  , fh2VoiceChannels :: Map Int Int       -- FH-2 voice id → MIDI channel.
+                                          -- Populated by `fh2-envelope`;
+                                          -- consumed by `fh2-trigger`.
   }
 
 -- | Default drum map (General MIDI drum notes)
@@ -289,6 +298,7 @@ startMIDIScheduler config patternStr = do
       , bindings: Binding.defaultRegistry
       , slots: Map.empty
       , midiDevices: Map.empty
+      , fh2VoiceChannels: Map.empty
       }
 
     liftEffect $ log $ "MIDI Scheduler started"
@@ -340,6 +350,7 @@ midiSchedulerLoop stateRef = do
                 CVTrack c -> c.pattern
                 ESXTrack e -> e.pattern
                 BoundTrack b -> b.pattern
+                Fh2TriggerTrack f -> f.pattern
           let events = queryArc pattern fromCycle toCycle
           for_ events \event -> do
             let eventCycle = eventStartCycle event
@@ -472,6 +483,31 @@ midiSchedulerLoop stateRef = do
                               liftEffect $ log $ "  ◇ [" <> b.name <> "] midi " <> dev.name <> " ch" <> show m.channel <> " cc" <> show m.cc <> " = " <> show value7bit
                               liftEffect $ scheduleCCOnDevice dev.name m.channel m.cc value7bit adjustedDelay
 
+                Fh2TriggerTrack f ->
+                  -- Look up the voice's MIDI channel. If unregistered (user
+                  -- forgot `fh2-envelope`), log once and skip.
+                  when (token /= "~") do
+                    case Map.lookup f.voice state.fh2VoiceChannels of
+                      Nothing ->
+                        liftEffect $ log $ "  ✗ fh2-trigger voice " <> show f.voice <> ": no fh2-envelope registration; skipping"
+                      Just channel -> do
+                        -- Pattern token can override the trigger note (so
+                        -- `fh2-trigger 0 "c4 e4 g4"` plays a melody and the
+                        -- FH-2's mcv pitch CV tracks). Plain trigger tokens
+                        -- (`bd`, `1`, `x`) fall back to MIDI 60 = C4.
+                        let note = case Map.lookup token noteNameMidi of
+                              Just n -> n
+                              Nothing -> 60
+                        -- Use the same fh2 latency record if registered,
+                        -- otherwise zero. Lets the user calibrate the FH-2
+                        -- via `midi-device fh2 FH-2 lat <ms>` without
+                        -- changing the verb shape.
+                        let dev = fromMaybe { name: "FH-2", latencyMs: 0.0 }
+                                    (Map.lookup "fh2" state.midiDevices)
+                        let adjustedDelay = max 0 (Int.floor (delayClamped - dev.latencyMs))
+                        liftEffect $ log $ "  ♪ fh2-trigger v" <> show f.voice <> " → " <> dev.name <> " ch" <> show channel <> " note " <> show note <> " in " <> show adjustedDelay <> "ms"
+                        liftEffect $ scheduleNoteOnDevice dev.name channel note 100 100 adjustedDelay
+
       liftEffect $ Ref.modify_ (_ { nextCycle = toCycle }) stateRef
 
       pid <- liftEffect Raw.self
@@ -566,6 +602,7 @@ midiSchedulerLoop stateRef = do
         CVTrack c -> liftEffect $ log $ "  - cv bus " <> show c.bus
         ESXTrack e -> liftEffect $ log $ "  - esx slot " <> show e.slot
         BoundTrack b -> liftEffect $ log $ "  - bound: " <> b.name
+        Fh2TriggerTrack f -> liftEffect $ log $ "  - fh2-trigger v" <> show f.voice
       midiSchedulerLoop stateRef
 
     AddBinding name actionSpec -> do
@@ -643,6 +680,39 @@ midiSchedulerLoop stateRef = do
       let newDevices = Map.insert alias { name: deviceName, latencyMs } state.midiDevices
       liftEffect $ Ref.write (state { midiDevices = newDevices }) stateRef
       liftEffect $ log $ "midi-device " <> alias <> " = " <> deviceName <> " (lat " <> show latencyMs <> "ms)"
+      midiSchedulerLoop stateRef
+
+    Fh2Envelope voice _output channel -> do
+      -- Record voice → channel mapping so fh2-trigger can resolve the
+      -- destination. Auto-register an `fh2` MIDI device alias if absent
+      -- (latency 0 by default; user can override via `midi-device fh2 ...
+      -- lat N`). The actual SysEx push to configure the FH-2's MCV is
+      -- handled by Handler.erl as a fire-and-forget shell-out to
+      -- fh2-config — keeps PureScript free of process-spawning.
+      state <- liftEffect $ Ref.read stateRef
+      let newVoices = Map.insert voice channel state.fh2VoiceChannels
+          newDevices = case Map.lookup "fh2" state.midiDevices of
+            Just _ -> state.midiDevices
+            Nothing -> Map.insert "fh2" { name: "FH-2", latencyMs: 0.0 } state.midiDevices
+      liftEffect $ Ref.write
+        (state { fh2VoiceChannels = newVoices, midiDevices = newDevices })
+        stateRef
+      liftEffect $ log $ "fh2-envelope: voice " <> show voice <> " → ch " <> show channel
+      midiSchedulerLoop stateRef
+
+    UpdateFh2TriggerTrack voice patStr -> do
+      state <- liftEffect $ Ref.read stateRef
+      case parse patStr of
+        Right ast -> do
+          let newTrack = Fh2TriggerTrack { pattern: tpatToPattern ast, voice }
+              isOther = case _ of
+                Fh2TriggerTrack f -> f.voice /= voice
+                _                 -> true
+              newTracks = Array.filter isOther state.tracks <> [newTrack]
+          liftEffect $ Ref.write (state { tracks = newTracks }) stateRef
+          liftEffect $ log $ "fh2-trigger v" <> show voice <> ": " <> patStr
+        Left _ ->
+          liftEffect $ log $ "fh2-trigger v" <> show voice <> " parse error: " <> patStr
       midiSchedulerLoop stateRef
 
     Stop -> do

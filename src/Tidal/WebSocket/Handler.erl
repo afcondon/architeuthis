@@ -137,14 +137,16 @@ websocket_handle(_Frame, State) ->
 
 %% Try to parse one of the built-in verb prefixes.
 %% Returns one of:
-%%   {gate, Ch, Pattern}       — fire gates on cv-router
-%%   {cv, Bus, Pattern}        — emit /cv updates
-%%   {esx, Slot, Pattern}      — emit /esx updates (Silent Way → ESX-8CV)
-%%   {bind, Name, ActionSpec}  — register a named binding
-%%   {unbind, Name}            — remove a named binding
-%%   {slot, Name, Value}       — set an input slot value (manual)
-%%   {hush}                    — silence everything (Tidal-compat)
-%%   none                      — try named-binding dispatch via play_or_legacy
+%%   {gate, Ch, Pattern}                       — fire gates on cv-router
+%%   {cv, Bus, Pattern}                        — emit /cv updates
+%%   {esx, Slot, Pattern}                      — emit /esx updates (Silent Way → ESX-8CV)
+%%   {fh2_envelope, Voice, Output, Channel}    — register an FH-2 envelope voice
+%%   {fh2_trigger, Voice, Pattern}             — pattern fires MIDI notes to FH-2 voice
+%%   {bind, Name, ActionSpec}                  — register a named binding
+%%   {unbind, Name}                            — remove a named binding
+%%   {slot, Name, Value}                       — set an input slot value (manual)
+%%   {hush}                                    — silence everything (Tidal-compat)
+%%   none                                      — try named-binding dispatch via play_or_legacy
 try_parse_prefixed(<<"hush">>) -> {hush};
 try_parse_prefixed(<<"hush ", _/binary>>) -> {hush};
 try_parse_prefixed(<<"silence">>) -> {hush};
@@ -165,6 +167,22 @@ try_parse_prefixed(<<"cv ", Rest/binary>>) ->
     try_parse_num_pattern(cv, Rest);
 try_parse_prefixed(<<"esx ", Rest/binary>>) ->
     try_parse_num_pattern(esx, Rest);
+try_parse_prefixed(<<"fh2-envelope ", Rest/binary>>) ->
+    %% fh2-envelope <voice> <output> <channel>
+    case binary:split(Rest, <<" ">>, [global]) of
+        [VoiceBin, OutputBin, ChannelBin] ->
+            try
+                Voice = binary_to_integer(VoiceBin),
+                Output = binary_to_integer(OutputBin),
+                Channel = binary_to_integer(ChannelBin),
+                {fh2_envelope, Voice, Output, Channel}
+            catch
+                error:badarg -> none
+            end;
+        _ -> none
+    end;
+try_parse_prefixed(<<"fh2-trigger ", Rest/binary>>) ->
+    try_parse_num_pattern(fh2_trigger, Rest);
 try_parse_prefixed(<<"bind ", Rest/binary>>) ->
     %% bind <name> <action-spec>; action-spec runs to end of line.
     case binary:split(Rest, <<" ">>) of
@@ -390,6 +408,33 @@ handle_pattern_message(Text, SchedulerPid, State) ->
                              " = ", DeviceName/binary,
                              " (lat ", LatBin/binary, "ms)">>},
             {reply, Reply, State};
+        {fh2_envelope, Voice, Output, Channel} ->
+            %% Update scheduler state immediately (so fh2-trigger can resolve
+            %% voice→channel right away) AND fire the SysEx push to the FH-2
+            %% in the background so the WS handler returns instantly. The
+            %% push takes ~5–10s (spago boot + read live config + write back);
+            %% any subsequent fh2-trigger note that lands during the push
+            %% just hits the still-old envelope routing for a moment.
+            SchedulerPid ! {fh2Envelope, Voice, Output, Channel},
+            spawn(fun() -> fh2_set_envelope(Voice, Output, Channel) end),
+            Reply = {text, <<"OK: fh2-envelope voice ",
+                             (integer_to_binary(Voice))/binary,
+                             " -> output ", (integer_to_binary(Output))/binary,
+                             " on ch ", (integer_to_binary(Channel))/binary,
+                             " (SysEx push in flight)">>},
+            {reply, Reply, State};
+        {fh2_trigger, Voice, Pattern} ->
+            case safe_parse(Pattern) of
+                {ok, _} ->
+                    SchedulerPid ! {updateFh2TriggerTrack, Voice, Pattern},
+                    Reply = {text, <<"OK: fh2-trigger v",
+                                     (integer_to_binary(Voice))/binary,
+                                     " ", Pattern/binary>>},
+                    {reply, Reply, State};
+                {parse_err, ErrBin} ->
+                    Reply = {text, <<"ERROR: fh2-trigger parse: ", ErrBin/binary>>},
+                    {reply, Reply, State}
+            end;
         none ->
             %% Not a built-in verb. Try named-binding dispatch, falling back
             %% to legacy whole-text pattern if the name isn't registered.
@@ -834,3 +879,19 @@ escape_json_string_loop(<<"\t", Rest/binary>>, Acc) ->
     escape_json_string_loop(Rest, <<Acc/binary, "\\t">>);
 escape_json_string_loop(<<C, Rest/binary>>, Acc) ->
     escape_json_string_loop(Rest, <<Acc/binary, C>>).
+
+%% Shell out to fh2-config to push the per-MCV envelope routing to the
+%% real FH-2 hardware. Synchronous within the spawned process (caller
+%% spawn/1's it so the WS handler returns immediately). Logs the result
+%% to stdout where the BEAM is running so failures aren't silent.
+%%
+%% The fh2-config binary lives at a known path; if you move it, update
+%% here too. (Could be made configurable via app env later.)
+fh2_set_envelope(Voice, Output, Channel) ->
+    Path = "/Users/afc/work/afc-work/music/expert-sleepers/fh2-config",
+    Cmd = io_lib:format(
+        "cd ~s && spago run -- --set-envelope ~B ~B ~B 2>&1",
+        [Path, Voice, Output, Channel]),
+    Output0 = os:cmd(lists:flatten(Cmd)),
+    io:format("[fh2-envelope shell-out] voice=~B output=~B ch=~B done~n~ts~n",
+              [Voice, Output, Channel, Output0]).

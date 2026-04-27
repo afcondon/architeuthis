@@ -90,6 +90,15 @@ data Msg
   -- subtracted from each event's delay so slow destinations (iPad audio
   -- buffer, Ableton) fire on-time alongside the modular.
   | RegisterMidiDevice String String Number  -- alias, deviceName, latencyMs
+  -- FH-2 envelope registration. `Fh2Envelope voice output channel` records
+  -- the (voice → channel) mapping in scheduler state so `fh2-trigger` can
+  -- resolve it. The accompanying SysEx push to actually configure the FH-2
+  -- happens in Handler.erl (shell-out to fh2-config), not here.
+  | Fh2Envelope Int Int Int            -- voice, base-output, MIDI channel
+  -- Per-track replacement for FH-2 trigger patterns. Same shape as
+  -- UpdateGateTrack but emits MIDI notes (which the FH-2 reads as triggers
+  -- for its onboard envelopes) on the channel registered by Fh2Envelope.
+  | UpdateFh2TriggerTrack Int String   -- voice, pattern
   | Stop              -- Stop the scheduler
 
 -- | Wire-level transform shape: matches the Erlang tuples sent by the
@@ -254,6 +263,11 @@ schedulerLoop stateRef = do
       schedulerLoop stateRef
 
     RegisterMidiDevice _ _ _ -> schedulerLoop stateRef
+
+    -- Base scheduler has no FH-2 awareness either; the MIDI scheduler
+    -- carries that state.
+    Fh2Envelope _ _ _ -> schedulerLoop stateRef
+    UpdateFh2TriggerTrack _ _ -> schedulerLoop stateRef
 
     Stop -> do
       liftEffect $ log "Scheduler stopped"
