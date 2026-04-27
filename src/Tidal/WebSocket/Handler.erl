@@ -150,11 +150,13 @@ try_parse_prefixed(<<"hush ", _/binary>>) -> {hush};
 try_parse_prefixed(<<"silence">>) -> {hush};
 try_parse_prefixed(<<"silence ", _/binary>>) -> {hush};
 try_parse_prefixed(<<"midi-device ", Rest/binary>>) ->
-    %% midi-device <alias> <rest-of-line>; rest-of-line is the real
-    %% MIDI port name, can contain spaces ("AUDIO4c USB2").
+    %% midi-device <alias> <device-name-with-spaces> [lat <ms>]
+    %% The optional `lat <ms>` suffix is stripped first if present;
+    %% remainder is the device name.
     case binary:split(Rest, <<" ">>) of
-        [Alias, DeviceName] when DeviceName =/= <<>> ->
-            {midi_device, Alias, DeviceName};
+        [Alias, AfterAlias] when AfterAlias =/= <<>> ->
+            {DeviceName, Latency} = split_lat_suffix(AfterAlias),
+            {midi_device, Alias, DeviceName, Latency};
         _ -> none
     end;
 try_parse_prefixed(<<"gate ", Rest/binary>>) ->
@@ -299,6 +301,31 @@ parse_transform_spec(Bin) ->
 trim_binary(Bin) ->
     list_to_binary(string:trim(binary_to_list(Bin))).
 
+%% Strip a trailing " lat <ms>" suffix from a device-name binary.
+%% Returns {DeviceName, Latency} where Latency is a float (default 0.0
+%% if the suffix is absent or unparseable).
+%%
+%%   "FH-2"               → {<<"FH-2">>, 0.0}
+%%   "AUDIO4c USB2 lat 12"→ {<<"AUDIO4c USB2">>, 12.0}
+%%   "FH-2 lat 1.5"       → {<<"FH-2">>, 1.5}
+split_lat_suffix(Bin) ->
+    %% Look for " lat " followed by a number to end of line.
+    Parts = binary:split(Bin, <<" lat ">>, [global]),
+    case Parts of
+        [Single] ->
+            {Single, 0.0};
+        [Name | LatParts] ->
+            %% The lat value is everything after the LAST " lat ".
+            %% (Unlikely to be ambiguous since device names don't usually
+            %% contain " lat " — but if they do, that's a self-inflicted
+            %% wound and we still cope.)
+            LatBin = lists:last(LatParts),
+            case parse_number(trim_binary(LatBin)) of
+                {ok, Lat} -> {Name, Lat};
+                error -> {Bin, 0.0}  %% suffix didn't parse — treat whole thing as name
+            end
+    end.
+
 %% Handle pattern messages. New path: recognise "gate <ch>" / "cv <bus>"
 %% prefixes for per-track replacement (live-coding shape). Otherwise
 %% fall through to the legacy single-pattern / multi-track JSON parser.
@@ -356,9 +383,12 @@ handle_pattern_message(Text, SchedulerPid, State) ->
             SchedulerPid ! {hush},
             Reply = {text, <<"OK: hush">>},
             {reply, Reply, State};
-        {midi_device, Alias, DeviceName} ->
-            SchedulerPid ! {registerMidiDevice, Alias, DeviceName},
-            Reply = {text, <<"OK: midi-device ", Alias/binary, " = ", DeviceName/binary>>},
+        {midi_device, Alias, DeviceName, Latency} ->
+            SchedulerPid ! {registerMidiDevice, Alias, DeviceName, Latency},
+            LatBin = list_to_binary(io_lib:format("~p", [Latency])),
+            Reply = {text, <<"OK: midi-device ", Alias/binary,
+                             " = ", DeviceName/binary,
+                             " (lat ", LatBin/binary, "ms)">>},
             {reply, Reply, State};
         none ->
             %% Not a built-in verb. Try named-binding dispatch, falling back

@@ -84,10 +84,12 @@ data Msg
   -- registry is preserved (so subsequent `kick bd*4` works without
   -- rebinding). Same intent as upstream Tidal's `hush`.
   | Hush
-  -- MIDI device alias registry: `midi-device <alias> <real-device-name>`.
+  -- MIDI device alias registry: `midi-device <alias> <real-device-name> [lat <ms>]`.
   -- Real device name is the rest-of-line so it can contain spaces
-  -- ("AUDIO4c USB2"). Bindings reference the alias.
-  | RegisterMidiDevice String String  -- alias, deviceName
+  -- ("AUDIO4c USB2"). Bindings reference the alias. Latency is in ms,
+  -- subtracted from each event's delay so slow destinations (iPad audio
+  -- buffer, Ableton) fire on-time alongside the modular.
+  | RegisterMidiDevice String String Number  -- alias, deviceName, latencyMs
   | Stop              -- Stop the scheduler
 
 -- | Wire-level transform shape: matches the Erlang tuples sent by the
@@ -251,7 +253,7 @@ schedulerLoop stateRef = do
       liftEffect $ log "hush"
       schedulerLoop stateRef
 
-    RegisterMidiDevice _ _ -> schedulerLoop stateRef
+    RegisterMidiDevice _ _ _ -> schedulerLoop stateRef
 
     Stop -> do
       liftEffect $ log "Scheduler stopped"

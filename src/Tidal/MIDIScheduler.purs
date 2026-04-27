@@ -212,8 +212,11 @@ type MIDISchedulerState =
   , lastTrigger :: R.Rational  -- Avoid double-triggering (global for simplicity)
   , bindings :: Binding.BindingRegistry  -- Named-action registry (kick, plaits, …)
   , slots :: Map String Number           -- Param/input slot env (modulation values)
-  , midiDevices :: Map String String     -- alias → real MIDI device name
-                                          -- (registered via `midi-device` verb)
+  , midiDevices :: Map String { name :: String, latencyMs :: Number }
+                                          -- alias → device-name + latency offset.
+                                          -- Latency is subtracted from the delay
+                                          -- at dispatch so slow destinations fire
+                                          -- on-time relative to the scheduler's tick.
   }
 
 -- | Default drum map (General MIDI drum notes)
@@ -438,7 +441,7 @@ midiSchedulerLoop stateRef = do
                         case Map.lookup m.device state.midiDevices of
                           Nothing ->
                             liftEffect $ log $ "  ✗ [" <> b.name <> "] midi-note: unknown device alias '" <> m.device <> "'"
-                          Just deviceName -> do
+                          Just dev -> do
                             -- Token can override the binding's defaultNote with
                             -- a note name (c4, e4, etc.). Falls back to the
                             -- binding's defaultNote for trigger-style tokens
@@ -446,8 +449,12 @@ midiSchedulerLoop stateRef = do
                             let note = case Map.lookup token noteNameMidi of
                                   Just n -> n
                                   Nothing -> m.defaultNote
-                            liftEffect $ log $ "  ♪ [" <> b.name <> "] midi " <> deviceName <> " ch" <> show m.channel <> " note " <> show note
-                            liftEffect $ scheduleNoteOnDevice deviceName m.channel note m.velocity state.config.noteDuration delayInt
+                            -- Latency compensation: emit earlier by the
+                            -- device's reported latency so this destination
+                            -- arrives in unison with faster ones.
+                            let adjustedDelay = max 0 (Int.floor (delayClamped - dev.latencyMs))
+                            liftEffect $ log $ "  ♪ [" <> b.name <> "] midi " <> dev.name <> " ch" <> show m.channel <> " note " <> show note <> " in " <> show adjustedDelay <> "ms"
+                            liftEffect $ scheduleNoteOnDevice dev.name m.channel note m.velocity state.config.noteDuration adjustedDelay
                     Binding.MidiCC m ->
                       case Number.fromString token of
                         Nothing -> pure unit  -- ~ rest or non-numeric → skip
@@ -455,14 +462,15 @@ midiSchedulerLoop stateRef = do
                           case Map.lookup m.device state.midiDevices of
                             Nothing ->
                               liftEffect $ log $ "  ✗ [" <> b.name <> "] midi-cc: unknown device alias '" <> m.device <> "'"
-                            Just deviceName -> do
+                            Just dev -> do
                               -- Pattern values 0..1 → MIDI 0..127. Clamp to
                               -- safe range; CC values >127 or <0 silently
                               -- truncated by sendmidi anyway, but explicit
                               -- clamp gives predictable behaviour.
                               let value7bit = clamp7bit (raw * 127.0)
-                              liftEffect $ log $ "  ◇ [" <> b.name <> "] midi " <> deviceName <> " ch" <> show m.channel <> " cc" <> show m.cc <> " = " <> show value7bit
-                              liftEffect $ scheduleCCOnDevice deviceName m.channel m.cc value7bit delayInt
+                              let adjustedDelay = max 0 (Int.floor (delayClamped - dev.latencyMs))
+                              liftEffect $ log $ "  ◇ [" <> b.name <> "] midi " <> dev.name <> " ch" <> show m.channel <> " cc" <> show m.cc <> " = " <> show value7bit
+                              liftEffect $ scheduleCCOnDevice dev.name m.channel m.cc value7bit adjustedDelay
 
       liftEffect $ Ref.modify_ (_ { nextCycle = toCycle }) stateRef
 
@@ -630,11 +638,11 @@ midiSchedulerLoop stateRef = do
       liftEffect $ log "hush"
       midiSchedulerLoop stateRef
 
-    RegisterMidiDevice alias deviceName -> do
+    RegisterMidiDevice alias deviceName latencyMs -> do
       state <- liftEffect $ Ref.read stateRef
-      let newDevices = Map.insert alias deviceName state.midiDevices
+      let newDevices = Map.insert alias { name: deviceName, latencyMs } state.midiDevices
       liftEffect $ Ref.write (state { midiDevices = newDevices }) stateRef
-      liftEffect $ log $ "midi-device " <> alias <> " = " <> deviceName
+      liftEffect $ log $ "midi-device " <> alias <> " = " <> deviceName <> " (lat " <> show latencyMs <> "ms)"
       midiSchedulerLoop stateRef
 
     Stop -> do
