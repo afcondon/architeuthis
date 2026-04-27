@@ -143,7 +143,12 @@ websocket_handle(_Frame, State) ->
 %%   {bind, Name, ActionSpec}  — register a named binding
 %%   {unbind, Name}            — remove a named binding
 %%   {slot, Name, Value}       — set an input slot value (manual)
+%%   {hush}                    — silence everything (Tidal-compat)
 %%   none                      — try named-binding dispatch via play_or_legacy
+try_parse_prefixed(<<"hush">>) -> {hush};
+try_parse_prefixed(<<"hush ", _/binary>>) -> {hush};
+try_parse_prefixed(<<"silence">>) -> {hush};
+try_parse_prefixed(<<"silence ", _/binary>>) -> {hush};
 try_parse_prefixed(<<"gate ", Rest/binary>>) ->
     try_parse_num_pattern(gate, Rest);
 try_parse_prefixed(<<"cv ", Rest/binary>>) ->
@@ -181,7 +186,7 @@ try_parse_num_pattern(Tag, Rest) ->
         [NumBin, Pattern] ->
             try
                 Num = binary_to_integer(NumBin),
-                {Tag, Num, Pattern}
+                {Tag, Num, strip_quotes(Pattern)}
             catch
                 error:badarg -> none
             end;
@@ -206,10 +211,27 @@ parse_number(Bin) ->
 
 %% Split "<word> <rest>" into {Word, Rest}, or treat single-word input as
 %% {Word, <<>>}. Used for named-binding dispatch fallback.
+%% Strips surrounding double quotes from Rest so Tidal-style
+%% `kick "bd*4"` works the same as our native `kick bd*4`.
 split_first_word(Text) ->
     case binary:split(Text, <<" ">>) of
-        [Word, Rest] -> {Word, Rest};
+        [Word, Rest] -> {Word, strip_quotes(Rest)};
         [Word] -> {Word, <<>>}
+    end.
+
+%% Strip a single pair of surrounding double quotes if present.
+%% `<<"\"bd*4\"">>` → `<<"bd*4">>`. Idempotent on already-unquoted input.
+strip_quotes(Bin) ->
+    Sz = byte_size(Bin),
+    case Sz >= 2 of
+        true ->
+            First = binary:part(Bin, 0, 1),
+            Last = binary:part(Bin, Sz - 1, 1),
+            case First =:= <<"\"">> andalso Last =:= <<"\"">> of
+                true -> binary:part(Bin, 1, Sz - 2);
+                false -> Bin
+            end;
+        false -> Bin
     end.
 
 %% Handle pattern messages. New path: recognise "gate <ch>" / "cv <bus>"
@@ -262,6 +284,10 @@ handle_pattern_message(Text, SchedulerPid, State) ->
             SchedulerPid ! {setSlot, Name, Value},
             ValueBin = list_to_binary(io_lib:format("~p", [Value])),
             Reply = {text, <<"OK: slot ", Name/binary, " ", ValueBin/binary>>},
+            {reply, Reply, State};
+        {hush} ->
+            SchedulerPid ! {hush},
+            Reply = {text, <<"OK: hush">>},
             {reply, Reply, State};
         none ->
             %% Not a built-in verb. Try named-binding dispatch, falling back

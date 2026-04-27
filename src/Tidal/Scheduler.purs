@@ -77,6 +77,10 @@ data Msg
   -- users without bindings).
   | PlayByName String String String  -- name, patternStr, fullText
   | SetSlot String Number         -- slot name, current value (input bindings scaffold)
+  -- Tidal-compat: silence everything, kill all running tracks. Bindings
+  -- registry is preserved (so subsequent `kick bd*4` works without
+  -- rebinding). Same intent as upstream Tidal's `hush`.
+  | Hush
   | Stop              -- Stop the scheduler
 
 -- | FFI for erlang:send_after
@@ -220,6 +224,11 @@ schedulerLoop stateRef = do
     RemoveBinding _ -> schedulerLoop stateRef
     PlayByName _ _ _ -> schedulerLoop stateRef
     SetSlot _ _ -> schedulerLoop stateRef
+    Hush -> do
+      state <- liftEffect $ Ref.read stateRef
+      liftEffect $ Ref.write (state { pattern = pure "~" }) stateRef
+      liftEffect $ log "hush"
+      schedulerLoop stateRef
 
     Stop -> do
       liftEffect $ log "Scheduler stopped"

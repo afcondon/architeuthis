@@ -580,6 +580,15 @@ midiSchedulerLoop stateRef = do
       liftEffect $ log $ "slot " <> name <> " = " <> show value
       midiSchedulerLoop stateRef
 
+    Hush -> do
+      -- Tidal-compat: silence everything. Drop all running tracks but
+      -- preserve the binding registry so the user can immediately
+      -- play a name again without rebinding.
+      state <- liftEffect $ Ref.read stateRef
+      liftEffect $ Ref.write (state { tracks = [] }) stateRef
+      liftEffect $ log "hush"
+      midiSchedulerLoop stateRef
+
     Stop -> do
       liftEffect $ log "MIDI Scheduler stopped"
 
