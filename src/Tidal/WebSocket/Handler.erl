@@ -234,41 +234,100 @@ strip_quotes(Bin) ->
         false -> Bin
     end.
 
+%% Split a pattern body on " | " into {Pattern, Transforms}.
+%% Each transform segment is parsed via parse_transform_spec/1 and
+%% becomes one of:  {specOffset, N} | specInvert | {specScale, Lo, Hi}
+%% These match the PureScript `TransformSpec` ADT shape that
+%% MIDIScheduler converts to typed `Transform` values.
+%%
+%% Examples:
+%%   `0.3 1.0 0.6 0.0`                      → {<<"0.3 1.0 0.6 0.0">>, []}
+%%   `0.3 1.0 0.6 0.0 | offset -0.5`        → {<<"0.3 1.0 ...">>, [{specOffset, -0.5}]}
+%%   `0.3 1.0 | scale -1 1 | offset 0.1`    → {<<"0.3 1.0">>, [{specScale, -1, 1}, {specOffset, 0.1}]}
+split_transforms(Body) ->
+    Parts = binary:split(Body, <<" | ">>, [global]),
+    case Parts of
+        [Pattern] -> {strip_quotes(Pattern), []};
+        [Pattern | TformBins] ->
+            Specs = lists:foldl(
+                fun(Bin, Acc) ->
+                    case parse_transform_spec(Bin) of
+                        {ok, Spec} -> Acc ++ [Spec];
+                        error -> Acc  %% silently drop malformed; log via reply if useful
+                    end
+                end,
+                [],
+                TformBins),
+            {strip_quotes(Pattern), Specs}
+    end.
+
+%% Parse one transform-spec segment. Recognized:
+%%   "offset <n>"     → {specOffset, N}
+%%   "invert"         → specInvert
+%%   "scale <lo> <hi>"→ {specScale, Lo, Hi}
+%% Note on tuple shapes: purs-backend-erl wraps EVERY ADT constructor
+%% as a tuple, including nullary ones. So `SpecInvert` (no args) is
+%% `{specInvert}` (1-tuple), not bare atom `specInvert`. Bare atoms
+%% trigger a "Failed pattern match" crash in the generated decoder.
+parse_transform_spec(Bin) ->
+    Trimmed = trim_binary(Bin),
+    case binary:split(Trimmed, <<" ">>, [global]) of
+        [<<"invert">>] ->
+            {ok, {specInvert}};
+        [<<"offset">>, NBin] ->
+            case parse_number(NBin) of
+                {ok, N} -> {ok, {specOffset, N}};
+                error -> error
+            end;
+        [<<"scale">>, LoBin, HiBin] ->
+            case {parse_number(LoBin), parse_number(HiBin)} of
+                {{ok, Lo}, {ok, Hi}} -> {ok, {specScale, Lo, Hi}};
+                _ -> error
+            end;
+        _ -> error
+    end.
+
+%% Trim leading/trailing whitespace from a binary.
+trim_binary(Bin) ->
+    list_to_binary(string:trim(binary_to_list(Bin))).
+
 %% Handle pattern messages. New path: recognise "gate <ch>" / "cv <bus>"
 %% prefixes for per-track replacement (live-coding shape). Otherwise
 %% fall through to the legacy single-pattern / multi-track JSON parser.
 handle_pattern_message(Text, SchedulerPid, State) ->
     case try_parse_prefixed(Text) of
         {gate, Ch, Pattern} ->
-            case ('tidal_parse_parser@ps':parse())(Pattern) of
-                {right, _} ->
+            case safe_parse(Pattern) of
+                {ok, _} ->
                     SchedulerPid ! {updateGateTrack, Ch, Pattern},
                     Reply = {text, <<"OK: gate ", (integer_to_binary(Ch))/binary, " ", Pattern/binary>>},
                     {reply, Reply, State};
-                {left, Err} ->
-                    ErrBin = list_to_binary(io_lib:format("~p", [Err])),
+                {parse_err, ErrBin} ->
                     Reply = {text, <<"ERROR: gate parse: ", ErrBin/binary>>},
                     {reply, Reply, State}
             end;
-        {cv, Bus, Pattern} ->
-            case ('tidal_parse_parser@ps':parse())(Pattern) of
-                {right, _} ->
-                    SchedulerPid ! {updateCVTrack, Bus, Pattern},
-                    Reply = {text, <<"OK: cv ", (integer_to_binary(Bus))/binary, " ", Pattern/binary>>},
+        {cv, Bus, RawPattern} ->
+            {Pattern, Specs} = split_transforms(RawPattern),
+            case safe_parse(Pattern) of
+                {ok, _} ->
+                    %% PureScript Array becomes Erlang array module shape.
+                    SpecsArray = array:from_list(Specs),
+                    SchedulerPid ! {updateCVTrack, Bus, Pattern, SpecsArray},
+                    Reply = {text, <<"OK: cv ", (integer_to_binary(Bus))/binary, " ", RawPattern/binary>>},
                     {reply, Reply, State};
-                {left, Err} ->
-                    ErrBin = list_to_binary(io_lib:format("~p", [Err])),
+                {parse_err, ErrBin} ->
                     Reply = {text, <<"ERROR: cv parse: ", ErrBin/binary>>},
                     {reply, Reply, State}
             end;
-        {esx, Slot, Pattern} ->
-            case ('tidal_parse_parser@ps':parse())(Pattern) of
-                {right, _} ->
-                    SchedulerPid ! {updateESXTrack, Slot, Pattern},
-                    Reply = {text, <<"OK: esx ", (integer_to_binary(Slot))/binary, " ", Pattern/binary>>},
+        {esx, Slot, RawPattern} ->
+            {Pattern, Specs} = split_transforms(RawPattern),
+            case safe_parse(Pattern) of
+                {ok, _} ->
+                    SpecsArray = array:from_list(Specs),
+                    SchedulerPid ! {updateESXTrack, Slot, Pattern, SpecsArray},
+                    Reply = {text, <<"OK: esx ", (integer_to_binary(Slot))/binary, " ", RawPattern/binary>>},
                     {reply, Reply, State};
-                {left, Err} ->
-                    ErrBin = list_to_binary(io_lib:format("~p", [Err])),
+                {parse_err, ErrBin} ->
                     Reply = {text, <<"ERROR: esx parse: ", ErrBin/binary>>},
                     {reply, Reply, State}
             end;
@@ -298,10 +357,39 @@ handle_pattern_message(Text, SchedulerPid, State) ->
                     handle_legacy_pattern_message(Text, SchedulerPid, State);
                 _ ->
                     {Word, Rest} = split_first_word(Text),
-                    SchedulerPid ! {playByName, Word, Rest, Text},
-                    Reply = {text, <<"OK: dispatched '", Word/binary, "'">>},
-                    {reply, Reply, State}
+                    %% Pre-flight parse so a malformed pattern (e.g. random
+                    %% English with non-ASCII chars) returns [err] instead
+                    %% of crashing the scheduler. We check Text (legacy
+                    %% fallback shape) — if `Word` is a registered binding,
+                    %% the scheduler will re-parse Rest separately and that
+                    %% has its own safe path.
+                    case safe_parse(Text) of
+                        {ok, _} ->
+                            SchedulerPid ! {playByName, Word, Rest, Text},
+                            Reply = {text, <<"OK: dispatched '", Word/binary, "'">>},
+                            {reply, Reply, State};
+                        {parse_err, ErrBin} ->
+                            Reply = {text, <<"ERROR: parse: ", ErrBin/binary>>},
+                            {reply, Reply, State}
+                    end
             end
+    end.
+
+%% Wrap the Tidal parser in try/catch so any uncaught exception
+%% (e.g. Data.String.split blowing up on incomplete UTF-8) becomes
+%% a graceful {parse_err, Reason} instead of crashing the scheduler.
+%% The parser returns Either-shaped {right, _} | {left, _}, so we
+%% also surface Left as parse_err.
+safe_parse(Text) ->
+    try
+        case ('tidal_parse_parser@ps':parse())(Text) of
+            {right, _} -> {ok, ok};
+            {left, Err} ->
+                {parse_err, list_to_binary(io_lib:format("~p", [Err]))}
+        end
+    catch
+        Class:Reason ->
+            {parse_err, list_to_binary(io_lib:format("~p:~p", [Class, Reason]))}
     end.
 
 handle_legacy_pattern_message(Text, SchedulerPid, State) ->

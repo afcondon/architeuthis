@@ -6,6 +6,7 @@ module Tidal.Scheduler
   , ScheduledEvent
   , TrackInfo
   , Msg(..)
+  , TransformSpec(..)
   , startScheduler
   , sendAfter
   , currentTimeMs
@@ -64,8 +65,10 @@ data Msg
   | UpdatePatternWithChannel String Int  -- Update pattern with specific MIDI channel
   | UpdateTracks (Array TrackInfo)  -- Update multiple tracks, each with own channel
   | UpdateGateTrack Int String   -- Replace gate track at channel idx with pattern
-  | UpdateCVTrack Int String     -- Replace CV track at bus idx with pattern
-  | UpdateESXTrack Int String    -- Replace ESX-8CV track at slot idx (0-7) with pattern
+  | UpdateCVTrack Int String (Array TransformSpec)
+                                 -- Replace CV track at bus idx with pattern + transforms
+  | UpdateESXTrack Int String (Array TransformSpec)
+                                 -- Replace ESX-8CV track at slot idx (0-7) with pattern + transforms
   -- Named bindings (Tidal.Binding.PrimAction). Action specs come in as
   -- pre-formatted strings the scheduler parses, so binding errors show up
   -- in the BEAM logs rather than requiring an Erlang-side parser.
@@ -82,6 +85,20 @@ data Msg
   -- rebinding). Same intent as upstream Tidal's `hush`.
   | Hush
   | Stop              -- Stop the scheduler
+
+-- | Wire-level transform shape: matches the Erlang tuples sent by the
+-- | WS handler. MIDIScheduler converts these into typed
+-- | `Tidal.Transform.Transform` values.
+-- |
+-- |   {offset, N}     -> SpecOffset N      → Offset N
+-- |   invert          -> SpecInvert        → Invert
+-- |   {scale, Lo, Hi} -> SpecScale Lo Hi   → Scale Lo Hi
+data TransformSpec
+  = SpecOffset Number
+  | SpecInvert
+  | SpecScale Number Number
+
+derive instance eqTransformSpec :: Eq TransformSpec
 
 -- | FFI for erlang:send_after
 foreign import sendAfterImpl :: Int -> Raw.Pid -> Msg -> Effect Unit
@@ -209,11 +226,11 @@ schedulerLoop stateRef = do
       liftEffect $ Ref.write (state { pattern = newPat }) stateRef
       schedulerLoop stateRef
 
-    UpdateCVTrack _ _ -> do
+    UpdateCVTrack _ _ _ -> do
       -- Base scheduler has no concept of CV; ignore.
       schedulerLoop stateRef
 
-    UpdateESXTrack _ _ -> do
+    UpdateESXTrack _ _ _ -> do
       -- Base scheduler has no concept of ESX-8CV either; ignore.
       schedulerLoop stateRef
 

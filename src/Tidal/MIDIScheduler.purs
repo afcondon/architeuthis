@@ -39,10 +39,11 @@ import Tidal.Eval.Interpret (tpatToPattern)
 import Tidal.Binding as Binding
 import Tidal.MIDI (MIDIClient, MIDIConfig, startClient, scheduleDrumOnChannel)
 import Tidal.OSC as OSC
+import Tidal.Transform (Transform(..), applyTransforms)
 import Tidal.Parse.Parser (parse)
 import Tidal.Pattern.Core (queryArc)
 import Tidal.Pattern.Types (Event(..), Pattern, Arc(..))
-import Tidal.Scheduler (sendAfter, currentTimeMs, TrackInfo, Msg(..))
+import Tidal.Scheduler (sendAfter, currentTimeMs, TrackInfo, Msg(..), TransformSpec(..))
 
 -- | Gate output configuration (for Expert Sleepers ES-9 via cv-router)
 type GateConfig =
@@ -187,10 +188,13 @@ type MIDISchedulerConfig =
 -- |     (including "~" for rest) skip the emit.
 data ParsedTrack
   = GateTrack { pattern :: Pattern String, channel :: Int, fanout :: Boolean }
-  | CVTrack   { pattern :: Pattern String, bus :: Int }
+  | CVTrack   { pattern :: Pattern String, bus :: Int, transforms :: Array Transform }
   -- | ESX-8CV track on cv-router's Silent Way encoder. `slot` is 0..7,
   -- | one per ESX-8CV physical output. Tokens are numeric (-1.0..1.0).
-  | ESXTrack  { pattern :: Pattern String, slot :: Int }
+  -- | `transforms` is a left-to-right pipe of value transforms applied
+  -- | after the Tidal parser produces each numeric value: e.g. `[Offset
+  -- | (-0.5)]` shifts an unsigned [0..1] LFO into bipolar [-0.5..0.5].
+  | ESXTrack  { pattern :: Pattern String, slot :: Int, transforms :: Array Transform }
   -- | A pattern dispatched via a named binding. The binding is a list of
   -- | PrimActions; each pattern event fires every action. Replaces the
   -- | hardcoded `gate <ch>` / `cv <bus>` dispatch when the user has
@@ -377,9 +381,11 @@ midiSchedulerLoop stateRef = do
                 CVTrack c ->
                   -- CVTrack tokens are numeric; non-numeric (incl. ~ rest)
                   -- skip the emit and the bus stays at its last value (S&H).
+                  -- `transforms` (e.g. [Offset -0.5]) apply post-parse.
                   case Number.fromString token of
-                    Just value -> case state.oscClient of
+                    Just raw -> case state.oscClient of
                       Just osc -> do
+                        let value = applyTransforms c.transforms raw
                         liftEffect $ log $ "  〰 cv bus " <> show c.bus <> " = " <> show value <> " in " <> show delayInt <> "ms"
                         liftEffect $ OSC.sendCVAfter osc c.bus value delayClamped
                       Nothing -> pure unit
@@ -389,8 +395,9 @@ midiSchedulerLoop stateRef = do
                   -- ESX-8CV slot — same numeric-pattern semantics as CVTrack
                   -- but reaches cv-router's Silent Way encoder via /esx.
                   case Number.fromString token of
-                    Just value -> case state.oscClient of
+                    Just raw -> case state.oscClient of
                       Just osc -> do
+                        let value = applyTransforms e.transforms raw
                         liftEffect $ log $ "  ⌇ esx slot " <> show e.slot <> " = " <> show value <> " in " <> show delayInt <> "ms"
                         liftEffect $ OSC.sendESXAfter osc e.slot value delayClamped
                       Nothing -> pure unit
@@ -474,34 +481,36 @@ midiSchedulerLoop stateRef = do
           liftEffect $ log $ "gate parse error: " <> patStr
       midiSchedulerLoop stateRef
 
-    UpdateCVTrack bus patStr -> do
+    UpdateCVTrack bus patStr specs -> do
       -- Replace just the CV track at this bus; leave others untouched.
       state <- liftEffect $ Ref.read stateRef
       case parse patStr of
         Right ast -> do
-          let newTrack = CVTrack { pattern: tpatToPattern ast, bus }
+          let transforms = map specToTransform specs
+          let newTrack = CVTrack { pattern: tpatToPattern ast, bus, transforms }
           let isOther = case _ of
                 CVTrack c -> c.bus /= bus
                 _         -> true
           let newTracks = Array.filter isOther state.tracks <> [newTrack]
           liftEffect $ Ref.write (state { tracks = newTracks }) stateRef
-          liftEffect $ log $ "cv bus " <> show bus <> ": " <> patStr
+          liftEffect $ log $ "cv bus " <> show bus <> ": " <> patStr <> showTransforms transforms
         Left _ ->
           liftEffect $ log $ "cv parse error: " <> patStr
       midiSchedulerLoop stateRef
 
-    UpdateESXTrack slot patStr -> do
+    UpdateESXTrack slot patStr specs -> do
       -- Replace just the ESX-8CV track at this slot; leave others untouched.
       state <- liftEffect $ Ref.read stateRef
       case parse patStr of
         Right ast -> do
-          let newTrack = ESXTrack { pattern: tpatToPattern ast, slot }
+          let transforms = map specToTransform specs
+          let newTrack = ESXTrack { pattern: tpatToPattern ast, slot, transforms }
           let isOther = case _ of
                 ESXTrack e -> e.slot /= slot
                 _          -> true
           let newTracks = Array.filter isOther state.tracks <> [newTrack]
           liftEffect $ Ref.write (state { tracks = newTracks }) stateRef
-          liftEffect $ log $ "esx slot " <> show slot <> ": " <> patStr
+          liftEffect $ log $ "esx slot " <> show slot <> ": " <> patStr <> showTransforms transforms
         Left _ ->
           liftEffect $ log $ "esx parse error: " <> patStr
       midiSchedulerLoop stateRef
@@ -604,6 +613,28 @@ interpretCV = case _ of
       Just midi -> Just (voctValue midi)
       Nothing -> Nothing
   Binding.SampleNameMap m -> \tok -> Map.lookup tok m
+
+-- | Convert a wire-level TransformSpec into a typed Transform for use
+-- | by `applyTransforms`. The two types are parallel today; if the
+-- | wire spec gains constructors that need richer semantics (e.g. a
+-- | spec that references a slot), this is where the translation lives.
+specToTransform :: TransformSpec -> Transform
+specToTransform = case _ of
+  SpecOffset n  -> Offset n
+  SpecInvert    -> Invert
+  SpecScale a b -> Scale a b
+
+-- | Render a transform pipeline for log output, e.g. "  | offset -0.5".
+showTransforms :: Array Transform -> String
+showTransforms ts =
+  if Array.null ts
+    then ""
+    else " | " <> Array.intercalate " | " (map showTransform ts)
+  where
+  showTransform = case _ of
+    Offset n  -> "offset " <> show n
+    Invert    -> "invert"
+    Scale a b -> "scale " <> show a <> " " <> show b
 
 -- | Note name → MIDI number (C-1 = 0, C0 = 12, C4 = 60, etc.).
 -- | Covers C3..C6 (the range used by `defaultSampleCVMap` previously).

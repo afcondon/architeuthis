@@ -75,9 +75,12 @@ extractUntilQuote remaining acc =
 parseInputMessage :: String -> Either String Msg
 parseInputMessage text =
   case String.stripPrefix (Pattern "gate ") text of
-    Just rest -> parsePrefixed rest UpdateGateTrack "gate"
+    Just rest -> parsePrefixed rest (\n p -> UpdateGateTrack n p) "gate"
     Nothing -> case String.stripPrefix (Pattern "cv ") text of
-      Just rest -> parsePrefixed rest UpdateCVTrack "cv"
+      -- This PS-side parser is currently DEAD CODE — Handler.erl owns
+      -- the live wire parsing. We pass empty transforms so the types
+      -- still align with the new UpdateCVTrack/UpdateESXTrack shape.
+      Just rest -> parsePrefixed rest (\n p -> UpdateCVTrack n p []) "cv"
       Nothing ->
         let pattern = extractPattern text
         in case parse pattern of
