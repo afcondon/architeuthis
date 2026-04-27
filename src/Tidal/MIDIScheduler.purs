@@ -453,8 +453,8 @@ midiSchedulerLoop stateRef = do
                             -- device's reported latency so this destination
                             -- arrives in unison with faster ones.
                             let adjustedDelay = max 0 (Int.floor (delayClamped - dev.latencyMs))
-                            liftEffect $ log $ "  ♪ [" <> b.name <> "] midi " <> dev.name <> " ch" <> show m.channel <> " note " <> show note <> " in " <> show adjustedDelay <> "ms"
-                            liftEffect $ scheduleNoteOnDevice dev.name m.channel note m.velocity state.config.noteDuration adjustedDelay
+                            liftEffect $ log $ "  ♪ [" <> b.name <> "] midi " <> dev.name <> " ch" <> show m.channel <> " note " <> show note <> " (dur " <> show m.durationMs <> "ms) in " <> show adjustedDelay <> "ms"
+                            liftEffect $ scheduleNoteOnDevice dev.name m.channel note m.velocity m.durationMs adjustedDelay
                     Binding.MidiCC m ->
                       case Number.fromString token of
                         Nothing -> pure unit  -- ~ rest or non-numeric → skip

@@ -89,10 +89,14 @@ data PrimAction
   -- registered via `midi-device <alias> <real-name>`; lets the same
   -- binding shape target FH-2, iPad-AUM, Yarns, IAC bus, etc. by
   -- swapping aliases.
-  | MidiNote { device :: String, channel :: Int, defaultNote :: Int, velocity :: Int }
+  | MidiNote { device :: String, channel :: Int, defaultNote :: Int, velocity :: Int, durationMs :: Int }
   -- ^ Fires a MIDI note. Token name "c4"/"e4"/etc overrides defaultNote;
   --   "~" rests; otherwise uses defaultNote (so `bd*4` triggers the
   --   default-note repeatedly, useful for drum-machine patterns).
+  --   `durationMs` controls the note-on/note-off gap; defaults to 50
+  --   (Tidal-typical drum trigger). Some FH-2 / Yarns presets need
+  --   longer gates to register; per-binding override lets each voice
+  --   use what works for its destination.
   | MidiCC { device :: String, channel :: Int, cc :: Int }
   -- ^ Sends a MIDI CC. Numeric tokens 0..1 scale to 0..127.
 
@@ -201,11 +205,13 @@ parseAction s =
         Just slot -> Right (ESX slot)
         Nothing -> Left ("esx: expected integer slot, got '" <> slotStr <> "'")
 
-    -- midi-note <alias> <ch> <note> [velocity]
+    -- midi-note <alias> <ch> <note> [velocity [duration-ms]]
     ["midi-note", device, chStr, noteStr] ->
-      parseMidiNote device chStr noteStr "100"
+      parseMidiNote device chStr noteStr "100" "50"
     ["midi-note", device, chStr, noteStr, velStr] ->
-      parseMidiNote device chStr noteStr velStr
+      parseMidiNote device chStr noteStr velStr "50"
+    ["midi-note", device, chStr, noteStr, velStr, durStr] ->
+      parseMidiNote device chStr noteStr velStr durStr
 
     -- midi-cc <alias> <ch> <cc>
     ["midi-cc", device, chStr, ccStr] ->
@@ -219,17 +225,19 @@ parseAction s =
 
 -- | Helper for the midi-note variants — packs a typed Int validation
 -- | and emits a sensible error message per missing field.
-parseMidiNote :: String -> String -> String -> String -> Either String PrimAction
-parseMidiNote device chStr noteStr velStr =
-  case Int.fromString chStr, Int.fromString noteStr, Int.fromString velStr of
-    Just ch, Just note, Just vel ->
-      Right (MidiNote { device, channel: ch, defaultNote: note, velocity: vel })
-    Nothing, _, _ ->
+parseMidiNote :: String -> String -> String -> String -> String -> Either String PrimAction
+parseMidiNote device chStr noteStr velStr durStr =
+  case Int.fromString chStr, Int.fromString noteStr, Int.fromString velStr, Int.fromString durStr of
+    Just ch, Just note, Just vel, Just dur ->
+      Right (MidiNote { device, channel: ch, defaultNote: note, velocity: vel, durationMs: dur })
+    Nothing, _, _, _ ->
       Left ("midi-note: expected integer channel, got '" <> chStr <> "'")
-    _, Nothing, _ ->
+    _, Nothing, _, _ ->
       Left ("midi-note: expected integer note, got '" <> noteStr <> "'")
-    _, _, Nothing ->
+    _, _, Nothing, _ ->
       Left ("midi-note: expected integer velocity, got '" <> velStr <> "'")
+    _, _, _, Nothing ->
+      Left ("midi-note: expected integer duration ms, got '" <> durStr <> "'")
 
 parseMapping :: String -> Maybe CVMapping
 parseMapping = case _ of

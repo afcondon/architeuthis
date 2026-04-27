@@ -169,6 +169,7 @@ scheduleNoteOnDevice(Device, Channel, Note, Velocity, DurationMs, DelayMs) ->
             OffCmd = lists:flatten(io_lib:format(
                 "~s dev \"~s\" ch ~B off ~B",
                 [?SENDMIDI, DeviceStr, Channel, Note])),
+            io:format("MIDI> [~s] ~s~n", [DeviceStr, OffCmd]),
             os:cmd(OffCmd)
         end),
         unit
