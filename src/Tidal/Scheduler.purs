@@ -99,6 +99,12 @@ data Msg
   -- UpdateGateTrack but emits MIDI notes (which the FH-2 reads as triggers
   -- for its onboard envelopes) on the channel registered by Fh2Envelope.
   | UpdateFh2TriggerTrack Int String   -- voice, pattern
+  -- One-shot ADSR push for an FH-2 voice. Sends 4 MIDI CCs (70/71/72/73 by
+  -- convention, per the configurator's ADSR bindings) to the FH-2 device
+  -- on the voice's MIDI channel. Not pattern-driven — fires immediately on
+  -- evaluation, like fh2-envelope. Lets the user reshape envelopes live
+  -- without touching the FH-2 Configurator.
+  | Fh2Shape Int Int Int Int Int       -- voice, attack, decay, sustain, release (each 0-127)
   | Stop              -- Stop the scheduler
 
 -- | Wire-level transform shape: matches the Erlang tuples sent by the
@@ -268,6 +274,7 @@ schedulerLoop stateRef = do
     -- carries that state.
     Fh2Envelope _ _ _ -> schedulerLoop stateRef
     UpdateFh2TriggerTrack _ _ -> schedulerLoop stateRef
+    Fh2Shape _ _ _ _ _ -> schedulerLoop stateRef
 
     Stop -> do
       liftEffect $ log "Scheduler stopped"

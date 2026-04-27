@@ -721,6 +721,28 @@ midiSchedulerLoop stateRef = do
           liftEffect $ log $ "fh2-trigger v" <> show voice <> " parse error: " <> patStr
       midiSchedulerLoop stateRef
 
+    Fh2Shape voice a d s r -> do
+      -- Live ADSR: send 4 CCs (70/71/72/73) on the voice's MIDI channel.
+      -- Convention matches the FH-2 Configurator default mapping the user
+      -- sets up once; thereafter fh2-shape drives them from Tidal.
+      state <- liftEffect $ Ref.read stateRef
+      case Map.lookup voice state.fh2VoiceChannels of
+        Nothing ->
+          liftEffect $ log $ "fh2-shape v" <> show voice <> ": no fh2-envelope registration; skipping"
+        Just channel -> do
+          let dev = fromMaybe { name: "FH-2", latencyMs: 0.0 }
+                      (Map.lookup "fh2" state.midiDevices)
+              clamp v = if v < 0 then 0 else if v > 127 then 127 else v
+          liftEffect $ log $ "fh2-shape v" <> show voice <> " ch" <> show channel
+            <> ": A=" <> show a <> " D=" <> show d <> " S=" <> show s <> " R=" <> show r
+          -- Fire all 4 CCs immediately (delay 0). scheduleCCOnDevice will
+          -- spawn one process per CC; the FH-2 sees them within a few ms.
+          liftEffect $ scheduleCCOnDevice dev.name channel 70 (clamp a) 0
+          liftEffect $ scheduleCCOnDevice dev.name channel 71 (clamp d) 0
+          liftEffect $ scheduleCCOnDevice dev.name channel 72 (clamp s) 0
+          liftEffect $ scheduleCCOnDevice dev.name channel 73 (clamp r) 0
+      midiSchedulerLoop stateRef
+
     Stop -> do
       liftEffect $ log "MIDI Scheduler stopped"
 

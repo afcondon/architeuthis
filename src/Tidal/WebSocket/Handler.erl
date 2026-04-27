@@ -146,6 +146,7 @@ websocket_handle(_Frame, State) ->
 %%   {esx, Slot, Pattern}                      — emit /esx updates (Silent Way → ESX-8CV)
 %%   {fh2_envelope, Voice, Output, Channel}    — register an FH-2 envelope voice
 %%   {fh2_trigger, Voice, Pattern}             — pattern fires MIDI notes to FH-2 voice
+%%   {fh2_shape, Voice, A, D, S, R}            — live ADSR via CCs 70/71/72/73
 %%   {bind, Name, ActionSpec}                  — register a named binding
 %%   {unbind, Name}                            — remove a named binding
 %%   {slot, Name, Value}                       — set an input slot value (manual)
@@ -187,6 +188,22 @@ try_parse_prefixed(<<"fh2-envelope ", Rest/binary>>) ->
     end;
 try_parse_prefixed(<<"fh2-trigger ", Rest/binary>>) ->
     try_parse_num_pattern(fh2_trigger, Rest);
+try_parse_prefixed(<<"fh2-shape ", Rest/binary>>) ->
+    %% fh2-shape <voice> <attack> <decay> <sustain> <release>
+    case binary:split(Rest, <<" ">>, [global]) of
+        [VoiceBin, ABin, DBin, SBin, RBin] ->
+            try
+                Voice = binary_to_integer(VoiceBin),
+                A = binary_to_integer(ABin),
+                D = binary_to_integer(DBin),
+                S = binary_to_integer(SBin),
+                R = binary_to_integer(RBin),
+                {fh2_shape, Voice, A, D, S, R}
+            catch
+                error:badarg -> none
+            end;
+        _ -> none
+    end;
 try_parse_prefixed(<<"bind ", Rest/binary>>) ->
     %% bind <name> <action-spec>; action-spec runs to end of line.
     case binary:split(Rest, <<" ">>) of
@@ -439,6 +456,15 @@ handle_pattern_message(Text, SchedulerPid, State) ->
                     Reply = {text, <<"ERROR: fh2-trigger parse: ", ErrBin/binary>>},
                     {reply, Reply, State}
             end;
+        {fh2_shape, Voice, A, D, S, R} ->
+            SchedulerPid ! {fh2Shape, Voice, A, D, S, R},
+            Reply = {text, <<"OK: fh2-shape v",
+                             (integer_to_binary(Voice))/binary,
+                             " A=", (integer_to_binary(A))/binary,
+                             " D=", (integer_to_binary(D))/binary,
+                             " S=", (integer_to_binary(S))/binary,
+                             " R=", (integer_to_binary(R))/binary>>},
+            {reply, Reply, State};
         none ->
             %% Not a built-in verb. Try named-binding dispatch, falling back
             %% to legacy whole-text pattern if the name isn't registered.
