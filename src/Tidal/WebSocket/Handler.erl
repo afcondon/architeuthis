@@ -399,13 +399,18 @@ handle_pattern_message(Text, SchedulerPid, State) ->
                     handle_legacy_pattern_message(Text, SchedulerPid, State);
                 _ ->
                     {Word, Rest} = split_first_word(Text),
-                    %% Pre-flight parse so a malformed pattern (e.g. random
-                    %% English with non-ASCII chars) returns [err] instead
-                    %% of crashing the scheduler. We check Text (legacy
-                    %% fallback shape) — if `Word` is a registered binding,
-                    %% the scheduler will re-parse Rest separately and that
-                    %% has its own safe path.
-                    case safe_parse(Text) of
+                    %% Pre-flight parse so malformed input (non-ASCII chars
+                    %% reaching the upstream parser, etc.) returns [err]
+                    %% instead of crashing the scheduler. Check `Rest`
+                    %% (quote-stripped pattern body) — that's what the
+                    %% scheduler uses for the bound-name case, AND it
+                    %% covers the legacy-fallback case adequately because
+                    %% if Rest contains crash-inducing input, Text will too.
+                    %% Crucially, checking Text instead would reject valid
+                    %% bound-name dispatches with quoted patterns
+                    %% (`kick "bd*4"`), since Text contains the quote chars
+                    %% the parser doesn't understand.
+                    case safe_parse(Rest) of
                         {ok, _} ->
                             SchedulerPid ! {playByName, Word, Rest, Text},
                             Reply = {text, <<"OK: dispatched '", Word/binary, "'">>},
