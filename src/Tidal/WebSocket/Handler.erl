@@ -106,7 +106,11 @@ init(Req, Config) ->
     SchedulerPid = maps:get(schedulerPid, Config),
     State = #{schedulerPid => SchedulerPid, connected => true},
     io:format("WebSocket: New connection (handler v2 - channel support)~n"),
-    {cowboy_websocket, Req, State}.
+    %% Default cowboy idle_timeout is 60_000ms — too aggressive for a
+    %% live-coding session (the user routinely sits looking at the
+    %% modular for >1 minute between commands). Bump to 30 minutes.
+    Opts = #{idle_timeout => 1800000},
+    {cowboy_websocket, Req, State, Opts}.
 
 websocket_init(State) ->
     {ok, State}.

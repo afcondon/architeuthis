@@ -67,7 +67,7 @@ noteOff(Client, Note) ->
     fun() ->
         Port = maps:get(port, Client),
         Channel = maps:get(channel, Client),
-        Cmd = io_lib:format("ch ~B off ~B", [Channel, Note]),
+        Cmd = io_lib:format("ch ~B on ~B 0", [Channel, Note]),
         send_cmd(Port, lists:flatten(Cmd)),
         unit
     end.
@@ -86,7 +86,7 @@ sendDrum(Client, Note, Velocity, DurationMs) ->
         %% Spawn lightweight process to schedule note off (no external process)
         spawn(fun() ->
             timer:sleep(DurationMs),
-            OffCmd = io_lib:format("ch ~B off ~B", [Channel, Note]),
+            OffCmd = io_lib:format("ch ~B on ~B 0", [Channel, Note]),
             send_cmd(Port, lists:flatten(OffCmd))
         end),
         unit
@@ -115,7 +115,7 @@ scheduleDrum(Client, Note, Velocity, DurationMs, DelayMs) ->
             %% Wait note duration then send note off
             timer:sleep(DurationMs),
             OffCmd = lists:flatten(io_lib:format(
-                "~s dev \"~s\" ch ~B off ~B",
+                "~s dev \"~s\" ch ~B on ~B 0",
                 [?SENDMIDI, Device, Channel, Note])),
             io:format("MIDI> ~s~n", [OffCmd]),
             os:cmd(OffCmd)
@@ -144,7 +144,7 @@ scheduleDrumOnChannel(Client, Channel, Note, Velocity, DurationMs, DelayMs) ->
             %% Wait note duration then send note off
             timer:sleep(DurationMs),
             OffCmd = lists:flatten(io_lib:format(
-                "~s dev \"~s\" ch ~B off ~B",
+                "~s dev \"~s\" ch ~B on ~B 0",
                 [?SENDMIDI, Device, Channel, Note])),
             os:cmd(OffCmd)
         end),
@@ -167,7 +167,7 @@ scheduleNoteOnDevice(Device, Channel, Note, Velocity, DurationMs, DelayMs) ->
             os:cmd(OnCmd),
             timer:sleep(DurationMs),
             OffCmd = lists:flatten(io_lib:format(
-                "~s dev \"~s\" ch ~B off ~B",
+                "~s dev \"~s\" ch ~B on ~B 0",
                 [?SENDMIDI, DeviceStr, Channel, Note])),
             io:format("MIDI> [~s] ~s~n", [DeviceStr, OffCmd]),
             os:cmd(OffCmd)

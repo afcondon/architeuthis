@@ -505,8 +505,14 @@ midiSchedulerLoop stateRef = do
                         let dev = fromMaybe { name: "FH-2", latencyMs: 0.0 }
                                     (Map.lookup "fh2" state.midiDevices)
                         let adjustedDelay = max 0 (Int.floor (delayClamped - dev.latencyMs))
+                        -- Note duration is 600ms — long enough for the FH-2's
+                        -- envelope to play attack→decay→sustain visibly before
+                        -- the note-off triggers release. Short notes (e.g. the
+                        -- 100ms used by the gate path) make any envelope with
+                        -- non-trivial decay or release feel "stuck high then
+                        -- drop". Future polish: parameterise per-track.
                         liftEffect $ log $ "  ♪ fh2-trigger v" <> show f.voice <> " → " <> dev.name <> " ch" <> show channel <> " note " <> show note <> " in " <> show adjustedDelay <> "ms"
-                        liftEffect $ scheduleNoteOnDevice dev.name channel note 100 100 adjustedDelay
+                        liftEffect $ scheduleNoteOnDevice dev.name channel note 100 600 adjustedDelay
 
       liftEffect $ Ref.modify_ (_ { nextCycle = toCycle }) stateRef
 
