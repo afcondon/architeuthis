@@ -1,0 +1,40 @@
+-- vpme.de QuadDrum + Expander
+-- Four-voice analog drum module, CV-controlled (no MIDI).
+--   4 trigger inputs   → trig each voice (we drive these from FHX-8GT)
+--   8 CV inputs        → assignable destinations (set on the module itself)
+--
+-- After `load qd`, the following pattern lanes become available:
+--   qd1..qd4    fire the four voice triggers
+--   qdc1..qdc8  modulate the eight assignable CV inputs
+--
+-- Default routing (adjust to your patch):
+--   QD voices 1-4 → FHX-8GT outputs 5-8  (assumes Rample claims 1-4)
+--                  on MIDI channels 14-17 (after Rample drum kit on 10-13)
+--   QD CV inputs 1-8 → cv-router buses 0-7 (typically ADAT → ESX-8CV;
+--                      change to other buses if your patch differs)
+
+-- Trigger MCVs on the FH-2: gate-only, one per voice.
+fh2-gate 4 69 14
+fh2-gate 5 70 15
+fh2-gate 6 71 16
+fh2-gate 7 72 17
+
+midi-device fh2 "FH-2"
+
+-- Trigger pattern lanes: short notes on dedicated channels.
+bind qd1 midi-note fh2 14 60 100 50
+bind qd2 midi-note fh2 15 60 100 50
+bind qd3 midi-note fh2 16 60 100 50
+bind qd4 midi-note fh2 17 60 100 50
+
+-- CV pattern lanes: each emits a numeric pattern on its bus.
+-- The destination on the QD module is whatever you've assigned the
+-- corresponding CV input to (pitch, decay, FM, snap, etc.).
+bind qdc1 cv 0
+bind qdc2 cv 1
+bind qdc3 cv 2
+bind qdc4 cv 3
+bind qdc5 cv 4
+bind qdc6 cv 5
+bind qdc7 cv 6
+bind qdc8 cv 7

@@ -6,6 +6,7 @@
 
 %% Sets directory relative to working directory
 -define(SETS_DIR, "sets").
+-define(SETUP_DIR, "setup").
 
 %% Convert binary to string (UTF-8)
 binaryToString(Bin) when is_binary(Bin) ->
@@ -186,6 +187,23 @@ try_parse_prefixed(<<"fh2-envelope ", Rest/binary>>) ->
             end;
         _ -> none
     end;
+try_parse_prefixed(<<"fh2-gate ", Rest/binary>>) ->
+    %% fh2-gate <voice> <output> <channel>
+    %%   1-8     → FH-2 main jacks
+    %%   9-64    → FHX-8CV expanders
+    %%   65-128  → FHX-8GT expanders (separate routing — uses basegate field)
+    case binary:split(Rest, <<" ">>, [global]) of
+        [VoiceBin, OutputBin, ChannelBin] ->
+            try
+                Voice = binary_to_integer(VoiceBin),
+                Output = binary_to_integer(OutputBin),
+                Channel = binary_to_integer(ChannelBin),
+                {fh2_gate, Voice, Output, Channel}
+            catch
+                error:badarg -> none
+            end;
+        _ -> none
+    end;
 try_parse_prefixed(<<"fh2-trigger ", Rest/binary>>) ->
     try_parse_num_pattern(fh2_trigger, Rest);
 try_parse_prefixed(<<"fh2-shape ", Rest/binary>>) ->
@@ -225,6 +243,13 @@ try_parse_prefixed(<<"slot ", Rest/binary>>) ->
                 {ok, Value} -> {slot, Name, Value};
                 error -> none
             end;
+        _ -> none
+    end;
+try_parse_prefixed(<<"load ", Rest/binary>>) ->
+    %% load <name>  — read setup/<name>.tidal and evaluate each line
+    Name = binary_part(Rest, 0, byte_size(Rest)),
+    case binary:match(Name, <<" ">>) of
+        nomatch -> {load, Name};
         _ -> none
     end;
 try_parse_prefixed(_) ->
@@ -422,12 +447,26 @@ handle_pattern_message(Text, SchedulerPid, State) ->
             SchedulerPid ! {hush},
             Reply = {text, <<"OK: hush">>},
             {reply, Reply, State};
+        {load, Name} ->
+            handle_load_setup(Name, SchedulerPid, State);
         {midi_device, Alias, DeviceName, Latency} ->
             SchedulerPid ! {registerMidiDevice, Alias, DeviceName, Latency},
             LatBin = list_to_binary(io_lib:format("~p", [Latency])),
             Reply = {text, <<"OK: midi-device ", Alias/binary,
                              " = ", DeviceName/binary,
                              " (lat ", LatBin/binary, "ms)">>},
+            {reply, Reply, State};
+        {fh2_gate, Voice, Output, Channel} ->
+            %% Gate-only MCV configuration via fh2-config CLI shell-out.
+            %% No scheduler state to update (gates are dispatched via
+            %% bind+midi-note, which uses explicit channel — no voice
+            %% lookup needed).
+            spawn(fun() -> fh2_set_gate(Voice, Output, Channel) end),
+            Reply = {text, <<"OK: fh2-gate voice ",
+                             (integer_to_binary(Voice))/binary,
+                             " -> output ", (integer_to_binary(Output))/binary,
+                             " on ch ", (integer_to_binary(Channel))/binary,
+                             " (SysEx push in flight)">>},
             {reply, Reply, State};
         {fh2_envelope, Voice, Output, Channel} ->
             %% Update scheduler state immediately (so fh2-trigger can resolve
@@ -742,8 +781,137 @@ extract_json_string(<<C, Rest/binary>>, Acc) ->
     extract_json_string(Rest, <<Acc/binary, C>>).
 
 %% ============================================================================
-%% Load Set Handler
+%% Load Setup File Handler
 %% ============================================================================
+%%
+%% `load <name>` reads `setup/<name>.tidal` and evaluates each non-blank,
+%% non-comment line as if it had been typed in the WS one at a time.
+%% Useful for one-line "boot" of a device's full bind set:
+%%   - load rample      → 44-line Rample MIDI vocabulary
+%%   - load fh2-base    → standard FH-2 envelope farm
+%%   - load show1-set1  → live-coded scene preset
+%%
+%% Comments use Tidal's `--` line-comment syntax (Haskell-derived).
+%% Blank lines are ignored.
+%%
+%% Each line is parsed via the same try_parse_prefixed + dispatch logic
+%% used by direct WS messages, so any verb (bind, midi-device, fh2-*,
+%% rample-*, gate, cv, hush, even other `load` calls) works inside
+%% setup files. Errors on individual lines are logged but don't abort
+%% the load (best-effort — partial setup is more useful than none).
+
+handle_load_setup(Name, SchedulerPid, State) ->
+    case sanitize_name(Name) of
+        <<>> ->
+            Reply = {text, <<"ERROR: load — invalid name (alphanum/dash/underscore only)">>},
+            {reply, Reply, State};
+        SafeName ->
+            FilePath = setup_file_path(SafeName),
+            case file:read_file(FilePath) of
+                {ok, Content} ->
+                    Lines = binary:split(Content, <<"\n">>, [global]),
+                    {Total, Skipped, Errors} = lists:foldl(
+                        fun(Line, {T, S, E}) ->
+                            Trimmed = trim_line(Line),
+                            case classify_line(Trimmed) of
+                                blank   -> {T, S + 1, E};
+                                comment -> {T, S + 1, E};
+                                code    ->
+                                    case dispatch_setup_line(Trimmed, SchedulerPid) of
+                                        ok    -> {T + 1, S, E};
+                                        error -> {T + 1, S, E + 1}
+                                    end
+                            end
+                        end,
+                        {0, 0, 0},
+                        Lines
+                    ),
+                    Summary = iolist_to_binary(io_lib:format(
+                        "OK: load ~s — ~B lines fired (~B skipped, ~B errors)",
+                        [SafeName, Total, Skipped, Errors])),
+                    {reply, {text, Summary}, State};
+                {error, enoent} ->
+                    Msg = iolist_to_binary(io_lib:format(
+                        "ERROR: load ~s — file not found at ~s",
+                        [SafeName, FilePath])),
+                    {reply, {text, Msg}, State};
+                {error, Reason} ->
+                    Msg = iolist_to_binary(io_lib:format(
+                        "ERROR: load ~s — ~p", [SafeName, Reason])),
+                    {reply, {text, Msg}, State}
+            end
+    end.
+
+%% Resolve a setup name to a filesystem path. Relative to BEAM CWD,
+%% which is typically purerl-tidal/ when started via `rebar3 shell`.
+setup_file_path(SafeName) ->
+    filename:join([?SETUP_DIR, <<SafeName/binary, ".tidal">>]).
+
+%% Strip leading/trailing whitespace AND a trailing \r (for CRLF files).
+trim_line(Line) ->
+    L1 = case Line of
+        <<L0/binary, $\r>> -> L0;
+        _ -> Line
+    end,
+    string:trim(L1, both, " \t").
+
+%% Classify a (trimmed) line as blank, comment, or code.
+classify_line(<<>>) -> blank;
+classify_line(<<"--", _/binary>>) -> comment;
+classify_line(_) -> code.
+
+%% Dispatch one line through the same parsing as a direct WS message.
+%% We pattern-match on try_parse_prefixed's result and fire the matching
+%% scheduler message. For unrecognized lines we fall back to named-binding
+%% dispatch (so calling `bd "1 ~ 1 1"` inside a setup file plays through).
+dispatch_setup_line(Line, SchedulerPid) ->
+    case try_parse_prefixed(Line) of
+        none ->
+            %% Unprefixed line — treat as named-binding dispatch.
+            {Word, Rest} = split_first_word(Line),
+            case safe_parse(Rest) of
+                {ok, _} ->
+                    SchedulerPid ! {playByName, Word, Rest, Line},
+                    ok;
+                {parse_err, _} ->
+                    io:format("[load] parse error on line: ~s~n", [Line]),
+                    error
+            end;
+        Action ->
+            dispatch_setup_action(Action, SchedulerPid)
+    end.
+
+%% Send the matching scheduler message for a parsed action.  This mirrors
+%% handle_pattern_message's case arms minus the WS replies. Add a clause
+%% here whenever a new verb is added to handle_pattern_message that should
+%% also work inside setup files.
+dispatch_setup_action(Action, SchedulerPid) ->
+    case Action of
+        {midi_device, Alias, DeviceName, Latency} ->
+            SchedulerPid ! {registerMidiDevice, Alias, DeviceName, Latency}, ok;
+        {bind, Name, ActionSpec} ->
+            SchedulerPid ! {addBinding, Name, ActionSpec}, ok;
+        {unbind, Name} ->
+            SchedulerPid ! {removeBinding, Name}, ok;
+        {slot, Name, Value} ->
+            SchedulerPid ! {setSlot, Name, Value}, ok;
+        {hush} ->
+            SchedulerPid ! {hush}, ok;
+        {load, Name} ->
+            %% Recursive load — common pattern: a "scene" file that
+            %% loads device packs first, then defines patterns.
+            handle_load_setup(Name, SchedulerPid, #{}),
+            ok;
+        {fh2_gate, Voice, Output, Channel} ->
+            spawn(fun() -> fh2_set_gate(Voice, Output, Channel) end), ok;
+        {fh2_envelope, Voice, Output, Channel} ->
+            SchedulerPid ! {fh2Envelope, Voice, Output, Channel},
+            spawn(fun() -> fh2_set_envelope(Voice, Output, Channel) end),
+            ok;
+        Other ->
+            io:format("[load] verb not yet supported in setup files: ~p~n", [Other]),
+            error
+    end.
 
 handle_load_set(Text, SchedulerPid, State) ->
     Name = extract_set_name(Text),
@@ -928,4 +1096,16 @@ fh2_set_envelope(Voice, Output, Channel) ->
         [Path, Voice, Output, Channel]),
     Output0 = os:cmd(lists:flatten(Cmd)),
     io:format("[fh2-envelope shell-out] voice=~B output=~B ch=~B done~n~ts~n",
+              [Voice, Output, Channel, Output0]).
+
+fh2_set_gate(Voice, Output, Channel) ->
+    %% Gate-only MCV. Routes to FH-2 main jacks (1-8), FHX-8CV (9-64),
+    %% or FHX-8GT (65-128) automatically based on output number — see
+    %% fh2-config's --set-gate verb.
+    Path = "/Users/afc/work/afc-work/music/expert-sleepers/fh2-config",
+    Cmd = io_lib:format(
+        "cd ~s && spago run -- --set-gate ~B ~B ~B 2>&1",
+        [Path, Voice, Output, Channel]),
+    Output0 = os:cmd(lists:flatten(Cmd)),
+    io:format("[fh2-gate shell-out] voice=~B output=~B ch=~B done~n~ts~n",
               [Voice, Output, Channel, Output0]).

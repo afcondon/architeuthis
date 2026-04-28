@@ -1,0 +1,73 @@
+-- Rample MIDI vocabulary
+-- Squarp Rample: 4-voice sample player with full MIDI parameter control.
+-- One Rample unit = one MIDI channel (default ch 1; reconfigure on the
+-- module if you need otherwise).
+--
+-- CC convention (from the Rample MIDI implementation chart):
+--   CC = sample * 10 + param
+--   sample 1..4, param 0..9
+--
+-- After `load rample`, the following named bindings become pattern lanes.
+-- Drive any of them with normal Tidal patterns:
+--   r1pitch "0.4 0.5 0.6"
+--   r2filter "0.5(3,8)"
+--   rkit "0.05 0.1 0.15"
+--
+-- Trigger Rample voices via gates from FHX-8GT (or any gate source) —
+-- this file only covers MIDI parameter control.
+
+midi-device rample "Rample"
+
+-- Sample 1 (SP1, CCs 10-19)
+bind r1pitch  midi-cc rample 1 10
+bind r1bits   midi-cc rample 1 11
+bind r1filter midi-cc rample 1 12
+bind r1freeze midi-cc rample 1 13
+bind r1start  midi-cc rample 1 14
+bind r1len    midi-cc rample 1 15
+bind r1env    midi-cc rample 1 16
+bind r1run    midi-cc rample 1 17
+bind r1lvl    midi-cc rample 1 18
+bind r1layer  midi-cc rample 1 19
+
+-- Sample 2 (SP2, CCs 20-29)
+bind r2pitch  midi-cc rample 1 20
+bind r2bits   midi-cc rample 1 21
+bind r2filter midi-cc rample 1 22
+bind r2freeze midi-cc rample 1 23
+bind r2start  midi-cc rample 1 24
+bind r2len    midi-cc rample 1 25
+bind r2env    midi-cc rample 1 26
+bind r2run    midi-cc rample 1 27
+bind r2lvl    midi-cc rample 1 28
+bind r2layer  midi-cc rample 1 29
+
+-- Sample 3 (SP3, CCs 30-39)
+bind r3pitch  midi-cc rample 1 30
+bind r3bits   midi-cc rample 1 31
+bind r3filter midi-cc rample 1 32
+bind r3freeze midi-cc rample 1 33
+bind r3start  midi-cc rample 1 34
+bind r3len    midi-cc rample 1 35
+bind r3env    midi-cc rample 1 36
+bind r3run    midi-cc rample 1 37
+bind r3lvl    midi-cc rample 1 38
+bind r3layer  midi-cc rample 1 39
+
+-- Sample 4 (SP4, CCs 40-49)
+bind r4pitch  midi-cc rample 1 40
+bind r4bits   midi-cc rample 1 41
+bind r4filter midi-cc rample 1 42
+bind r4freeze midi-cc rample 1 43
+bind r4start  midi-cc rample 1 44
+bind r4len    midi-cc rample 1 45
+bind r4env    midi-cc rample 1 46
+bind r4run    midi-cc rample 1 47
+bind r4lvl    midi-cc rample 1 48
+bind r4layer  midi-cc rample 1 49
+
+-- Kit/bank select (CC99/CC0 = kit/bank, CC100/CC101 = prev/next)
+bind rkit   midi-cc rample 1 99
+bind rbank  midi-cc rample 1 0
+bind rprev  midi-cc rample 1 100
+bind rnext  midi-cc rample 1 101
