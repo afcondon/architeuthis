@@ -43,12 +43,12 @@ stopClient(Client) ->
 
 %% Send command to port (with error handling for closed ports)
 send_cmd(Port, Cmd) ->
-    io:format("MIDI> ~s~n", [Cmd]),
+    tidal_log:debug("MIDI> ~s~n", [Cmd]),
     try
         port_command(Port, Cmd ++ "\n")
     catch
         error:badarg ->
-            io:format("MIDI> ERROR: Port closed, command dropped: ~s~n", [Cmd]),
+            tidal_log:err("MIDI ERROR: Port closed, command dropped: ~s~n", [Cmd]),
             false
     end.
 
@@ -109,7 +109,7 @@ scheduleDrum(Client, Note, Velocity, DurationMs, DelayMs) ->
             OnCmd = lists:flatten(io_lib:format(
                 "~s dev \"~s\" ch ~B on ~B ~B",
                 [?SENDMIDI, Device, Channel, Note, Velocity])),
-            io:format("MIDI> ~s~n", [OnCmd]),
+            tidal_log:debug("MIDI> ~s~n", [OnCmd]),
             os:cmd(OnCmd),
 
             %% Wait note duration then send note off
@@ -117,7 +117,7 @@ scheduleDrum(Client, Note, Velocity, DurationMs, DelayMs) ->
             OffCmd = lists:flatten(io_lib:format(
                 "~s dev \"~s\" ch ~B on ~B 0",
                 [?SENDMIDI, Device, Channel, Note])),
-            io:format("MIDI> ~s~n", [OffCmd]),
+            tidal_log:debug("MIDI> ~s~n", [OffCmd]),
             os:cmd(OffCmd)
         end),
         unit
@@ -138,7 +138,7 @@ scheduleDrumOnChannel(Client, Channel, Note, Velocity, DurationMs, DelayMs) ->
             OnCmd = lists:flatten(io_lib:format(
                 "~s dev \"~s\" ch ~B on ~B ~B",
                 [?SENDMIDI, Device, Channel, Note, Velocity])),
-            io:format("MIDI> ch~B ~s~n", [Channel, OnCmd]),
+            tidal_log:debug("MIDI> ch~B ~s~n", [Channel, OnCmd]),
             os:cmd(OnCmd),
 
             %% Wait note duration then send note off
@@ -163,13 +163,13 @@ scheduleNoteOnDevice(Device, Channel, Note, Velocity, DurationMs, DelayMs) ->
             OnCmd = lists:flatten(io_lib:format(
                 "~s dev \"~s\" ch ~B on ~B ~B",
                 [?SENDMIDI, DeviceStr, Channel, Note, Velocity])),
-            io:format("MIDI> [~s] ~s~n", [DeviceStr, OnCmd]),
+            tidal_log:debug("MIDI> [~s] ~s~n", [DeviceStr, OnCmd]),
             os:cmd(OnCmd),
             timer:sleep(DurationMs),
             OffCmd = lists:flatten(io_lib:format(
                 "~s dev \"~s\" ch ~B on ~B 0",
                 [?SENDMIDI, DeviceStr, Channel, Note])),
-            io:format("MIDI> [~s] ~s~n", [DeviceStr, OffCmd]),
+            tidal_log:debug("MIDI> [~s] ~s~n", [DeviceStr, OffCmd]),
             os:cmd(OffCmd)
         end),
         unit
@@ -184,7 +184,7 @@ scheduleCCOnDevice(Device, Channel, CC, Value, DelayMs) ->
             Cmd = lists:flatten(io_lib:format(
                 "~s dev \"~s\" ch ~B cc ~B ~B",
                 [?SENDMIDI, DeviceStr, Channel, CC, Value])),
-            io:format("MIDI> [~s] ~s~n", [DeviceStr, Cmd]),
+            tidal_log:debug("MIDI> [~s] ~s~n", [DeviceStr, Cmd]),
             os:cmd(Cmd)
         end),
         unit

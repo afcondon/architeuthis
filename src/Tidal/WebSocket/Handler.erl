@@ -117,7 +117,7 @@ websocket_init(State) ->
     {ok, State}.
 
 websocket_handle({text, Text}, State) ->
-    io:format("WebSocket: Received message: ~s~n", [Text]),
+    tidal_log:debug("WebSocket: Received message: ~s~n", [Text]),
     SchedulerPid = maps:get(schedulerPid, State),
 
     %% First check for set management actions
@@ -157,6 +157,15 @@ try_parse_prefixed(<<"hush">>) -> {hush};
 try_parse_prefixed(<<"hush ", _/binary>>) -> {hush};
 try_parse_prefixed(<<"silence">>) -> {hush};
 try_parse_prefixed(<<"silence ", _/binary>>) -> {hush};
+try_parse_prefixed(<<"log-level ", Rest/binary>>) ->
+    try
+        N = binary_to_integer(string:trim(Rest, both, "\r \t")),
+        case N >= 0 andalso N =< 2 of
+            true -> {log_level, N};
+            false -> none
+        end
+    catch error:badarg -> none
+    end;
 try_parse_prefixed(<<"midi-device ", Rest/binary>>) ->
     %% midi-device <alias> <device-name-with-spaces> [lat <ms>]
     %% The optional `lat <ms>` suffix is stripped first if present;
@@ -446,6 +455,11 @@ handle_pattern_message(Text, SchedulerPid, State) ->
         {hush} ->
             SchedulerPid ! {hush},
             Reply = {text, <<"OK: hush">>},
+            {reply, Reply, State};
+        {log_level, N} ->
+            tidal_log:set_level(N),
+            NBin = integer_to_binary(N),
+            Reply = {text, <<"OK: log-level ", NBin/binary>>},
             {reply, Reply, State};
         {load, Name} ->
             handle_load_setup(Name, SchedulerPid, State);
@@ -803,7 +817,7 @@ extract_json_string(<<C, Rest/binary>>, Acc) ->
 handle_load_setup(Name, SchedulerPid, State) ->
     case sanitize_name(Name) of
         <<>> ->
-            Reply = {text, <<"ERROR: load — invalid name (alphanum/dash/underscore only)">>},
+            Reply = {text, <<"ERROR: load - invalid name (alphanum/dash/underscore only)">>},
             {reply, Reply, State};
         SafeName ->
             FilePath = setup_file_path(SafeName),
@@ -827,17 +841,17 @@ handle_load_setup(Name, SchedulerPid, State) ->
                         Lines
                     ),
                     Summary = iolist_to_binary(io_lib:format(
-                        "OK: load ~s — ~B lines fired (~B skipped, ~B errors)",
+                        "OK: load ~s - ~B lines fired (~B skipped, ~B errors)",
                         [SafeName, Total, Skipped, Errors])),
                     {reply, {text, Summary}, State};
                 {error, enoent} ->
                     Msg = iolist_to_binary(io_lib:format(
-                        "ERROR: load ~s — file not found at ~s",
+                        "ERROR: load ~s - file not found at ~s",
                         [SafeName, FilePath])),
                     {reply, {text, Msg}, State};
                 {error, Reason} ->
                     Msg = iolist_to_binary(io_lib:format(
-                        "ERROR: load ~s — ~p", [SafeName, Reason])),
+                        "ERROR: load ~s - ~p", [SafeName, Reason])),
                     {reply, {text, Msg}, State}
             end
     end.
@@ -848,12 +862,11 @@ setup_file_path(SafeName) ->
     filename:join([?SETUP_DIR, <<SafeName/binary, ".tidal">>]).
 
 %% Strip leading/trailing whitespace AND a trailing \r (for CRLF files).
+%% Erlang binary patterns require a size on a /binary segment unless it's
+%% the last in the pattern, so we use string:trim with the explicit char
+%% set instead of pattern-matching for the \r.
 trim_line(Line) ->
-    L1 = case Line of
-        <<L0/binary, $\r>> -> L0;
-        _ -> Line
-    end,
-    string:trim(L1, both, " \t").
+    string:trim(Line, both, "\r \t").
 
 %% Classify a (trimmed) line as blank, comment, or code.
 classify_line(<<>>) -> blank;

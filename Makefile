@@ -49,6 +49,8 @@ erl: ps
 	@echo "==> Compiling Erlang to BEAM..."
 	@mkdir -p ebin
 	@find output-erl -name "*.erl" -exec erlc -disable-feature maybe_expr -o ebin {} \; 2>&1 | grep -v "Warning:" || true
+	@# Standalone Erlang utility modules (no PureScript counterpart, not foreign).
+	@erlc -disable-feature maybe_expr -o ebin src/tidal_log.erl
 	@echo "==> Build complete. BEAM files in ebin/"
 
 # Run tests

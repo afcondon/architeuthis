@@ -31,6 +31,7 @@ import Data.Tuple (Tuple(..))
 import Effect (Effect)
 import Effect.Class (liftEffect)
 import Effect.Console (log)
+import Tidal.Log as Log
 import Effect.Ref (Ref)
 import Effect.Ref as Ref
 import Erl.Process (Process, ProcessM, spawn, receive)
@@ -368,7 +369,7 @@ midiSchedulerLoop stateRef = do
                   when (eventCycle > state.lastTrigger) do
                     let note = sampleToNote state.config.noteMap token
                     when (note > 0) do
-                      liftEffect $ log $ "  ♪ " <> token <> " → ch" <> show g.channel <> " note " <> show note <> " in " <> show delayInt <> "ms"
+                      liftEffect $ Log.debug $ "♪ " <> token <> " → ch" <> show g.channel <> " note " <> show note <> " in " <> show delayInt <> "ms"
                       liftEffect $ scheduleDrumOnChannel state.midiClient g.channel note state.config.midi.defaultVelocity state.config.noteDuration delayInt
                       when state.config.gate.enabled do
                         case state.oscClient of
@@ -387,10 +388,10 @@ midiSchedulerLoop stateRef = do
                               case Map.lookup token state.config.gate.sampleCVMap of
                                 Just { bus, value } -> do
                                   let cvDelay = max 0.0 (delayClamped - state.config.gate.cvLeadMs)
-                                  liftEffect $ log $ "  🎛 " <> token <> " → CV bus " <> show bus <> " = " <> show value <> " in " <> show (Int.floor cvDelay) <> "ms"
+                                  liftEffect $ Log.debug $ "🎛 " <> token <> " → CV bus " <> show bus <> " = " <> show value <> " in " <> show (Int.floor cvDelay) <> "ms"
                                   liftEffect $ OSC.sendCVAfter osc bus value cvDelay
                                 Nothing -> pure unit
-                              liftEffect $ log $ "  ⚡ " <> token <> " → gate " <> show gateChannel <> " in " <> show delayInt <> "ms (dur " <> show state.config.gate.gateDuration <> "ms)"
+                              liftEffect $ Log.debug $ "⚡ " <> token <> " → gate " <> show gateChannel <> " in " <> show delayInt <> "ms (dur " <> show state.config.gate.gateDuration <> "ms)"
                               liftEffect $ OSC.sendGateTrigAfter osc gateChannel state.config.gate.gateDuration delayClamped
                           Nothing -> pure unit
                     liftEffect $ Ref.modify_ (_ { lastTrigger = eventCycle }) stateRef
@@ -408,7 +409,7 @@ midiSchedulerLoop stateRef = do
                     Just raw -> case state.oscClient of
                       Just osc -> do
                         let value = applyTransforms c.transforms raw
-                        liftEffect $ log $ "  〰 cv bus " <> show c.bus <> " = " <> show value <> " in " <> show delayInt <> "ms"
+                        liftEffect $ Log.debug $ "〰 cv bus " <> show c.bus <> " = " <> show value <> " in " <> show delayInt <> "ms"
                         liftEffect $ OSC.sendCVAfter osc c.bus value delayClamped
                       Nothing -> pure unit
                     Nothing -> pure unit
@@ -420,7 +421,7 @@ midiSchedulerLoop stateRef = do
                     Just raw -> case state.oscClient of
                       Just osc -> do
                         let value = applyTransforms e.transforms raw
-                        liftEffect $ log $ "  ⌇ esx slot " <> show e.slot <> " = " <> show value <> " in " <> show delayInt <> "ms"
+                        liftEffect $ Log.debug $ "⌇ esx slot " <> show e.slot <> " = " <> show value <> " in " <> show delayInt <> "ms"
                         liftEffect $ OSC.sendESXAfter osc e.slot value delayClamped
                       Nothing -> pure unit
                     Nothing -> pure unit
@@ -436,27 +437,27 @@ midiSchedulerLoop stateRef = do
                     Binding.CV bus mapping ->
                       case state.oscClient, interpretCV mapping token of
                         Just osc, Just value -> do
-                          liftEffect $ log $ "  〰 [" <> b.name <> "] cv bus " <> show bus <> " = " <> show value
+                          liftEffect $ Log.debug $ "〰 [" <> b.name <> "] cv bus " <> show bus <> " = " <> show value
                           liftEffect $ OSC.sendCVAfter osc bus value cvDelay
                         _, _ -> pure unit
                     Binding.ESX slot ->
                       case state.oscClient, Number.fromString token of
                         Just osc, Just value -> do
-                          liftEffect $ log $ "  ⌇ [" <> b.name <> "] esx slot " <> show slot <> " = " <> show value
+                          liftEffect $ Log.debug $ "⌇ [" <> b.name <> "] esx slot " <> show slot <> " = " <> show value
                           liftEffect $ OSC.sendESXAfter osc slot value delayClamped
                         _, _ -> pure unit
                     Binding.Gate ch ->
                       when (token /= "~") do
                         case state.oscClient of
                           Just osc -> do
-                            liftEffect $ log $ "  ⚡ [" <> b.name <> "] gate " <> show ch <> " in " <> show delayInt <> "ms"
+                            liftEffect $ Log.debug $ "⚡ [" <> b.name <> "] gate " <> show ch <> " in " <> show delayInt <> "ms"
                             liftEffect $ OSC.sendGateTrigAfter osc ch state.config.gate.gateDuration delayClamped
                           Nothing -> pure unit
                     Binding.MidiNote m ->
                       when (token /= "~") do
                         case Map.lookup m.device state.midiDevices of
                           Nothing ->
-                            liftEffect $ log $ "  ✗ [" <> b.name <> "] midi-note: unknown device alias '" <> m.device <> "'"
+                            liftEffect $ Log.debug $ "✗ [" <> b.name <> "] midi-note: unknown device alias '" <> m.device <> "'"
                           Just dev -> do
                             -- Token can override the binding's defaultNote with
                             -- a note name (c4, e4, etc.). Falls back to the
@@ -469,7 +470,7 @@ midiSchedulerLoop stateRef = do
                             -- device's reported latency so this destination
                             -- arrives in unison with faster ones.
                             let adjustedDelay = max 0 (Int.floor (delayClamped - dev.latencyMs))
-                            liftEffect $ log $ "  ♪ [" <> b.name <> "] midi " <> dev.name <> " ch" <> show m.channel <> " note " <> show note <> " (dur " <> show m.durationMs <> "ms) in " <> show adjustedDelay <> "ms"
+                            liftEffect $ Log.debug $ "  [" <> b.name <> "] midi " <> dev.name <> " ch" <> show m.channel <> " note " <> show note <> " (dur " <> show m.durationMs <> "ms) in " <> show adjustedDelay <> "ms"
                             liftEffect $ scheduleNoteOnDevice dev.name m.channel note m.velocity m.durationMs adjustedDelay
                     Binding.MidiCC m ->
                       case Number.fromString token of
@@ -477,7 +478,7 @@ midiSchedulerLoop stateRef = do
                         Just raw ->
                           case Map.lookup m.device state.midiDevices of
                             Nothing ->
-                              liftEffect $ log $ "  ✗ [" <> b.name <> "] midi-cc: unknown device alias '" <> m.device <> "'"
+                              liftEffect $ Log.debug $ "✗ [" <> b.name <> "] midi-cc: unknown device alias '" <> m.device <> "'"
                             Just dev -> do
                               -- Pattern values 0..1 → MIDI 0..127. Clamp to
                               -- safe range; CC values >127 or <0 silently
@@ -485,7 +486,7 @@ midiSchedulerLoop stateRef = do
                               -- clamp gives predictable behaviour.
                               let value7bit = clamp7bit (raw * 127.0)
                               let adjustedDelay = max 0 (Int.floor (delayClamped - dev.latencyMs))
-                              liftEffect $ log $ "  ◇ [" <> b.name <> "] midi " <> dev.name <> " ch" <> show m.channel <> " cc" <> show m.cc <> " = " <> show value7bit
+                              liftEffect $ Log.debug $ "◇ [" <> b.name <> "] midi " <> dev.name <> " ch" <> show m.channel <> " cc" <> show m.cc <> " = " <> show value7bit
                               liftEffect $ scheduleCCOnDevice dev.name m.channel m.cc value7bit adjustedDelay
 
                 Fh2TriggerTrack f ->
@@ -494,7 +495,7 @@ midiSchedulerLoop stateRef = do
                   when (token /= "~") do
                     case Map.lookup f.voice state.fh2VoiceChannels of
                       Nothing ->
-                        liftEffect $ log $ "  ✗ fh2-trigger voice " <> show f.voice <> ": no fh2-envelope registration; skipping"
+                        liftEffect $ Log.debug $ "  x fh2-trigger voice " <> show f.voice <> ": no fh2-envelope registration; skipping"
                       Just channel -> do
                         -- Pattern token can override the trigger note (so
                         -- `fh2-trigger 0 "c4 e4 g4"` plays a melody and the
@@ -516,7 +517,7 @@ midiSchedulerLoop stateRef = do
                         -- 100ms used by the gate path) make any envelope with
                         -- non-trivial decay or release feel "stuck high then
                         -- drop". Future polish: parameterise per-track.
-                        liftEffect $ log $ "  ♪ fh2-trigger v" <> show f.voice <> " → " <> dev.name <> " ch" <> show channel <> " note " <> show note <> " in " <> show adjustedDelay <> "ms"
+                        liftEffect $ Log.debug $ "♪ fh2-trigger v" <> show f.voice <> " → " <> dev.name <> " ch" <> show channel <> " note " <> show note <> " in " <> show adjustedDelay <> "ms"
                         liftEffect $ scheduleNoteOnDevice dev.name channel note 100 200 adjustedDelay
 
       liftEffect $ Ref.modify_ (_ { nextCycle = toCycle }) stateRef
@@ -609,11 +610,11 @@ midiSchedulerLoop stateRef = do
       liftEffect $ Ref.write (state { tracks = newTracks }) stateRef
       liftEffect $ log $ "Tracks updated: " <> show (Array.length newTracks) <> " tracks"
       for_ newTracks \t -> case t of
-        GateTrack g -> liftEffect $ log $ "  - gate ch " <> show g.channel
-        CVTrack c -> liftEffect $ log $ "  - cv bus " <> show c.bus
-        ESXTrack e -> liftEffect $ log $ "  - esx slot " <> show e.slot
-        BoundTrack b -> liftEffect $ log $ "  - bound: " <> b.name
-        Fh2TriggerTrack f -> liftEffect $ log $ "  - fh2-trigger v" <> show f.voice
+        GateTrack g -> liftEffect $ Log.debug $ "- gate ch " <> show g.channel
+        CVTrack c -> liftEffect $ Log.debug $ "- cv bus " <> show c.bus
+        ESXTrack e -> liftEffect $ Log.debug $ "- esx slot " <> show e.slot
+        BoundTrack b -> liftEffect $ Log.debug $ "- bound: " <> b.name
+        Fh2TriggerTrack f -> liftEffect $ Log.debug $ "- fh2-trigger v" <> show f.voice
       midiSchedulerLoop stateRef
 
     AddBinding name actionSpec -> do
@@ -735,7 +736,7 @@ midiSchedulerLoop stateRef = do
       state <- liftEffect $ Ref.read stateRef
       case Map.lookup voice state.fh2VoiceChannels of
         Nothing ->
-          liftEffect $ log $ "fh2-shape v" <> show voice <> ": no fh2-envelope registration; skipping"
+          liftEffect $ Log.debug $ "fh2-shape v" <> show voice <> ": no fh2-envelope registration; skipping"
         Just channel -> do
           let dev = fromMaybe { name: "FH-2", latencyMs: 0.0 }
                       (Map.lookup "fh2" state.midiDevices)
