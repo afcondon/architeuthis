@@ -1119,10 +1119,23 @@ escape_json_string_loop(<<C, Rest/binary>>, Acc) ->
 %% The fh2-config binary lives at a known path; if you move it, update
 %% here too. (Could be made configurable via app env later.)
 fh2_set_envelope(Voice, Output, Channel) ->
-    %% Uses the composite --set-envelope-with-ccs verb so registering an
-    %% envelope voice also pushes the ADSR CC mappings (CCs 70+4V..73+4V
-    %% on `Channel`). One read/modify/write cycle on the FH-2 — no
-    %% configurator GUI interaction needed for ADSR.
+    %% Composite --set-envelope-with-ccs (envelope routing + ADSR CCs in
+    %% one config write).  Tries the fh2-config daemon first via Unix
+    %% socket; falls back to `spago run -- --set-envelope-with-ccs ...`
+    %% if no daemon is reachable.  Daemon path is sub-100ms; standalone
+    %% is 5-10s per call.
+    Cmd = iolist_to_binary(io_lib:format(
+        "set-envelope-with-ccs ~B ~B ~B", [Voice, Output, Channel])),
+    case fh2_daemon_call(Cmd) of
+        {ok, Reply} ->
+            io:format("[fh2-envelope daemon] voice=~B output=~B ch=~B: ~s~n",
+                      [Voice, Output, Channel, Reply]);
+        {error, _Reason} ->
+            io:format("[fh2-envelope] no daemon, falling back to spago shell-out~n"),
+            fh2_set_envelope_standalone(Voice, Output, Channel)
+    end.
+
+fh2_set_envelope_standalone(Voice, Output, Channel) ->
     Path = "/Users/afc/work/afc-work/music/expert-sleepers/fh2-config",
     Cmd = io_lib:format(
         "cd ~s && spago run -- --set-envelope-with-ccs ~B ~B ~B 2>&1",
@@ -1132,9 +1145,21 @@ fh2_set_envelope(Voice, Output, Channel) ->
               [Voice, Output, Channel, Output0]).
 
 fh2_set_gate(Voice, Output, Channel) ->
-    %% Gate-only MCV. Routes to FH-2 main jacks (1-8), FHX-8CV (9-64),
-    %% or FHX-8GT (65-128) automatically based on output number — see
-    %% fh2-config's --set-gate verb.
+    %% Gate-only MCV.  Routes to FH-2 main jacks (1-8), FHX-8CV (9-64),
+    %% or FHX-8GT (65-128) automatically based on output number.  Tries
+    %% the daemon first; falls back to spago shell-out otherwise.
+    Cmd = iolist_to_binary(io_lib:format(
+        "set-gate ~B ~B ~B", [Voice, Output, Channel])),
+    case fh2_daemon_call(Cmd) of
+        {ok, Reply} ->
+            io:format("[fh2-gate daemon] voice=~B output=~B ch=~B: ~s~n",
+                      [Voice, Output, Channel, Reply]);
+        {error, _Reason} ->
+            io:format("[fh2-gate] no daemon, falling back to spago shell-out~n"),
+            fh2_set_gate_standalone(Voice, Output, Channel)
+    end.
+
+fh2_set_gate_standalone(Voice, Output, Channel) ->
     Path = "/Users/afc/work/afc-work/music/expert-sleepers/fh2-config",
     Cmd = io_lib:format(
         "cd ~s && spago run -- --set-gate ~B ~B ~B 2>&1",
@@ -1142,3 +1167,44 @@ fh2_set_gate(Voice, Output, Channel) ->
     Output0 = os:cmd(lists:flatten(Cmd)),
     io:format("[fh2-gate shell-out] voice=~B output=~B ch=~B done~n~ts~n",
               [Voice, Output, Channel, Output0]).
+
+%% --- fh2-config daemon client ---------------------------------------
+%% Single round-trip Unix-socket client.  Matches fh2-config's daemon
+%% protocol: send one line, read one newline-terminated reply, close.
+%% Returns {ok, ReplyBinary} on success, {error, Reason} on failure
+%% (including ENOENT when no daemon is listening).
+
+fh2_daemon_socket_path() ->
+    case os:getenv("HOME") of
+        false -> "/tmp/fh2-control.sock";
+        Home -> Home ++ "/.fh2/control.sock"
+    end.
+
+fh2_daemon_call(Command) ->
+    SockPath = fh2_daemon_socket_path(),
+    Opts = [{active, false}, binary, {packet, line}],
+    case gen_tcp:connect({local, SockPath}, 0, Opts, 1000) of
+        {ok, Sock} ->
+            try
+                ok = gen_tcp:send(Sock, [Command, $\n]),
+                case gen_tcp:recv(Sock, 0, 5000) of
+                    {ok, Reply} ->
+                        %% Strip trailing newline for cleaner logs.
+                        Trimmed = case Reply of
+                            <<>> -> Reply;
+                            _ ->
+                                case binary:last(Reply) of
+                                    $\n -> binary:part(Reply, 0, byte_size(Reply) - 1);
+                                    _ -> Reply
+                                end
+                        end,
+                        {ok, Trimmed};
+                    {error, RecvReason} ->
+                        {error, RecvReason}
+                end
+            after
+                gen_tcp:close(Sock)
+            end;
+        {error, ConnReason} ->
+            {error, ConnReason}
+    end.
