@@ -1,0 +1,77 @@
+-- Turnado (Sugar Bytes) — multi-effect macro instrument on iPad.
+-- Reached via AUDIO4c+ USB2 ch 1 (same physical route as Laplace; CC
+-- ranges don't overlap so they can coexist on the same channel — see
+-- bottom of file for routing notes).
+--
+-- The Turnado UI is "8 macro knobs over 8 effect slots". That macro
+-- layer is what we drive from Tidal. Each slot's deeper parameters
+-- (29-30 per effect on the Edit Page) are reachable but documented-only
+-- here — sound design is better done with Turnado's preset system; we
+-- modulate the macro layer.
+--
+-- The MIDI map lives in AUM and was learned in a one-time session via a
+-- Midifighter Twister plugged direct into the iPad. The .aum_midimap
+-- file (binary plist; AU-param-id → CC table) is the canonical record;
+-- a backup in this directory would be a good idea.
+
+midi-device turnado "AUDIO4c USB2"
+
+-- ─── 8 macro knobs (one per effect slot) ──────────────────────────────
+-- Panel labels them 1-8; AUM-stored CCs are 0-7 (off-by-one because the
+-- Twister knob that learned slot-1's macro happened to send CC 0).
+-- These map to AU param ids 0-7. Whatever effect is loaded in a slot,
+-- its overall intensity / "amount" is on this knob.
+bind turnado-1   midi-cc turnado 1 0
+bind turnado-2   midi-cc turnado 1 1
+bind turnado-3   midi-cc turnado 1 2
+bind turnado-4   midi-cc turnado 1 3
+bind turnado-5   midi-cc turnado 1 4
+bind turnado-6   midi-cc turnado 1 5
+bind turnado-7   midi-cc turnado 1 6
+bind turnado-8   midi-cc turnado 1 7
+
+-- ─── Globals ──────────────────────────────────────────────────────────
+bind turnado-dictator   midi-cc turnado 1 8
+bind turnado-dry-wet    midi-cc turnado 1 9
+bind turnado-randomize  midi-cc turnado 1 10
+
+-- ─── Per-effect Edit-Page params — DOCUMENTED ONLY ────────────────────
+-- The Edit Page for each effect slot exposes ~29 params (4 effect
+-- params + dry/wet + bypass + their knob-amount sub-controls + LFO1/
+-- ENV-FLW/LFO2 with rate/phase/amount + each modulator's knob-amount).
+-- AU IDs are sequential blocks of 29 starting at id 12 (id 11 is a
+-- reserved gap). For Slot N (1-indexed), params start at id 12 + (N-1)*29.
+--
+-- Slot 1 (verified, AU ids 12-40):
+--   12-15  effect params 1-4
+--   16     dry/wet
+--   17     bypass (autoToggle)
+--   18-21  effect params 1-4 knob-amount
+--   22     dry/wet knob-amount
+--   23-25  LFO1 rate / phase / amount
+--   26-28  envelope-follower attack / release / amount
+--   29-31  LFO2 rate / phase / amount
+--   32-34  LFO1 KA: rate / phase / amount
+--   35-37  envelope-follower KA: attack / release / amount
+--   38-41  LFO2 KA: rate / phase / amount
+-- Slot 2 expected: id 41 + (29 each), so 41-69. AU ids 41-45 confirmed
+-- present in the verified mapping (overshoot during the Learn session)
+-- — alignment will be verified the day someone wants to bind these.
+--
+-- These ids exist; we just don't generate Tidal binds for them. To use
+-- one, write a one-off line like:
+--   bind turnado-fx1-lfo1-rate midi-cc turnado 1 23
+-- The matching AUM map entry needs `enabled: True` and the same CC
+-- (already set up in the saved .aum_midimap; not lost just because we
+-- haven't bound from Tidal).
+
+-- ─── Routing notes ────────────────────────────────────────────────────
+-- Currently: AUDIO4c USB2 ch 1 carries both Laplace (CC 14-98) and
+-- Turnado (CC 0-10). No CC overlap so they coexist cleanly on the same
+-- wire+channel.
+--
+-- If/when running multiple Turnado instances (one per synth being
+-- processed), the architecture becomes: each Turnado instance gets a
+-- distinct AUDIO4c HST port + MIDI channel. The instance's bind
+-- namespace would use a prefix like `turnado-on-laplace-N` or similar.
+-- That's deferred until a real two-instance setup demands it.
