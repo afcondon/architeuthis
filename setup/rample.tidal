@@ -16,7 +16,7 @@
 -- Trigger Rample voices via gates from FHX-8GT (or any gate source) —
 -- this file only covers MIDI parameter control.
 
-midi-device rample "Rample"
+midi-device rample "AUDIO4c DIN"
 
 -- Sample 1 (SP1, CCs 10-19)
 bind r1pitch  midi-cc rample 1 10

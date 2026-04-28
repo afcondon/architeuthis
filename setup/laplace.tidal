@@ -1,0 +1,139 @@
+-- Laplace (icegear) — physical-modeling resonator synth on iPad.
+-- One Laplace instance per AUM project; we reach it via AUDIO4c+ USB2,
+-- channel 1.
+--
+-- All CCs were assigned to Laplace controls via MIDI Learn in a one-time
+-- session (rig-control/scripts/wiggle-cc + manual control selection on
+-- the synth). The iPad-side counterpart is the companion file
+-- `tidal-mappings.laplace_midi_pack` in this directory — Laplace's
+-- exportable MIDI map (zip + plain-text inside). To restore the mapping
+-- on a fresh iPad: import that pack file via Laplace's MIDI Map
+-- Setting Panel.
+--
+-- The pack file is plain-text-editable: each line is
+--   <PARAM_ID>\t<unused>\t<status-byte>\t<cc>\t<min>\t<center>\t<value>\t<max>
+-- with status-byte 176 = MIDI CC on channel 1 (0xB0). For future
+-- Icegear synths, write the file directly rather than walking MIDI
+-- Learn — much faster than this 90-minute session was.
+--
+-- Naming convention: laplace-<panel-section>-<param>, hyphenated lowercase.
+-- Where panel labels disagreed with the Laplace manual, panel wins.
+--
+-- After `load laplace`, the bindings below become pattern lanes:
+--   laplace-noise-lpf-freq "0.3 0.5 0.8 0.4"
+--   laplace-resonator-decay "0.5(3,8)"
+--
+-- Triggering: send notes to channel 1 on AUDIO4c USB2 (e.g. via a
+-- midi-note bind). Notes drive the synth; CCs shape it.
+
+midi-device laplace "AUDIO4c USB2"
+
+-- ─── Basic / global ───────────────────────────────────────────────────
+bind laplace-volume                       midi-cc laplace 1 14
+bind laplace-arp                          midi-cc laplace 1 15
+bind laplace-mono                         midi-cc laplace 1 16
+bind laplace-hold                         midi-cc laplace 1 17
+bind laplace-glide                        midi-cc laplace 1 18
+bind laplace-pb-range                     midi-cc laplace 1 19
+bind laplace-octave                       midi-cc laplace 1 20
+
+-- ─── Exciter — Click ──────────────────────────────────────────────────
+bind laplace-click-pitch                  midi-cc laplace 1 21
+bind laplace-click-stiffness              midi-cc laplace 1 22
+bind laplace-click-color                  midi-cc laplace 1 23
+bind laplace-click-decay                  midi-cc laplace 1 24
+bind laplace-click-damper-noise           midi-cc laplace 1 25
+bind laplace-click-velocity               midi-cc laplace 1 53
+bind laplace-click-key                    midi-cc laplace 1 54
+
+-- ─── Exciter — Noise ──────────────────────────────────────────────────
+bind laplace-noise-lpf-freq               midi-cc laplace 1 26
+bind laplace-noise-lpf-res                midi-cc laplace 1 27
+bind laplace-noise-hpf-freq               midi-cc laplace 1 28
+bind laplace-noise-attack                 midi-cc laplace 1 29
+bind laplace-noise-decay                  midi-cc laplace 1 30
+bind laplace-noise-sustain                midi-cc laplace 1 31
+bind laplace-noise-release                midi-cc laplace 1 32
+bind laplace-noise-gate-env               midi-cc laplace 1 33
+bind laplace-noise-env                    midi-cc laplace 1 55
+bind laplace-noise-velocity               midi-cc laplace 1 56
+bind laplace-noise-key                    midi-cc laplace 1 57
+
+-- ─── Exciter — Mixer ──────────────────────────────────────────────────
+bind laplace-click-noise-mix              midi-cc laplace 1 58
+
+-- ─── Resonator ────────────────────────────────────────────────────────
+bind laplace-resonator-strength           midi-cc laplace 1 35
+bind laplace-resonator-color              midi-cc laplace 1 36
+bind laplace-resonator-type               midi-cc laplace 1 37
+bind laplace-resonator-lpf-freq           midi-cc laplace 1 38
+bind laplace-resonator-decay              midi-cc laplace 1 39
+bind laplace-resonator-damper             midi-cc laplace 1 40
+bind laplace-resonator-pitch-env-depth    midi-cc laplace 1 41
+bind laplace-resonator-pitch-env-attack   midi-cc laplace 1 42
+bind laplace-resonator-pitch-env-decay    midi-cc laplace 1 43
+bind laplace-resonator-pitch-env-velocity midi-cc laplace 1 65
+bind laplace-resonator-velocity           midi-cc laplace 1 59
+
+-- ─── Sine Oscillator ──────────────────────────────────────────────────
+bind laplace-sine-coarse                  midi-cc laplace 1 44
+bind laplace-sine-fine                    midi-cc laplace 1 45
+bind laplace-sine-fm-depth                midi-cc laplace 1 46
+bind laplace-sine-fm-ratio                midi-cc laplace 1 47
+bind laplace-sine-release                 midi-cc laplace 1 48
+
+-- ─── Output (resonator/sine blend + post-HPF + dry-wet) ───────────────
+bind laplace-resonator-sine-mix           midi-cc laplace 1 34
+bind laplace-out-hpf                      midi-cc laplace 1 50
+bind laplace-out-dry-wet                  midi-cc laplace 1 49
+
+-- ─── Vibrato (per-note pitch modulation) ──────────────────────────────
+bind laplace-vibrato-rate                 midi-cc laplace 1 61
+bind laplace-vibrato-depth                midi-cc laplace 1 62
+
+-- ─── Amplifier ────────────────────────────────────────────────────────
+bind laplace-amp-level                    midi-cc laplace 1 63
+bind laplace-amp-velocity                 midi-cc laplace 1 64
+
+-- ─── LFO (rate on main panel; destinations in LFO panel) ──────────────
+bind laplace-lfo-rate                     midi-cc laplace 1 60
+bind laplace-lfo-exciter-noise-lpf        midi-cc laplace 1 94
+bind laplace-lfo-exciter-mix              midi-cc laplace 1 95
+bind laplace-lfo-resonator-flavor         midi-cc laplace 1 96
+bind laplace-lfo-resonator-lpf            midi-cc laplace 1 97
+bind laplace-lfo-resonator-mix            midi-cc laplace 1 98
+
+-- ─── FX — Chorus ──────────────────────────────────────────────────────
+bind laplace-chorus-toggle                midi-cc laplace 1 66
+bind laplace-chorus-dry-wet               midi-cc laplace 1 51
+bind laplace-chorus-time                  midi-cc laplace 1 67
+bind laplace-chorus-feedback              midi-cc laplace 1 68
+bind laplace-chorus-rate                  midi-cc laplace 1 69
+bind laplace-chorus-depth                 midi-cc laplace 1 70
+bind laplace-chorus-spread                midi-cc laplace 1 71
+
+-- ─── FX — Delay (top + feedback + filter sub-sections) ────────────────
+bind laplace-delay-toggle                 midi-cc laplace 1 72
+bind laplace-delay-dry-wet                midi-cc laplace 1 73
+bind laplace-delay-range                  midi-cc laplace 1 74
+bind laplace-delay-time-l                 midi-cc laplace 1 75
+bind laplace-delay-time-r                 midi-cc laplace 1 77
+bind laplace-delay-time-mix               midi-cc laplace 1 76
+bind laplace-delay-mod-rate               midi-cc laplace 1 78
+bind laplace-delay-mod-depth              midi-cc laplace 1 79
+bind laplace-delay-fb-amount              midi-cc laplace 1 80
+bind laplace-delay-fb-cross               midi-cc laplace 1 81
+bind laplace-delay-fb-hi-damp             midi-cc laplace 1 82
+bind laplace-delay-filter-freq            midi-cc laplace 1 83
+bind laplace-delay-filter-mod-rate        midi-cc laplace 1 84
+bind laplace-delay-filter-mod-depth       midi-cc laplace 1 85
+bind laplace-delay-filter-resonance       midi-cc laplace 1 86
+bind laplace-delay-filter-drive           midi-cc laplace 1 87
+
+-- ─── FX — Reverb ──────────────────────────────────────────────────────
+bind laplace-reverb-toggle                midi-cc laplace 1 88
+bind laplace-reverb-dry-wet               midi-cc laplace 1 89
+bind laplace-reverb-pre-delay             midi-cc laplace 1 90
+bind laplace-reverb-time                  midi-cc laplace 1 91
+bind laplace-reverb-hi-damp               midi-cc laplace 1 92
+bind laplace-reverb-type                  midi-cc laplace 1 93
