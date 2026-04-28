@@ -28,6 +28,15 @@
 
 midi-device laplace "AUDIO4c USB2"
 
+-- ─── Note trigger ─────────────────────────────────────────────────────
+-- One bind, default note c4. Pattern tokens that match a note name
+-- (c3..c6 with cs/ds/fs/gs/as accidentals) override the default — so
+-- `lap "c4 e4 g4 c5"` arpeggiates that chord, while `lap "x ~ x ~"`
+-- just retriggers c4. 200ms duration is short enough for arp 16ths
+-- around 120 BPM without overlap, long enough for Laplace's amp env
+-- to fully open.
+bind lap midi-note laplace 1 60 100 200
+
 -- ─── Basic / global ───────────────────────────────────────────────────
 bind laplace-volume                       midi-cc laplace 1 14
 bind laplace-arp                          midi-cc laplace 1 15

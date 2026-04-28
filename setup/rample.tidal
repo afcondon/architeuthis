@@ -13,8 +13,25 @@
 --   r2filter "0.5(3,8)"
 --   rkit "0.05 0.1 0.15"
 --
--- Trigger Rample voices via gates from FHX-8GT (or any gate source) —
--- this file only covers MIDI parameter control.
+-- Trigger Rample voices via gates from FHX-8GT outputs 1-4. Mirror of
+-- qd.tidal's gate-trigger block: FH-2 MCV slots 0-3 listen on channels
+-- 10-13 and route gates to FHX-8GT outputs 1-4 (output IDs 65-68 in the
+-- FH-2's numbering).
+
+fh2-gate 0 65 10
+fh2-gate 1 66 11
+fh2-gate 2 67 12
+fh2-gate 3 68 13
+
+midi-device fh2 "FH-2"
+
+-- Trigger pattern lanes (parallel to qd1..qd4): short notes on channels
+-- 10-13. Note value is irrelevant — the FH-2 MCV is gate-mode and fires
+-- on any note on its channel.
+bind r1 midi-note fh2 10 60 100 50
+bind r2 midi-note fh2 11 60 100 50
+bind r3 midi-note fh2 12 60 100 50
+bind r4 midi-note fh2 13 60 100 50
 
 midi-device rample "AUDIO4c DIN"
 

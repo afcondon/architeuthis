@@ -928,10 +928,18 @@ dispatch_setup_action(Action, SchedulerPid) ->
             handle_load_setup(Name, SchedulerPid, #{}),
             ok;
         {fh2_gate, Voice, Output, Channel} ->
-            spawn(fun() -> fh2_set_gate(Voice, Output, Channel) end), ok;
+            %% Synchronous on the load path. fh2-config does a read-
+            %% modify-write of the FH-2's full config blob; parallel
+            %% invocations race and clobber each other (only the last
+            %% writer's slot survives). Serialising here costs ~7s per
+            %% gate but is the only way to reliably configure multiple
+            %% MCVs in one `load`. The WS-direct path (handle_pattern_
+            %% message) still spawns since one-off typing can't race.
+            fh2_set_gate(Voice, Output, Channel),
+            ok;
         {fh2_envelope, Voice, Output, Channel} ->
             SchedulerPid ! {fh2Envelope, Voice, Output, Channel},
-            spawn(fun() -> fh2_set_envelope(Voice, Output, Channel) end),
+            fh2_set_envelope(Voice, Output, Channel),
             ok;
         Other ->
             io:format("[load] verb not yet supported in setup files: ~p~n", [Other]),
