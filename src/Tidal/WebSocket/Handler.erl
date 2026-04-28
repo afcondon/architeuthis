@@ -169,10 +169,15 @@ try_parse_prefixed(<<"log-level ", Rest/binary>>) ->
 try_parse_prefixed(<<"midi-device ", Rest/binary>>) ->
     %% midi-device <alias> <device-name-with-spaces> [lat <ms>]
     %% The optional `lat <ms>` suffix is stripped first if present;
-    %% remainder is the device name.
+    %% remainder is the device name. Surrounding `"..."` quotes are
+    %% stripped — without this, the shell-quoted format string later
+    %% wraps the value in another pair of quotes, producing
+    %% `dev ""AUDIO4c USB2""` which the shell tokenises as two unquoted
+    %% words and sendmidi falls back to substring matching.
     case binary:split(Rest, <<" ">>) of
         [Alias, AfterAlias] when AfterAlias =/= <<>> ->
-            {DeviceName, Latency} = split_lat_suffix(AfterAlias),
+            {RawName, Latency} = split_lat_suffix(AfterAlias),
+            DeviceName = strip_surrounding_quotes(RawName),
             {midi_device, Alias, DeviceName, Latency};
         _ -> none
     end;
@@ -381,6 +386,13 @@ trim_binary(Bin) ->
 %%   "FH-2"               → {<<"FH-2">>, 0.0}
 %%   "AUDIO4c USB2 lat 12"→ {<<"AUDIO4c USB2">>, 12.0}
 %%   "FH-2 lat 1.5"       → {<<"FH-2">>, 1.5}
+strip_surrounding_quotes(<<"\"", Rest/binary>>) when byte_size(Rest) >= 1 ->
+    case binary:last(Rest) of
+        $" -> binary:part(Rest, 0, byte_size(Rest) - 1);
+        _ -> <<"\"", Rest/binary>>
+    end;
+strip_surrounding_quotes(B) -> B.
+
 split_lat_suffix(Bin) ->
     %% Look for " lat " followed by a number to end of line.
     Parts = binary:split(Bin, <<" lat ">>, [global]),

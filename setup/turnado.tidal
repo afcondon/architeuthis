@@ -13,6 +13,12 @@
 -- Midifighter Twister plugged direct into the iPad. The .aum_midimap
 -- file (binary plist; AU-param-id → CC table) is the canonical record;
 -- a backup in this directory would be a good idea.
+--
+-- Two-layer routing trap: AUM's matrix routes MIDI to the AU's input
+-- port (visible activity in the matrix), but Turnado itself also has
+-- to claim/subscribe to that source from inside its own settings UI.
+-- If you see MIDI flowing in the AUM matrix but Turnado isn't reacting,
+-- it's the inner subscription, not AUM.
 
 midi-device turnado "AUDIO4c USB2"
 
