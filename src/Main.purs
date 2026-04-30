@@ -7,6 +7,7 @@ import Erl.Kernel.Erlang (sleep)
 import Data.Time.Duration (Milliseconds(..))
 import Tidal.MIDI as MIDI
 import Tidal.MIDIScheduler (startMIDIScheduler, MIDISchedulerConfig, GateConfig, defaultDrumMap, defaultGateConfig)
+import Tidal.LinkAnchor as LinkAnchor
 import Tidal.WebSocket.Server as WS
 
 main :: Effect Unit
@@ -15,6 +16,12 @@ main = do
   log "==================="
   log ""
 
+  log "=== Link anchor listener ==="
+  -- Always start; if no link-spike is running, queries return Nothing
+  -- and any consumer falls back to its free-running clock.
+  LinkAnchor.start
+
+  log ""
   log "=== MIDI Devices ==="
   MIDI.listDevices
 

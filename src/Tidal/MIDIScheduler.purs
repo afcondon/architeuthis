@@ -39,6 +39,7 @@ import Erl.Process.Raw as Raw
 import Tidal.Eval.Interpret (tpatToPattern)
 import Tidal.Binding as Binding
 import Tidal.MIDI (MIDIClient, MIDIConfig, startClient, scheduleDrumOnChannel, scheduleNoteOnDevice, scheduleCCOnDevice)
+import Tidal.LinkAnchor as LinkAnchor
 import Tidal.OSC as OSC
 import Tidal.Transform (Transform(..), applyTransforms)
 import Tidal.Parse.Parser (parse)
@@ -321,12 +322,17 @@ midiSchedulerLoop stateRef = do
   case msg of
     Tick -> do
       state <- liftEffect $ Ref.read stateRef
-      now <- liftEffect currentTimeMs
 
-      -- 1 cycle = 1 bar = 4 beats, so multiply by 4
-      let cycleDurationMs = 240000.0 / state.config.bpm
-      let elapsedMs = case now, state.startTime of
-            Milliseconds n, Milliseconds s -> n - s
+      -- Time + tempo source: prefers Link if a fresh anchor is available,
+      -- otherwise free-runs from startTime + config.bpm. All policy lives
+      -- in Erlang (tidal_link_anchor:scheduler_clock/2) — this scheduler
+      -- doesn't know or care which mode it's in.
+      clock <- liftEffect $ LinkAnchor.schedulerClock
+        { startTimeMs: case state.startTime of Milliseconds m -> m
+        , freeRunBpm: state.config.bpm
+        }
+      let cycleDurationMs = clock.cycleDurationMs
+      let elapsedMs = clock.elapsedMs
 
       let currentCycle = elapsedMs / cycleDurationMs
       let lookAheadCycles = state.config.lookAhead / cycleDurationMs
