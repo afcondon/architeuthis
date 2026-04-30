@@ -1,0 +1,158 @@
+-- Model 15 (Moog) — Mac Catalyst port of the modular Moog Model 15.
+-- Runs on this Mac alongside purerl-tidal; exposes a virtual MIDI
+-- destination literally called "Model 15".
+--
+-- Unlike most synths in this constellation, Model 15 is *patched*: each
+-- preset is a wiring topology plus knob values, so the same CC may be
+-- musical or inert depending on which preset is loaded. Treat presets as
+-- "different synths" and use Program Change to step through them.
+--
+-- Program Change: Animoog-style — PC #N selects the Nth preset within
+-- the *currently active category*. Switching category is UI-only (no
+-- bank-select). Workflow: pick a category by hand, sequence PC within
+-- it. Categories under presets/: BASS, BRASS, FX, KEYS, LEAD, MODERN,
+-- PAD, STRINGS, TEMPLATES, TUTORIAL, ARPEGGIO.
+--
+-- Mapping origin: authored directly into
+--   ~/Library/Mobile Documents/iCloud~com~moogmusic~model15/Documents/ccmaps/purerl-tidal.m15c
+-- (and the Group Container mirror). Format is `{"version":1,"mapping":{
+-- "<param_id>": [cc, channel]}}` — the channel field is 0-indexed
+-- (channel 0 = MIDI ch 1). The five GM-style defaults (5 glide, 7 vol,
+-- 64 hold, 71 res, 74 cutoff) are preserved so vanilla controllers keep
+-- working.
+--
+-- 14-bit MIDI: Model 15 supports it (LSB on CC, MSB on CC+32) but the
+-- ccmap-file encoding for it isn't yet known — these bindings are 7-bit.
+-- Filter cutoff (74) is the natural upgrade candidate; revisit if the
+-- resolution gets coarse.
+--
+-- Naming convention: `model15-<param_id-with-hyphens>`, suffix stripped
+-- (_k knob, _t toggle, _s slider). Internal JSON ids are 0-indexed
+-- (vco0/1/2, adsr0/1, vca0/1) — the panel labels them 1/2/3 and 1/2.
+-- Rename inline if the panel disagreement bothers you.
+--
+-- After `load model15`, bindings become pattern lanes:
+--   model15-vcf0-freq "0.3 0.5 0.8 0.4"
+--   model15-adsr0-rel "0.5(3,8)"
+--
+-- Triggering: send notes to channel 1 on the Model 15 device. Notes
+-- drive the synth; CCs shape it; PC selects within the active category.
+
+midi-device model15 "Model 15"
+
+-- ─── Note trigger ─────────────────────────────────────────────────────
+-- Channel 1, default note c4, vel 100, 200ms (matches Laplace defaults).
+-- Pattern note tokens (c3..c6 with cs/ds/fs/gs/as) override the default.
+bind m15 midi-note model15 1 60 100 200
+
+-- ─── Program Change (preset-within-category select) ───────────────────
+-- Use sparingly — each PC retriggers preset load (audible artefact).
+bind m15-preset midi-pc model15 1
+
+-- ─── Defaults (preserved — GM mapping) ────────────────────────────────
+bind model15-syn-glide                 midi-cc model15 1 5
+bind model15-syn-volume                midi-cc model15 1 7
+bind model15-keyboard-hold             midi-cc model15 1 64
+bind model15-vcf0-regen                midi-cc model15 1 71
+bind model15-vcf0-freq                 midi-cc model15 1 74
+
+-- ─── VCF (continued) + LP/HP ──────────────────────────────────────────
+bind model15-vcf0-range                midi-cc model15 1 14
+bind model15-lp0-freq                  midi-cc model15 1 16
+bind model15-hp0-freq                  midi-cc model15 1 17
+
+-- ─── VCO 0 ────────────────────────────────────────────────────────────
+bind model15-vco0-semi                 midi-cc model15 1 19
+bind model15-vco0-range                midi-cc model15 1 20
+bind model15-vco0-sync                 midi-cc model15 1 21
+
+-- ─── VCO 1 ────────────────────────────────────────────────────────────
+bind model15-vco1-semi                 midi-cc model15 1 23
+bind model15-vco1-range                midi-cc model15 1 24
+bind model15-vco1-sync                 midi-cc model15 1 25
+
+-- ─── VCO 2 (the wide one — has scale, coarse, aux-out etc) ────────────
+bind model15-vco2-scale                midi-cc model15 1 27
+bind model15-vco2-coarse               midi-cc model15 1 28
+bind model15-vco2-semi                 midi-cc model15 1 29
+bind model15-vco2-range                midi-cc model15 1 30
+bind model15-vco2-width                midi-cc model15 1 31
+bind model15-vco2-aux-level            midi-cc model15 1 33
+bind model15-vco2-aux-wave             midi-cc model15 1 34
+bind model15-vco2-clamping-point       midi-cc model15 1 35
+
+-- ─── ADSR 0 ───────────────────────────────────────────────────────────
+bind model15-adsr0-att                 midi-cc model15 1 37
+bind model15-adsr0-dec                 midi-cc model15 1 39
+bind model15-adsr0-sus                 midi-cc model15 1 40
+bind model15-adsr0-rel                 midi-cc model15 1 41
+
+-- ─── ADSR 1 ───────────────────────────────────────────────────────────
+bind model15-adsr1-att                 midi-cc model15 1 43
+bind model15-adsr1-dec                 midi-cc model15 1 44
+bind model15-adsr1-sus                 midi-cc model15 1 45
+bind model15-adsr1-rel                 midi-cc model15 1 46
+
+-- ─── Mixer (master + 4 channels) ──────────────────────────────────────
+bind model15-mixer-master              midi-cc model15 1 48
+bind model15-mixer-1                   midi-cc model15 1 49
+bind model15-mixer-2                   midi-cc model15 1 50
+bind model15-mixer-3                   midi-cc model15 1 51
+bind model15-mixer-4                   midi-cc model15 1 52
+
+-- ─── VCAs ─────────────────────────────────────────────────────────────
+bind model15-vca0-curve                midi-cc model15 1 54
+bind model15-vca0-fixedcv              midi-cc model15 1 55
+bind model15-vca1-curve                midi-cc model15 1 56
+bind model15-vca1-fixedcv              midi-cc model15 1 57
+
+-- ─── Attenuators (modulation depth controls) ──────────────────────────
+bind model15-att-1                     midi-cc model15 1 59
+bind model15-att-2                     midi-cc model15 1 60
+bind model15-att-3                     midi-cc model15 1 61
+bind model15-rev-att-1                 midi-cc model15 1 62
+bind model15-rev-att-2                 midi-cc model15 1 63
+bind model15-rev-att-3                 midi-cc model15 1 65
+
+-- ─── Driver (noise / oscillator drive) ────────────────────────────────
+bind model15-driver-semi               midi-cc model15 1 67
+bind model15-driver-range              midi-cc model15 1 68
+bind model15-driver-width              midi-cc model15 1 69
+
+-- ─── Delay ────────────────────────────────────────────────────────────
+bind model15-delay-mix                 midi-cc model15 1 70
+bind model15-delay-time                midi-cc model15 1 72
+bind model15-delay-feedback            midi-cc model15 1 73
+bind model15-delay-clocksync           midi-cc model15 1 75
+
+-- ─── Filter Bank (10 band gains — fixed-frequency formant filter) ─────
+bind model15-bank-hp                   midi-cc model15 1 77
+bind model15-bank-lp                   midi-cc model15 1 78
+bind model15-bank-bp1                  midi-cc model15 1 79
+bind model15-bank-bp2                  midi-cc model15 1 80
+bind model15-bank-bp3                  midi-cc model15 1 81
+bind model15-bank-bp4                  midi-cc model15 1 82
+bind model15-bank-bp5                  midi-cc model15 1 83
+bind model15-bank-bp6                  midi-cc model15 1 84
+bind model15-bank-bp7                  midi-cc model15 1 85
+bind model15-bank-bp8                  midi-cc model15 1 86
+
+-- ─── Synth/global routing ─────────────────────────────────────────────
+bind model15-syn-corr                  midi-cc model15 1 88
+bind model15-mono-poly                 midi-cc model15 1 89
+bind model15-controls-to-osc           midi-cc model15 1 90
+bind model15-controls-to-env           midi-cc model15 1 91
+
+-- ─── Arpeggiator (macro-level — per-step internals not exposed) ───────
+-- Two on/off toggles exist: synth-level (syn-arp) and arp-section. Both
+-- are typically 1.0 in shipped arp presets; expose both to be safe.
+bind model15-arp-on-off                midi-cc model15 1 93
+bind model15-arp-latch                 midi-cc model15 1 94
+bind model15-arp-retrigger             midi-cc model15 1 95
+bind model15-arp-gatelength            midi-cc model15 1 102
+bind model15-syn-arp-on-off            midi-cc model15 1 106
+bind model15-arp-velocity-pitch        midi-cc model15 1 107
+
+-- ─── Amplifier ────────────────────────────────────────────────────────
+bind model15-amp-1                     midi-cc model15 1 104
+bind model15-amp-2                     midi-cc model15 1 105

@@ -1,0 +1,155 @@
+-- Patterning 3 (Olympia Noise Co.) — Mac Catalyst drum machine on this Mac.
+-- Exposes a virtual MIDI destination literally called "Patterning 3" when
+-- running. Standalone and AUv3 versions both ship.
+--
+-- Mapping origin: authored directly into
+--   ~/Library/Group Containers/group.olympianoiseco.patterning/ApplicationSupport/MIDI Input Mappings/PurerlTidal.patterningMIDIMapping
+-- Format is NSKeyedArchiver binary plist. Each entry has fields:
+-- {midiStatus, midiChannel, midiData, midiSource, key, track, min, max,
+--  exponent, storedIndex, displayString}. The `midiSource` field is exact
+-- match by upstream port name — we author with "Patterning 3" so messages
+-- arriving on Patterning's own input port match.
+--
+-- Architecture: channel-per-track for CCs (track N → channel N, 1..8) so
+-- each track follows GM convention on its own channel. Triggers stay on
+-- channel 1 with note numbers 60–72 (the factory defaults: C major scale
+-- C4..C5). Master controls on channel 16.
+--
+-- After `load patterning3`, bindings become pattern lanes:
+--   p3-1                 "x ~ x x ~ x x ~"   -- triggers Track 1
+--   p3-1-volume          "0.8 0.7 0.5 0.7"   -- per-step gain on Track 1
+--   p3-3-cutoff          (slow 4 sine)       -- Track 3 filter sweep
+--
+-- Triggering: send notes to channel 1 on Patterning 3 (notes 60–72 → tracks
+-- 1–8). Per-track shaping via CCs on channel N. The per-track CC layout is
+-- intentionally GM-like so that hand controllers (Twister etc.) map without
+-- relearning.
+--
+-- Hand-controller FX surface lives in a SEPARATE mapping file (planned —
+-- not authored here) — distortion / EQ / compressor parameters target
+-- continuous tactile manipulation, not sequenced patterns.
+--
+-- Choke groups are exposed (CC 16 per channel) so purerl-tidal can sequence
+-- track-cuts-track relationships rhythmically.
+
+midi-device patterning "Patterning 3"
+
+-- ─── Track triggers (factory defaults — notes on channel 1) ───────────
+-- Each `bind p3-N` triggers track N. Pattern tokens fire the trigger note;
+-- ~ silences. 200ms duration matches Laplace defaults (long enough for the
+-- sample to start cleanly, short enough to avoid overlap at common BPMs).
+bind p3-1                  midi-note patterning 1 60 100 200
+bind p3-2                  midi-note patterning 1 62 100 200
+bind p3-3                  midi-note patterning 1 64 100 200
+bind p3-4                  midi-note patterning 1 65 100 200
+bind p3-5                  midi-note patterning 1 67 100 200
+bind p3-6                  midi-note patterning 1 69 100 200
+bind p3-7                  midi-note patterning 1 71 100 200
+bind p3-8                  midi-note patterning 1 72 100 200
+
+-- ─── Track 1 ──────────────────────────────────────────────────────────
+bind p3-1-volume           midi-cc patterning 1 7
+bind p3-1-pan              midi-cc patterning 1 10
+bind p3-1-coarse           midi-cc patterning 1 14
+bind p3-1-fine             midi-cc patterning 1 15
+bind p3-1-choke            midi-cc patterning 1 16
+bind p3-1-resonance        midi-cc patterning 1 71
+bind p3-1-attack           midi-cc patterning 1 73
+bind p3-1-cutoff           midi-cc patterning 1 74
+bind p3-1-decay            midi-cc patterning 1 75
+bind p3-1-reverb           midi-cc patterning 1 91
+bind p3-1-delay            midi-cc patterning 1 93
+
+-- ─── Track 2 ──────────────────────────────────────────────────────────
+bind p3-2-volume           midi-cc patterning 2 7
+bind p3-2-pan              midi-cc patterning 2 10
+bind p3-2-coarse           midi-cc patterning 2 14
+bind p3-2-fine             midi-cc patterning 2 15
+bind p3-2-choke            midi-cc patterning 2 16
+bind p3-2-resonance        midi-cc patterning 2 71
+bind p3-2-attack           midi-cc patterning 2 73
+bind p3-2-cutoff           midi-cc patterning 2 74
+bind p3-2-decay            midi-cc patterning 2 75
+bind p3-2-reverb           midi-cc patterning 2 91
+bind p3-2-delay            midi-cc patterning 2 93
+
+-- ─── Track 3 ──────────────────────────────────────────────────────────
+bind p3-3-volume           midi-cc patterning 3 7
+bind p3-3-pan              midi-cc patterning 3 10
+bind p3-3-coarse           midi-cc patterning 3 14
+bind p3-3-fine             midi-cc patterning 3 15
+bind p3-3-choke            midi-cc patterning 3 16
+bind p3-3-resonance        midi-cc patterning 3 71
+bind p3-3-attack           midi-cc patterning 3 73
+bind p3-3-cutoff           midi-cc patterning 3 74
+bind p3-3-decay            midi-cc patterning 3 75
+bind p3-3-reverb           midi-cc patterning 3 91
+bind p3-3-delay            midi-cc patterning 3 93
+
+-- ─── Track 4 ──────────────────────────────────────────────────────────
+bind p3-4-volume           midi-cc patterning 4 7
+bind p3-4-pan              midi-cc patterning 4 10
+bind p3-4-coarse           midi-cc patterning 4 14
+bind p3-4-fine             midi-cc patterning 4 15
+bind p3-4-choke            midi-cc patterning 4 16
+bind p3-4-resonance        midi-cc patterning 4 71
+bind p3-4-attack           midi-cc patterning 4 73
+bind p3-4-cutoff           midi-cc patterning 4 74
+bind p3-4-decay            midi-cc patterning 4 75
+bind p3-4-reverb           midi-cc patterning 4 91
+bind p3-4-delay            midi-cc patterning 4 93
+
+-- ─── Track 5 ──────────────────────────────────────────────────────────
+bind p3-5-volume           midi-cc patterning 5 7
+bind p3-5-pan              midi-cc patterning 5 10
+bind p3-5-coarse           midi-cc patterning 5 14
+bind p3-5-fine             midi-cc patterning 5 15
+bind p3-5-choke            midi-cc patterning 5 16
+bind p3-5-resonance        midi-cc patterning 5 71
+bind p3-5-attack           midi-cc patterning 5 73
+bind p3-5-cutoff           midi-cc patterning 5 74
+bind p3-5-decay            midi-cc patterning 5 75
+bind p3-5-reverb           midi-cc patterning 5 91
+bind p3-5-delay            midi-cc patterning 5 93
+
+-- ─── Track 6 ──────────────────────────────────────────────────────────
+bind p3-6-volume           midi-cc patterning 6 7
+bind p3-6-pan              midi-cc patterning 6 10
+bind p3-6-coarse           midi-cc patterning 6 14
+bind p3-6-fine             midi-cc patterning 6 15
+bind p3-6-choke            midi-cc patterning 6 16
+bind p3-6-resonance        midi-cc patterning 6 71
+bind p3-6-attack           midi-cc patterning 6 73
+bind p3-6-cutoff           midi-cc patterning 6 74
+bind p3-6-decay            midi-cc patterning 6 75
+bind p3-6-reverb           midi-cc patterning 6 91
+bind p3-6-delay            midi-cc patterning 6 93
+
+-- ─── Track 7 ──────────────────────────────────────────────────────────
+bind p3-7-volume           midi-cc patterning 7 7
+bind p3-7-pan              midi-cc patterning 7 10
+bind p3-7-coarse           midi-cc patterning 7 14
+bind p3-7-fine             midi-cc patterning 7 15
+bind p3-7-choke            midi-cc patterning 7 16
+bind p3-7-resonance        midi-cc patterning 7 71
+bind p3-7-attack           midi-cc patterning 7 73
+bind p3-7-cutoff           midi-cc patterning 7 74
+bind p3-7-decay            midi-cc patterning 7 75
+bind p3-7-reverb           midi-cc patterning 7 91
+bind p3-7-delay            midi-cc patterning 7 93
+
+-- ─── Track 8 ──────────────────────────────────────────────────────────
+bind p3-8-volume           midi-cc patterning 8 7
+bind p3-8-pan              midi-cc patterning 8 10
+bind p3-8-coarse           midi-cc patterning 8 14
+bind p3-8-fine             midi-cc patterning 8 15
+bind p3-8-choke            midi-cc patterning 8 16
+bind p3-8-resonance        midi-cc patterning 8 71
+bind p3-8-attack           midi-cc patterning 8 73
+bind p3-8-cutoff           midi-cc patterning 8 74
+bind p3-8-decay            midi-cc patterning 8 75
+bind p3-8-reverb           midi-cc patterning 8 91
+bind p3-8-delay            midi-cc patterning 8 93
+
+-- ─── Master ───────────────────────────────────────────────────────────
+bind p3-master-volume      midi-cc patterning 16 7
