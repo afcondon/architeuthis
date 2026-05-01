@@ -22,10 +22,13 @@
 -- channel-per-track + notes 60–72 vocabulary as patterning3.tidal will
 -- light up.
 
--- lat 50: calibrated 2026-05-01. Full chain + measurement record in
--- docs/calibration-log.md. The number is only valid for the chain
--- documented there — change any link (audio interface, host app,
--- buffer size, plugin) and the calibration must be redone.
+-- lat 50 = aum-au-path
+-- See docs/calibration-components.md for the canonical component
+-- definition, and docs/calibration-log.md for the measurement record.
+-- Hypothesis (untested): the same component value applies to any AU
+-- instrument hosted in AUM and reached via A4C USB MIDI — Laplace,
+-- Patterning 3 AUv3, etc. Validate by re-measuring with a different AU
+-- before assuming.
 midi-device ipad-patterning "AUDIO4c USB2" lat 50
 
 -- ─── Track triggers (iPad-Patterning) ─────────────────────────────────

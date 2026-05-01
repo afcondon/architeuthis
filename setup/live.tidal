@@ -17,11 +17,9 @@
 -- generic note-fire on ch 2, mirroring the conventions used in
 -- patterning3.tidal / fd.tidal so existing patterns transfer.
 
--- lat 30: calibrated 2026-05-01 against Live's internal MIDI clip
--- (cross-correlation peak +29.9 ms, std jitter 1.67 ms). The +30 ms
--- offset is the sum of Tidal's lookahead, CoreMIDI scheduling, and
--- Live's MIDI-input quantization to the next audio buffer; lat 30
--- compensates back to zero phase against Live's internal clips.
+-- lat 30 = live-drum-rack
+-- See docs/calibration-components.md for the canonical component
+-- definition, and docs/calibration-log.md for the original measurement.
 midi-device live "IAC Driver Tidal" lat 30
 
 -- ─── Drum Rack 1 (channel 1, GM drum notes) ───────────────────────────

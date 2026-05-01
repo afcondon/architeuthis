@@ -23,15 +23,41 @@ fh2-gate 1 66 11
 fh2-gate 2 67 12
 fh2-gate 3 68 13
 
+-- FH-2 latency baseline probe: MCV slot 4 → FHX-8GT output 5 on ch 14.
+-- Patch FHX-8GT output 5 directly into a free ES-9 input and record
+-- against `live-tick` to measure the bare FH-2 trigger path
+-- (MIDI dispatch + FH-2 processing + ES-9 input). Subtract this
+-- baseline from any module's full-chain measurement to derive the
+-- module's intrinsic audio-engine latency. See docs/calibration-log.md
+-- for the procedure.
+fh2-gate 4 69 14
+
+-- "fh2" is the bare physical port — used for the baseline probe and
+-- for any future binding where we don't want module-specific
+-- compensation applied. lat 0 means "schedule MIDI exactly when Tidal
+-- says to" — the recording will then capture whatever the actual
+-- end-to-end latency is.
 midi-device fh2 "FH-2"
+
+-- "fh2-rample" is the same physical port, but with the lat compensation
+-- for Rample's full chain pre-applied. Any binding that drives Rample
+-- via FH-2 should target this alias.
+--   lat 61 = fh2-trigger-baseline (28) + rample-audio-engine (33)
+-- See docs/calibration-components.md.
+midi-device fh2-rample "FH-2" lat 61
 
 -- Trigger pattern lanes (parallel to qd1..qd4): short notes on channels
 -- 10-13. Note value is irrelevant — the FH-2 MCV is gate-mode and fires
--- on any note on its channel.
-bind r1 midi-note fh2 10 60 100 50
-bind r2 midi-note fh2 11 60 100 50
-bind r3 midi-note fh2 12 60 100 50
-bind r4 midi-note fh2 13 60 100 50
+-- on any note on its channel. These use fh2-rample so the timing
+-- aligns with Live's grid.
+bind r1 midi-note fh2-rample 10 60 100 50
+bind r2 midi-note fh2-rample 11 60 100 50
+bind r3 midi-note fh2-rample 12 60 100 50
+bind r4 midi-note fh2-rample 13 60 100 50
+
+-- Baseline calibration probe — fires the bare gate (no module attached)
+-- via fh2 (lat 0) so the recording shows the raw FH-2 trigger path.
+bind fh2-tick midi-note fh2 14 60 100 50
 
 midi-device rample "AUDIO4c DIN"
 
