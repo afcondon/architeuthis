@@ -21,7 +21,16 @@ startClient() ->
 scheduleNoteAt(Socket, PortName, Channel, Note, Velocity, DurationMs, UnixUsAt) ->
     fun() ->
         Packet = encode_note_at(PortName, Channel, Note, Velocity, DurationMs, UnixUsAt),
-        gen_udp:send(Socket, ?LINK_SPIKE_HOST, ?LINK_SPIKE_PORT, Packet),
+        %% gen_udp:send result is checked even though we don't propagate
+        %% it — a `closed` error tells us the socket has died (e.g. owning
+        %% process exited) and would otherwise be silent. tidal_log:err
+        %% always prints regardless of log level so this surfaces fast.
+        case gen_udp:send(Socket, ?LINK_SPIKE_HOST, ?LINK_SPIKE_PORT, Packet) of
+            ok -> ok;
+            {error, Reason} ->
+                tidal_log:err("MIDIBridge.scheduleNoteAt: gen_udp:send failed: ~p~n",
+                              [Reason])
+        end,
         unit
     end.
 
@@ -29,7 +38,12 @@ scheduleNoteAt(Socket, PortName, Channel, Note, Velocity, DurationMs, UnixUsAt) 
 scheduleCCAt(Socket, PortName, Channel, CC, Value, UnixUsAt) ->
     fun() ->
         Packet = encode_cc_at(PortName, Channel, CC, Value, UnixUsAt),
-        gen_udp:send(Socket, ?LINK_SPIKE_HOST, ?LINK_SPIKE_PORT, Packet),
+        case gen_udp:send(Socket, ?LINK_SPIKE_HOST, ?LINK_SPIKE_PORT, Packet) of
+            ok -> ok;
+            {error, Reason} ->
+                tidal_log:err("MIDIBridge.scheduleCCAt: gen_udp:send failed: ~p~n",
+                              [Reason])
+        end,
         unit
     end.
 

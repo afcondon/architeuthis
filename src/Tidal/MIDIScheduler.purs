@@ -272,18 +272,27 @@ parseTrack { pattern: patStr, channel } =
     Left _ -> Nothing
 
 -- | Start MIDI scheduler
+-- |
+-- | NOTE: The bridgeClient and oscClient sockets MUST be opened inside
+-- | the spawned scheduler process, not in the calling Main process.
+-- | Erlang ports (gen_udp sockets) are linked to their owning process
+-- | and close when that process exits. If we opened them out here, the
+-- | Main process exiting (after its `sleep` in Main.purs) would close
+-- | the sockets while the scheduler kept running with a stale handle —
+-- | manifested as `gen_udp:send FAILED: closed` after the sleep
+-- | duration.
 startMIDIScheduler :: MIDISchedulerConfig -> String -> Effect (Process Msg)
 startMIDIScheduler config patternStr = do
-  bridgeClient <- MIDIBridge.startClient
-
-  -- Initialize OSC client if gate output is enabled
-  oscClient <- if config.gate.enabled
-    then do
-      client <- OSC.startClient { host: config.gate.oscHost, port: config.gate.oscPort }
-      pure (Just client)
-    else pure Nothing
-
   spawn do
+    bridgeClient <- liftEffect MIDIBridge.startClient
+
+    oscClient <- liftEffect $
+      if config.gate.enabled
+        then do
+          client <- OSC.startClient { host: config.gate.oscHost, port: config.gate.oscPort }
+          pure (Just client)
+        else pure Nothing
+
     startTime <- liftEffect currentTimeMs
 
     -- Initialize with a single gate track using default channel
