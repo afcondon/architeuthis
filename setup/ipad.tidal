@@ -1,0 +1,42 @@
+-- iPad apps via Audio4c USB MIDI.
+--
+-- Naming asymmetry on the Audio4c USB MIDI link:
+--   Mac-side port name:  "AUDIO4c USB2"   (space, digit 2)
+--   iPad-side source:    "AUDIO4c-USB1"   (hyphen, digit 1)
+-- These describe the SAME physical link — the host and device ends just
+-- name it differently. Mappings authored on the iPad side reference the
+-- iPad-side string (via Patterning's MIDI Learn capture); the Mac-side
+-- string is what we send to here, since link-spike opens CoreMIDI
+-- destinations by their Mac-visible names.
+--
+-- iPad-Patterning, when run as an AU plugin inside AUM, sees AUM-routed
+-- MIDI as midiSource = "AU HOST INPUT" (all caps, spaces). The
+-- corresponding iPad-side .patterningMIDIMapping must use that exact
+-- string. The Mac-side equivalent uses "Patterning 3" (Patterning's own
+-- virtual MIDI port). Cross-platform mapping migration is a sed of
+-- "Patterning 3" → "AU HOST INPUT".
+--
+-- Currently only Track 1 Trigger is learned on iPad. Once the full
+-- mapping is migrated (script: copy PurerlTidal.patterningMIDIMapping,
+-- substitute the midiSource strings, install on iPad), the same
+-- channel-per-track + notes 60–72 vocabulary as patterning3.tidal will
+-- light up.
+
+-- lat 50: calibrated 2026-05-01. Full chain + measurement record in
+-- docs/calibration-log.md. The number is only valid for the chain
+-- documented there — change any link (audio interface, host app,
+-- buffer size, plugin) and the calibration must be redone.
+midi-device ipad-patterning "AUDIO4c USB2" lat 50
+
+-- ─── Track triggers (iPad-Patterning) ─────────────────────────────────
+-- Calibration anchor: note 60 ch 1 → Track 1 Trigger, learned 2026-05-01.
+-- Other tracks pending full mapping migration; uncomment as the iPad
+-- mapping grows.
+bind ipad-p3-1 midi-note ipad-patterning 1 60 100 200
+-- bind ipad-p3-2 midi-note ipad-patterning 1 62 100 200
+-- bind ipad-p3-3 midi-note ipad-patterning 1 64 100 200
+-- bind ipad-p3-4 midi-note ipad-patterning 1 65 100 200
+-- bind ipad-p3-5 midi-note ipad-patterning 1 67 100 200
+-- bind ipad-p3-6 midi-note ipad-patterning 1 69 100 200
+-- bind ipad-p3-7 midi-note ipad-patterning 1 71 100 200
+-- bind ipad-p3-8 midi-note ipad-patterning 1 72 100 200
