@@ -38,7 +38,9 @@ import Erl.Process (Process, ProcessM, spawn, receive)
 import Erl.Process.Raw as Raw
 import Tidal.Eval.Interpret (tpatToPattern)
 import Tidal.Binding as Binding
-import Tidal.MIDI (MIDIClient, MIDIConfig, startClient, scheduleDrumOnChannel, scheduleNoteOnDevice, scheduleCCOnDevice)
+import Tidal.MIDI (MIDIConfig)
+import Tidal.MIDIBridge (BridgeClient, scheduleNoteAt, scheduleCCAt)
+import Tidal.MIDIBridge as MIDIBridge
 import Tidal.LinkAnchor as LinkAnchor
 import Tidal.OSC as OSC
 import Tidal.Transform (Transform(..), applyTransforms)
@@ -215,7 +217,7 @@ type MIDISchedulerState =
   , startTime :: Milliseconds
   , nextCycle :: R.Rational
   , tracks :: Array ParsedTrack  -- Multiple tracks, each with own channel
-  , midiClient :: MIDIClient
+  , bridgeClient :: BridgeClient        -- UDP socket to link-spike's MIDI dispatcher
   , oscClient :: Maybe OSC.OSCClient  -- For gate output (if enabled)
   , lastTrigger :: R.Rational  -- Avoid double-triggering (global for simplicity)
   , bindings :: Binding.BindingRegistry  -- Named-action registry (kick, plaits, …)
@@ -272,7 +274,7 @@ parseTrack { pattern: patStr, channel } =
 -- | Start MIDI scheduler
 startMIDIScheduler :: MIDISchedulerConfig -> String -> Effect (Process Msg)
 startMIDIScheduler config patternStr = do
-  midiClient <- startClient config.midi
+  bridgeClient <- MIDIBridge.startClient
 
   -- Initialize OSC client if gate output is enabled
   oscClient <- if config.gate.enabled
@@ -294,7 +296,7 @@ startMIDIScheduler config patternStr = do
       , startTime
       , nextCycle: zero
       , tracks: initialTrack
-      , midiClient
+      , bridgeClient
       , oscClient
       , lastTrigger: R.fromInt (-1)
       , bindings: Binding.defaultRegistry
@@ -334,6 +336,11 @@ midiSchedulerLoop stateRef = do
       let cycleDurationMs = clock.cycleDurationMs
       let elapsedMs = clock.elapsedMs
 
+      -- Capture wall-clock once per tick. Each scheduled event fires at
+      -- `nowUnixUs + delayMs * 1000` — link-spike's CoreMIDI dispatcher
+      -- consumes Unix microseconds, mirroring the anchor wire format.
+      nowUnixUs <- liftEffect LinkAnchor.nowUnixUs
+
       let currentCycle = elapsedMs / cycleDurationMs
       let lookAheadCycles = state.config.lookAhead / cycleDurationMs
       let endCycle = currentCycle + lookAheadCycles
@@ -369,6 +376,9 @@ midiSchedulerLoop stateRef = do
               let delayMs = eventTimeMs - elapsedMs
               let delayInt = max 0 (Int.floor delayMs)
               let delayClamped = max 0.0 delayMs
+              -- Absolute Unix-microsecond fire time for link-spike's
+              -- CoreMIDI dispatcher.
+              let unixUsAt = nowUnixUs + delayClamped * 1000.0
 
               case track of
                 GateTrack g ->
@@ -376,7 +386,7 @@ midiSchedulerLoop stateRef = do
                     let note = sampleToNote state.config.noteMap token
                     when (note > 0) do
                       liftEffect $ Log.debug $ "♪ " <> token <> " → ch" <> show g.channel <> " note " <> show note <> " in " <> show delayInt <> "ms"
-                      liftEffect $ scheduleDrumOnChannel state.midiClient g.channel note state.config.midi.defaultVelocity state.config.noteDuration delayInt
+                      liftEffect $ scheduleNoteAt state.bridgeClient state.config.midi.device g.channel note state.config.midi.defaultVelocity state.config.noteDuration unixUsAt
                       when state.config.gate.enabled do
                         case state.oscClient of
                           Just osc -> do
@@ -475,9 +485,10 @@ midiSchedulerLoop stateRef = do
                             -- Latency compensation: emit earlier by the
                             -- device's reported latency so this destination
                             -- arrives in unison with faster ones.
-                            let adjustedDelay = max 0 (Int.floor (delayClamped - dev.latencyMs))
-                            liftEffect $ Log.debug $ "  [" <> b.name <> "] midi " <> dev.name <> " ch" <> show m.channel <> " note " <> show note <> " (dur " <> show m.durationMs <> "ms) in " <> show adjustedDelay <> "ms"
-                            liftEffect $ scheduleNoteOnDevice dev.name m.channel note m.velocity m.durationMs adjustedDelay
+                            let adjustedDelayMs = max 0.0 (delayClamped - dev.latencyMs)
+                            let adjustedUnixUs = nowUnixUs + adjustedDelayMs * 1000.0
+                            liftEffect $ Log.debug $ "  [" <> b.name <> "] midi " <> dev.name <> " ch" <> show m.channel <> " note " <> show note <> " (dur " <> show m.durationMs <> "ms) in " <> show (Int.floor adjustedDelayMs) <> "ms"
+                            liftEffect $ scheduleNoteAt state.bridgeClient dev.name m.channel note m.velocity m.durationMs adjustedUnixUs
                     Binding.MidiCC m ->
                       case Number.fromString token of
                         Nothing -> pure unit  -- ~ rest or non-numeric → skip
@@ -491,9 +502,10 @@ midiSchedulerLoop stateRef = do
                               -- truncated by sendmidi anyway, but explicit
                               -- clamp gives predictable behaviour.
                               let value7bit = clamp7bit (raw * 127.0)
-                              let adjustedDelay = max 0 (Int.floor (delayClamped - dev.latencyMs))
+                              let adjustedDelayMs = max 0.0 (delayClamped - dev.latencyMs)
+                              let adjustedUnixUs = nowUnixUs + adjustedDelayMs * 1000.0
                               liftEffect $ Log.debug $ "◇ [" <> b.name <> "] midi " <> dev.name <> " ch" <> show m.channel <> " cc" <> show m.cc <> " = " <> show value7bit
-                              liftEffect $ scheduleCCOnDevice dev.name m.channel m.cc value7bit adjustedDelay
+                              liftEffect $ scheduleCCAt state.bridgeClient dev.name m.channel m.cc value7bit adjustedUnixUs
 
                 Fh2TriggerTrack f ->
                   -- Look up the voice's MIDI channel. If unregistered (user
@@ -516,15 +528,13 @@ midiSchedulerLoop stateRef = do
                         -- changing the verb shape.
                         let dev = fromMaybe { name: "FH-2", latencyMs: 0.0 }
                                     (Map.lookup "fh2" state.midiDevices)
-                        let adjustedDelay = max 0 (Int.floor (delayClamped - dev.latencyMs))
-                        -- Note duration is 600ms — long enough for the FH-2's
-                        -- envelope to play attack→decay→sustain visibly before
-                        -- the note-off triggers release. Short notes (e.g. the
-                        -- 100ms used by the gate path) make any envelope with
-                        -- non-trivial decay or release feel "stuck high then
-                        -- drop". Future polish: parameterise per-track.
-                        liftEffect $ Log.debug $ "♪ fh2-trigger v" <> show f.voice <> " → " <> dev.name <> " ch" <> show channel <> " note " <> show note <> " in " <> show adjustedDelay <> "ms"
-                        liftEffect $ scheduleNoteOnDevice dev.name channel note 100 200 adjustedDelay
+                        let adjustedDelayMs = max 0.0 (delayClamped - dev.latencyMs)
+                        let adjustedUnixUs = nowUnixUs + adjustedDelayMs * 1000.0
+                        -- Note duration is 200ms — short enough for any envelope
+                        -- shape; FH-2 envelopes restart on each note-on so the
+                        -- envelope plays in full regardless of duration.
+                        liftEffect $ Log.debug $ "♪ fh2-trigger v" <> show f.voice <> " → " <> dev.name <> " ch" <> show channel <> " note " <> show note <> " in " <> show (Int.floor adjustedDelayMs) <> "ms"
+                        liftEffect $ scheduleNoteAt state.bridgeClient dev.name channel note 100 200 adjustedUnixUs
 
       liftEffect $ Ref.modify_ (_ { nextCycle = toCycle }) stateRef
 
@@ -751,13 +761,17 @@ midiSchedulerLoop stateRef = do
               ccD = ccA + 1
               ccS = ccA + 2
               ccR = ccA + 3
+          -- Fire all four CCs immediately. nowUnixUs is the same instant
+          -- for all four — link-spike will dispatch them on the same
+          -- audio frame.
+          nowUnixUs <- liftEffect LinkAnchor.nowUnixUs
           liftEffect $ log $ "fh2-shape v" <> show voice <> " ch" <> show channel
             <> " CCs " <> show ccA <> "-" <> show ccR
             <> ": A=" <> show a <> " D=" <> show d <> " S=" <> show s <> " R=" <> show r
-          liftEffect $ scheduleCCOnDevice dev.name channel ccA (clamp a) 0
-          liftEffect $ scheduleCCOnDevice dev.name channel ccD (clamp d) 0
-          liftEffect $ scheduleCCOnDevice dev.name channel ccS (clamp s) 0
-          liftEffect $ scheduleCCOnDevice dev.name channel ccR (clamp r) 0
+          liftEffect $ scheduleCCAt state.bridgeClient dev.name channel ccA (clamp a) nowUnixUs
+          liftEffect $ scheduleCCAt state.bridgeClient dev.name channel ccD (clamp d) nowUnixUs
+          liftEffect $ scheduleCCAt state.bridgeClient dev.name channel ccS (clamp s) nowUnixUs
+          liftEffect $ scheduleCCAt state.bridgeClient dev.name channel ccR (clamp r) nowUnixUs
       midiSchedulerLoop stateRef
 
     Stop -> do
