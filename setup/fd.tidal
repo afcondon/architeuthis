@@ -1,0 +1,143 @@
+-- Future Drummer (Lumbeat) — Mac Catalyst drum machine + groove generator.
+-- Channel 10.
+--
+-- ⚠ STRUCTURAL LIMITATIONS — FD is a groove generator, not a triggerable
+-- voice bank. After empirical testing 2026-04-30:
+--   1. Any incoming MIDI note starts FD's internal sequencer playing.
+--      There is no "pure trigger" / silent mode. Sending Tidal patterns
+--      to FD's drum voices means FD also auto-plays its own groove
+--      underneath whatever you send.
+--   2. Fills are uncancellable. Even an empty pattern (all rests in the
+--      LivePad grid) still emits fills at the configured frequency.
+--   3. Implication: FD is best used as a *Link-synced audio source* —
+--      run it as a Link peer, record its output into Ableton, slice as
+--      samples. Don't drive its drum voices from Tidal expecting clean
+--      results. The bindings below are kept for completeness and for
+--      cases where FD's own groove + Tidal-driven hits are desired
+--      simultaneously (e.g. Tidal triggers crash hits that punctuate
+--      FD's groove).
+--
+-- ⚠ NOTE OFFSET — Lumbeat apps trigger ONE OCTAVE ABOVE the value shown
+-- in the app's UI / saved-map data. UI labels "C1" but actually
+-- responds to MIDI 48 (= C2). Verified empirically 2026-04-30 against
+-- the kick voice (UI: C1=36; trigger: 48). Same offset confirmed for
+-- other Lumbeat apps in:
+-- https://forum.loopypro.com/discussion/56476/lumbeat-midi-in-control-workaround
+-- All note values below are RAW MIDI VALUES = (UI value) + 12.
+--
+-- Tidal sends MIDI to "IAC Driver Tidal" — an IAC bus the user
+-- configured specifically for Tidal output. FD listens for it
+-- (verified working). The bus is shared across apps but channel-
+-- segmentation (FD on ch 10, Patterning on its own virtual port)
+-- keeps cross-talk impossible.
+--
+-- Channel: 10 (GM-drum convention, configured in FD's UI).
+--
+-- FD's NOTES MIDI MAP architecture: each drum voice has 3 explicit
+-- (note, velocity) input variants — "soft" / "medium" / "accent" —
+-- with variants distinguished by *both* note and velocity. FD does NOT
+-- interpret velocity continuously; it matches (note, vel) pair to
+-- variant. Articulation is therefore discrete: use separate bindings
+-- (e.g. `fd-kick-s` vs `fd-kick-acc`) rather than a velocity stream.
+-- Continuous-dynamics control comes via CC 7 (master volume).
+--
+-- Mapping origin: extracted from FD's saved state, two places:
+--   1. Library/Containers/<UUID>/Data/Library/Preferences/
+--        com.lumbeat.FutureDrummer.plist
+--      — `midiNotes_FDNotesMapForClaude` (6 voices × 4 alternates).
+--      — `midiVels_FDNotesMapForClaude` for velocities.
+--   2. Library/Containers/<UUID>/Data/Documents/Live.sqlite
+--      — table `ZMIDICMAP`, row "FutureDrummerMidiMapForClaude":
+--        ZMIDICONTROLSMAP for song controls.
+
+midi-device fd "IAC Driver Tidal"
+
+-- ─── Drum voice triggers (channel 10, RAW notes = UI + 12) ────────────
+
+-- Hi-Hat: UI Gb1 → 54; accent UI Bb1 (Open HH) → 58.
+bind fd-hh-s             midi-note fd 10 54 60 200
+bind fd-hh               midi-note fd 10 54 127 200
+bind fd-hh-acc           midi-note fd 10 58 100 200
+
+-- Snare: UI D1 → 50; medium UI E1 (Electric Snare) → 52.
+bind fd-sn-s             midi-note fd 10 50 60 200
+bind fd-sn               midi-note fd 10 52 127 200
+bind fd-sn-acc           midi-note fd 10 50 100 200
+
+-- Kick: UI C1 → 48; accent UI B0 (Acoustic BD) → 47.
+bind fd-kick-s           midi-note fd 10 48 60 200
+bind fd-kick             midi-note fd 10 48 127 200
+bind fd-kick-acc         midi-note fd 10 47 100 200
+
+-- Tom 1: UI B1 → 59 (all variants same note, distinguished by velocity).
+bind fd-tom1-s           midi-note fd 10 59 60 200
+bind fd-tom1             midi-note fd 10 59 127 200
+bind fd-tom1-acc         midi-note fd 10 59 100 200
+
+-- Tom 2: UI G1 → 55 (all variants same note).
+bind fd-tom2-s           midi-note fd 10 55 60 200
+bind fd-tom2             midi-note fd 10 55 127 200
+bind fd-tom2-acc         midi-note fd 10 55 100 200
+
+-- Crash Cymbals: UI A2 → 69; medium UI Db2 → 61.
+bind fd-crash-s          midi-note fd 10 69 100 200
+bind fd-crash            midi-note fd 10 61 100 200
+bind fd-crash-acc        midi-note fd 10 69 100 200
+
+-- ─── Common GM-drum aliases for hand-coded patterns ───────────────────
+bind fd-bd               midi-note fd 10 48 127 200
+bind fd-cy               midi-note fd 10 61 100 200
+
+-- ─── Song / arrangement controls (NoteOn triggers, ch 10) ─────────────
+-- Decoded from the saved Controls map. UI labels per FD's UI (Yamaha
+-- convention). All values below are RAW = UI value + 12 octave offset.
+-- PLAY: UI G2 → 67.
+bind fd-play             midi-note fd 10 67 100 200
+-- LIVEPAD: UI C1 → 48 (collides with kick — only meaningful when FD
+-- is in a non-trigger mode).
+bind fd-livepad          midi-note fd 10 48 100 200
+-- FILL: UI C2 → 60.
+bind fd-fill             midi-note fd 10 60 100 200
+-- FILL ▶: UI A2 → 69.
+bind fd-fill-arrow       midi-note fd 10 69 100 200
+-- FILL + TOGGLE H/R: UI D2 → 62.
+bind fd-fill-toggle-hr   midi-note fd 10 62 100 200
+-- TOGGLE H/R: UI C#2 → 61.
+bind fd-toggle-hr        midi-note fd 10 61 100 200
+-- FILL ON LIVEPAD CHANGE: UI E2 → 64.
+bind fd-fill-on-livepad  midi-note fd 10 64 100 200
+-- LOAD LIVEPAD: UI C3 → 72.
+bind fd-load-livepad     midi-note fd 10 72 100 200
+-- PREVIOUS LIVEPAD: UI C#3 → 73.
+bind fd-prev-livepad     midi-note fd 10 73 100 200
+-- NEXT LIVEPAD: UI D3 → 74.
+bind fd-next-livepad     midi-note fd 10 74 100 200
+-- SELECT LIVEPAD SET: UI D#3 → 75.
+bind fd-select-livepad-set midi-note fd 10 75 100 200
+-- TAP TEMPO: UI Bb2 → 70.
+bind fd-tap-tempo        midi-note fd 10 70 100 200
+-- CRASH CYMBAL trigger (distinct from voice): UI B2 → 71.
+bind fd-crash-cymbal     midi-note fd 10 71 100 200
+-- NEXT SONG: UI G#2 → 68.
+bind fd-next-song        midi-note fd 10 68 100 200
+-- PREVIOUS SONG: UI F#2 → 66.
+bind fd-prev-song        midi-note fd 10 66 100 200
+
+-- ─── Continuous controls (CCs on ch 10) ───────────────────────────────
+-- CCs do not exhibit the +12 offset (per the forum: "CC and PC
+-- commands work properly"). Use these for continuous-dynamics control,
+-- since note velocity drives articulation-mode rather than amplitude.
+-- Mod wheel = JAM (intensity-like).
+bind fd-jam              midi-cc fd 10 1
+-- Breath = INTENSITY.
+bind fd-intensity        midi-cc fd 10 2
+-- GM master volume (= continuous dynamics).
+bind fd-volume           midi-cc fd 10 7
+-- Expression = SWING amount.
+bind fd-swing            midi-cc fd 10 11
+-- GM reverb send.
+bind fd-reverb           midi-cc fd 10 91
+-- Bank LSB.
+bind fd-bank             midi-cc fd 10 32
+-- Bank MSB = RHYTHM bank.
+bind fd-rhythm           midi-cc fd 10 0
