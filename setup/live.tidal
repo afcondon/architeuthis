@@ -1,0 +1,49 @@
+-- Ableton Live — MIDI dispatch via "IAC Driver Tidal".
+--
+-- Live is the rig's mixing/recording surface and also hosts Drum
+-- Rack / Impulse / any AU instrument. Tidal sends MIDI via the
+-- shared "IAC Driver Tidal" IAC bus; Live's MIDI track sets that
+-- as its input source and applies a channel filter to pick which
+-- track gets which messages.
+--
+-- Recommended channel layout:
+--   ch 1  — Drum Rack 1   (kick / snare / hat / tom on notes 36..)
+--   ch 2  — Drum Rack 2 / Impulse
+--   ch 3  — bass synth
+--   ch 4  — lead / pad
+--   …etc.  Each Live track filters to a single channel from this bus.
+--
+-- The bindings below give a default GM-drum vocabulary on ch 1 + a
+-- generic note-fire on ch 2, mirroring the conventions used in
+-- patterning3.tidal / fd.tidal so existing patterns transfer.
+
+-- lat 30: calibrated 2026-05-01 against Live's internal MIDI clip
+-- (cross-correlation peak +29.9 ms, std jitter 1.67 ms). The +30 ms
+-- offset is the sum of Tidal's lookahead, CoreMIDI scheduling, and
+-- Live's MIDI-input quantization to the next audio buffer; lat 30
+-- compensates back to zero phase against Live's internal clips.
+midi-device live "IAC Driver Tidal" lat 30
+
+-- ─── Drum Rack 1 (channel 1, GM drum notes) ───────────────────────────
+bind live-bd        midi-note live 1 36 100 200
+bind live-sn        midi-note live 1 38 100 200
+bind live-cp        midi-note live 1 39 100 200
+bind live-hh        midi-note live 1 42 100 200
+bind live-oh        midi-note live 1 46 100 200
+bind live-lt        midi-note live 1 41 100 200
+bind live-mt        midi-note live 1 47 100 200
+bind live-ht        midi-note live 1 50 100 200
+bind live-cy        midi-note live 1 49 100 200
+bind live-rd        midi-note live 1 51 100 200
+
+-- ─── Drum Rack 2 / Impulse (channel 2, parallel layout) ───────────────
+bind live2-bd       midi-note live 2 36 100 200
+bind live2-sn       midi-note live 2 38 100 200
+bind live2-hh       midi-note live 2 42 100 200
+bind live2-cp       midi-note live 2 39 100 200
+
+-- ─── Calibration probe ───────────────────────────────────────────────
+-- Single dedicated note on ch 16 for the internal-vs-external sync test.
+-- Live's calibration track filters to ch 16 so it doesn't conflict with
+-- whatever's loaded on ch 1/2 during normal playing.
+bind live-tick      midi-note live 16 36 100 200

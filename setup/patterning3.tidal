@@ -32,7 +32,13 @@
 -- Choke groups are exposed (CC 16 per channel) so purerl-tidal can sequence
 -- track-cuts-track relationships rhythmically.
 
-midi-device patterning "Patterning 3"
+-- lat 0: calibrated against Patterning's internal sequencer with
+-- the OSC→link-spike→CoreMIDI dispatch path (cross-correlation peak
+-- lag 0.25 ms, std jitter 4.4 ms — the residual jitter is Patterning's
+-- audio buffer, not the dispatch). The previous 30 ms placeholder was
+-- there to compensate for `os:cmd sendmidi` subprocess overhead; with
+-- the new dispatch path no compensation is needed.
+midi-device patterning "Patterning 3" lat 0
 
 -- ─── Track triggers (factory defaults — notes on channel 1) ───────────
 -- Each `bind p3-N` triggers track N. Pattern tokens fire the trigger note;
