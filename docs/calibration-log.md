@@ -145,6 +145,48 @@ Format per entry:
 
 ---
 
+## 2026-05-01 — QuadDrum (`fh2-qd lat 69`)
+
+- **Destination:** `midi-device fh2-qd "FH-2"` in `setup/qd.tidal`
+- **lat:** 69 ms = `fh2-trigger-baseline` (28) + `qd-audio-engine` (41)
+- **Chain:** as `fh2-trigger-baseline`, plus FHX-8GT output → QD voice
+  trigger input → QD voice circuit (analog excitation, VCA) → QD audio
+  out → ES-9 input → Live input
+- **Method:** stereo recording L = `live-tick`, R = QD audio via ES-9
+  input. Pattern fired with both bindings on the same beats; sample on
+  L was a Live drum rack handclap, R was a QD voice with a similar
+  handclap-ish sample for fair onset comparison.
+- **Result (lat 0):** median +69.05 ms, std 7.22 ms, n = 20 (beat 1
+  outlier at +35.96 ms; beats 2-8 dead flat at 69 ms).
+  - source: `Tidal Test Rample QD Laplace Project/Samples/Recorded/3-Audio 0011 [2026-05-01 220109].aif`
+- **Component derived:** `qd-audio-engine = 41 ms`
+- **Notes:** the "dead flat at 69 ms across beats 2-8" pattern is unusual
+  — almost no jitter relative to dispatch. Suggests QD's trigger input
+  has very low input variance (analog comparator with tight threshold).
+
+---
+
+## 2026-05-01 — Plaits (`fh2-plaits lat 38`)
+
+- **Destination:** `midi-device fh2-plaits "FH-2"` in `setup/plaits.tidal`
+- **lat:** 38 ms = `fh2-trigger-baseline` (28) + `plaits-audio-engine` (10)
+- **Chain:** as `fh2-trigger-baseline`, plus FHX-8GT output → Plaits
+  TRIG input → Plaits envelope/excitation generator → macro-oscillator
+  voice → Plaits audio out → ES-9 input → Live input
+- **Method:** stereo recording L = `live-tick`, R = Plaits audio via
+  ES-9 input
+- **Result (lat 0):** median +38.02 ms, mean +38.04 ms, std 6.43 ms,
+  n = 20 (beat 1 outlier at +17.81 ms; beats 4-8 cluster around
+  33-37 ms; beats 2-3 slightly higher at 47, 46 ms — likely onset
+  detection variance on Plaits's percussive setting)
+  - source: `Tidal Test Rample QD Laplace Project/Samples/Recorded/3-Audio 0012 [2026-05-01 220150].aif`
+- **Component derived:** `plaits-audio-engine = 10 ms` — by far the
+  fastest engine measured in the rig, consistent with Plaits being a
+  pure-synthesis voice (no sample lookup, just envelope generator
+  and oscillator).
+
+---
+
 ## Procedure for a new destination
 
 1. Add a `midi-device <name> "<port>" lat 0` line in a setup file.

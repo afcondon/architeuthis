@@ -23,20 +23,15 @@ fh2-gate 1 66 11
 fh2-gate 2 67 12
 fh2-gate 3 68 13
 
--- FH-2 latency baseline probe: MCV slot 4 → FHX-8GT output 5 on ch 14.
--- Patch FHX-8GT output 5 directly into a free ES-9 input and record
--- against `live-tick` to measure the bare FH-2 trigger path
--- (MIDI dispatch + FH-2 processing + ES-9 input). Subtract this
--- baseline from any module's full-chain measurement to derive the
--- module's intrinsic audio-engine latency. See docs/calibration-log.md
--- for the procedure.
-fh2-gate 4 69 14
-
--- "fh2" is the bare physical port — used for the baseline probe and
--- for any future binding where we don't want module-specific
--- compensation applied. lat 0 means "schedule MIDI exactly when Tidal
--- says to" — the recording will then capture whatever the actual
--- end-to-end latency is.
+-- "fh2" is the bare physical port — used for any binding where we don't
+-- want module-specific compensation applied (e.g. baseline measurement
+-- with a module temporarily unpatched). lat 0 means "schedule MIDI
+-- exactly when Tidal says to" — the recording will then capture
+-- whatever the actual end-to-end latency is.
+--
+-- For baseline re-measurement: use any existing binding (e.g. r1) with
+-- the module unplugged from its FHX-8GT output, patched directly into
+-- a free ES-9 input. See docs/calibration-log.md for procedure.
 midi-device fh2 "FH-2"
 
 -- "fh2-rample" is the same physical port, but with the lat compensation
@@ -54,10 +49,6 @@ bind r1 midi-note fh2-rample 10 60 100 50
 bind r2 midi-note fh2-rample 11 60 100 50
 bind r3 midi-note fh2-rample 12 60 100 50
 bind r4 midi-note fh2-rample 13 60 100 50
-
--- Baseline calibration probe — fires the bare gate (no module attached)
--- via fh2 (lat 0) so the recording shows the raw FH-2 trigger path.
-bind fh2-tick midi-note fh2 14 60 100 50
 
 midi-device rample "AUDIO4c DIN"
 

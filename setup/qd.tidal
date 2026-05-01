@@ -21,11 +21,19 @@ fh2-gate 7 72 17
 
 midi-device fh2 "FH-2"
 
--- Trigger pattern lanes: short notes on dedicated channels.
-bind qd1 midi-note fh2 14 60 100 50
-bind qd2 midi-note fh2 15 60 100 50
-bind qd3 midi-note fh2 16 60 100 50
-bind qd4 midi-note fh2 17 60 100 50
+-- "fh2-qd" is the same physical "FH-2" port with QuadDrum's full-chain
+-- lat compensation pre-applied. Use this device for any binding that
+-- drives a QD voice via FH-2 so the timing aligns with Live's grid.
+--   lat 69 = fh2-trigger-baseline (28) + qd-audio-engine (41)
+-- See docs/calibration-components.md.
+midi-device fh2-qd "FH-2" lat 69
+
+-- Trigger pattern lanes: short notes on dedicated channels. Use fh2-qd
+-- so the gate hits Live's grid in phase with other calibrated sources.
+bind qd1 midi-note fh2-qd 14 60 100 50
+bind qd2 midi-note fh2-qd 15 60 100 50
+bind qd3 midi-note fh2-qd 16 60 100 50
+bind qd4 midi-note fh2-qd 17 60 100 50
 
 -- CV pattern lanes: each emits a numeric pattern on its bus.
 -- The destination on the QD module is whatever you've assigned the

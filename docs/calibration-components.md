@@ -25,17 +25,17 @@ that part of the chain.**
 |---|---:|---|---|
 | `fh2-trigger-baseline` | 28 | Tidal MIDI dispatch → CoreMIDI "FH-2" → FH-2 MCV processing → FHX-8GT gate output → ES-9 input ADC → Live input | Bare-gate recording 0008: median 28.6 ms, std 3.25 ms, n=24 |
 | `rample-audio-engine` | 33 | Rample sample-trigger decision + sample lookup + DAC + analog audio out (gate-rising-edge to first audio output) | Rample full-chain (0009) median 61.4 ms minus `fh2-trigger-baseline` |
+| `qd-audio-engine` | 41 | QuadDrum trigger-to-first-audio: voice circuit excitation + analog VCA + analog audio out | QD full-chain (0011) median 69.05 ms minus `fh2-trigger-baseline` |
+| `plaits-audio-engine` | 10 | Plaits gate-to-first-audio: envelope/excitation + macro-oscillator + DAC. Pure synthesis, no sample-lookup phase | Plaits full-chain (0012) median 38.02 ms minus `fh2-trigger-baseline` |
 | `aum-au-path` | 50 | A4C USB-MIDI host→device + iPad CoreMIDI → AUM matrix routing → AU plugin internal MIDI subscription → AU plugin instrument engine + AUM mixbus → A4C analog out → Live input | iPad-Patterning recording 0004 (lat 0): median 50.9 ms, std 4.05 ms, n=20 |
 | `live-drum-rack` | 30 | "IAC Driver Tidal" CoreMIDI port → Live's MIDI input quantization to next audio buffer → Drum Rack pad → Live audio bus | Pre-existing Live calibration (vs Live's own internal clip); peak -0.04 ms at lat 30, std 2.2 ms |
 
 ## Pending components
 
-- **`fh2-qd-audio`** — QuadDrum's intrinsic audio engine; measure
-  separately when QD is on the FH-2 trigger path
-- **`fh2-plaits-audio`** — Plaits's audio engine; same procedure
 - **`es9-silentway-trigger-baseline`** — Tidal → Silent Way encoder →
   ES-9 audio out → ES-5 → ESX-8GT gate; the audio-rate trigger path
-  baseline. Needed for any module triggered via that path.
+  baseline. Needed for any module triggered via that path. Tomorrow's
+  measurement target.
 
 ## Setup-file references
 
@@ -44,6 +44,8 @@ that part of the chain.**
 | `midi-device live "IAC Driver Tidal" lat 30` | `live-drum-rack` |
 | `midi-device ipad-patterning "AUDIO4c USB2" lat 50` | `aum-au-path` |
 | `midi-device fh2-rample "FH-2" lat 61` | `fh2-trigger-baseline` + `rample-audio-engine` |
+| `midi-device fh2-qd "FH-2" lat 69` | `fh2-trigger-baseline` + `qd-audio-engine` |
+| `midi-device fh2-plaits "FH-2" lat 38` | `fh2-trigger-baseline` + `plaits-audio-engine` |
 
 ## Future automation
 

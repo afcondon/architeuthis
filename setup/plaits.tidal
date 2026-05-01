@@ -1,0 +1,32 @@
+-- Mutable Instruments Plaits — macro-oscillator voice module.
+-- Triggered via gate (TRIG input); MODEL/HARMONICS/TIMBRE/MORPH inputs
+-- are CV. No MIDI.
+--
+-- Plaits is a pure synthesis voice — gate triggers
+-- envelope/excitation, oscillator generates sound. Audio path is short:
+-- the calibration measurement gives an intrinsic engine latency of
+-- ~10 ms (vs Rample's 33 ms or QuadDrum's 41 ms), consistent with
+-- Plaits being purely electronic with no sample-lookup phase.
+--
+-- Patching: Plaits has one TRIG input. Whichever FHX-8GT output you
+-- assign to it, the corresponding `fh2-gate` slot/channel must be
+-- configured. The example below uses MCV slot 4 → FHX-8GT output 5
+-- on ch 14, which collides with QD voice 1 in `setup/qd.tidal` — only
+-- load one of qd / plaits at a time, OR wire Plaits to a different
+-- FHX-8GT output and adjust the slot/channel here. (Once you have a
+-- second FHX-8GT or are willing to free a QD voice, this can become a
+-- permanent binding alongside qd.tidal.)
+
+fh2-gate 4 69 14
+
+midi-device fh2 "FH-2"
+
+-- "fh2-plaits" is the same physical "FH-2" port with Plaits's
+-- full-chain lat compensation pre-applied.
+--   lat 38 = fh2-trigger-baseline (28) + plaits-audio-engine (10)
+-- See docs/calibration-components.md.
+midi-device fh2-plaits "FH-2" lat 38
+
+-- Trigger lane. Note value is irrelevant — FH-2 MCV is gate-mode and
+-- fires on any note on its channel.
+bind plaits midi-note fh2-plaits 14 60 100 50
