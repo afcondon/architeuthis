@@ -17,7 +17,7 @@ import Effect.Console (log)
 import Tidal.AST.Types (TPat)
 import Tidal.Eval.Interpret (tpatToPattern)
 import Tidal.Parse.Parser (parseTPat, parseChord)
-import Tidal.Pattern.Core (cat, compress, cosine, every, fast, fastAppend, fastCat, irand, isaw, iter, iter', queryArc, rand, rev, rotL, rotR, saw, segment, sine, slow, square, stack, tri, zoom)
+import Tidal.Pattern.Core (brak, cat, chunk, compress, cosine, every, fast, fastAppend, fastCat, inside, irand, isaw, iter, iter', loopFirst, off, outside, palindrome, ply, queryArc, rand, range, rev, rotL, rotR, saw, segment, sine, slow, square, stack, stutter, superimpose, tri, zoom)
 import Data.Newtype (unwrap)
 import Tidal.Pattern.Types (Arc(..), Event(..), Note, Pattern, arcStart, arcStop, mkNote)
 import Tidal.Scales as Scales
@@ -1159,6 +1159,175 @@ runToussaintTests = do
     ]
 
   log ""
+  log "--- Palindrome ---"
+
+  -- palindrome plays p in cycle 0, rev p in cycle 1
+  testPatternDirect "palindrome (fastCat [a, b]) cycle 0"
+    (palindrome (fastCat [pure "a", pure "b"]))
+    (fromInt 0) one
+    2
+    [ { sample: "a", start: 0.0, stop: 0.5 }
+    , { sample: "b", start: 0.5, stop: 1.0 }
+    ]
+
+  testPatternDirect "palindrome (fastCat [a, b]) cycle 1 (reversed)"
+    (palindrome (fastCat [pure "a", pure "b"]))
+    one (fromInt 2)
+    2
+    [ { sample: "b", start: 1.0, stop: 1.5 }
+    , { sample: "a", start: 1.5, stop: 2.0 }
+    ]
+
+  log ""
+  log "--- Superimpose ---"
+
+  -- superimpose layers p with f p; with f = rev we get 4 events
+  testPatternDirect "superimpose rev (fastCat [a, b])"
+    (superimpose rev (fastCat [pure "a", pure "b"]))
+    (fromInt 0) one
+    4
+    [ { sample: "a", start: 0.0, stop: 0.5 }   -- from p
+    , { sample: "b", start: 0.0, stop: 0.5 }   -- from rev p
+    , { sample: "b", start: 0.5, stop: 1.0 }   -- from p
+    , { sample: "a", start: 0.5, stop: 1.0 }   -- from rev p
+    ]
+
+  log ""
+  log "--- Off ---"
+
+  -- off layers p with rotR t (f p). Original p contributes 2 events; the
+  -- rotated rev p contributes 3 (a wraps in from the previous cycle, then
+  -- b sits in the middle, then a tails in at the end).
+  testPatternDirectCount "off (1/4) rev (fastCat [a, b])"
+    (off (one / fromInt 4) rev (fastCat [pure "a", pure "b"]))
+    (fromInt 0) one
+    5
+
+  log ""
+  log "--- Inside / Outside ---"
+
+  -- inside 2 rev: slow by 2, reverse across the slowed pattern, speed back up.
+  -- For "a b c d" played as fastCat, inside 2 rev gives "b a d c" within
+  -- the original cycle structure (reverses pairs locally).
+  testPatternDirect "inside 2 rev (fastCat [a, b, c, d]) cycle 0"
+    (inside (fromInt 2) rev (fastCat [pure "a", pure "b", pure "c", pure "d"]))
+    (fromInt 0) one
+    4
+    [ { sample: "b", start: 0.0, stop: 0.25 }
+    , { sample: "a", start: 0.25, stop: 0.5 }
+    , { sample: "d", start: 0.5, stop: 0.75 }
+    , { sample: "c", start: 0.75, stop: 1.0 }
+    ]
+
+  -- outside is the dual: speed up by n, transform, slow back down
+  testPatternDirectCount "outside 2 rev (fastCat [a, b])"
+    (outside (fromInt 2) rev (fastCat [pure "a", pure "b"]))
+    (fromInt 0) one
+    2
+
+  log ""
+  log "--- Range ---"
+
+  -- range scales [0,1] to [lo, hi]; sine peaks at 1.0 mid-cycle
+  -- so range 100 200 sine peaks at 200 mid-cycle, dips to 100 at 3/4
+  testOscillator (range 100.0 200.0 sine) "range 100-200 sine at t=0.25" 0.25 0.26 200.0 5.0
+  testOscillator (range 100.0 200.0 sine) "range 100-200 sine at t=0.75" 0.75 0.76 100.0 5.0
+  testOscillator (range (-1.0) 1.0 sine) "range -1..1 sine at t=0.25" 0.25 0.26 1.0 0.05
+  testOscillator (range (-1.0) 1.0 sine) "range -1..1 sine at t=0.75" 0.75 0.76 (-1.0) 0.05
+
+  log ""
+  log "--- Brak ---"
+
+  -- brak leaves cycle 0 alone
+  testPatternDirect "brak (fastCat [a, b]) cycle 0 (unchanged)"
+    (brak (fastCat [pure "a", pure "b"]))
+    (fromInt 0) one
+    2
+    [ { sample: "a", start: 0.0, stop: 0.5 }
+    , { sample: "b", start: 0.5, stop: 1.0 }
+    ]
+
+  -- brak on cycle 1: pattern compressed into [0.25, 0.75) of the cycle
+  testPatternDirectCount "brak (fastCat [a, b]) cycle 1 (broken)"
+    (brak (fastCat [pure "a", pure "b"]))
+    one (fromInt 2)
+    2
+
+  log ""
+  log "--- LoopFirst ---"
+
+  -- loopFirst replays cycle 0 every cycle. Cycle 1 should look like cycle 0
+  -- shifted forward by one cycle.
+  testPatternDirect "loopFirst (cat [a, b]) cycle 0"
+    (loopFirst (cat [pure "a", pure "b"]))
+    (fromInt 0) one
+    1
+    [ { sample: "a", start: 0.0, stop: 1.0 } ]
+
+  testPatternDirect "loopFirst (cat [a, b]) cycle 1 (replays cycle 0)"
+    (loopFirst (cat [pure "a", pure "b"]))
+    one (fromInt 2)
+    1
+    [ { sample: "a", start: 1.0, stop: 2.0 } ]
+
+  log ""
+  log "--- Stutter ---"
+
+  -- stutter 2 (1/4) (pure a): two layered copies offset by 1/4 cycle
+  testPatternDirectCount "stutter 2 (1/4) (pure a)"
+    (stutter 2 (one / fromInt 4) (pure "a"))
+    (fromInt 0) one
+    3   -- one event from i=0 (a@[0,1)), two from i=1 (a@[-3/4,1/4) wraps + a@[1/4, 5/4) clipped)
+
+  -- stutter with 0 returns silence
+  testPatternDirect "stutter 0 (1/4) (fastCat [a, b]) is silent"
+    (stutter 0 (one / fromInt 4) (fastCat [pure "a", pure "b"]))
+    (fromInt 0) one
+    0
+    []
+
+  log ""
+  log "--- Ply ---"
+
+  -- ply 2 (fastCat [a, b]) splits each event into 2 sub-events of same value
+  testPatternDirect "ply 2 (fastCat [a, b])"
+    (ply 2 (fastCat [pure "a", pure "b"]))
+    (fromInt 0) one
+    4
+    [ { sample: "a", start: 0.0, stop: 0.25 }
+    , { sample: "a", start: 0.25, stop: 0.5 }
+    , { sample: "b", start: 0.5, stop: 0.75 }
+    , { sample: "b", start: 0.75, stop: 1.0 }
+    ]
+
+  -- ply 1 is identity
+  testPatternDirect "ply 1 (fastCat [a, b]) is unchanged"
+    (ply 1 (fastCat [pure "a", pure "b"]))
+    (fromInt 0) one
+    2
+    [ { sample: "a", start: 0.0, stop: 0.5 }
+    , { sample: "b", start: 0.5, stop: 1.0 }
+    ]
+
+  log ""
+  log "--- Chunk ---"
+
+  -- chunk 2 rev cycles f-application across slices [0, 1/2) and [1/2, 1).
+  -- Cycle 0: f applied to first half. fastCat [a, b] has a in [0,0.5),
+  -- so rev within [0, 0.5) flips a to ... well, rev reverses across the
+  -- whole cycle, then we keep f's events only in [0, 0.5) and the original
+  -- elsewhere. Just verify event count for now.
+  testPatternDirectCount "chunk 2 rev (fastCat [a, b]) cycle 0"
+    (chunk 2 rev (fastCat [pure "a", pure "b"]))
+    (fromInt 0) one
+    2
+
+  testPatternDirectCount "chunk 2 rev (fastCat [a, b]) cycle 1"
+    (chunk 2 rev (fastCat [pure "a", pure "b"]))
+    one (fromInt 2)
+    2
+
+  log ""
   log "--- Oscillators ---"
 
   -- sine at cycle position 0 = 0.5, at 0.25 = 1.0, at 0.5 = 0.5, at 0.75 = 0.0
@@ -1206,6 +1375,26 @@ type ExpectedNoteEvent =
   , start :: Number
   , stop :: Number
   }
+
+-- | Lighter weight: assert only the event count, not the (sample, start, stop)
+-- | tuples. Useful for combinators where the precise time mapping is
+-- | intricate and the count is the property worth pinning down.
+testPatternDirectCount
+  :: String
+  -> Pattern String
+  -> Rational
+  -> Rational
+  -> Int
+  -> Effect Unit
+testPatternDirectCount desc pat startTime stopTime expectedCount = do
+  let events = queryArc pat startTime stopTime
+  let actualCount = Array.length events
+  if actualCount /= expectedCount then do
+    log $ "  ✗ " <> desc
+    log $ "    Expected " <> show expectedCount <> " events, got " <> show actualCount
+    log $ "    Events: " <> formatEvents events
+  else
+    log $ "  ✓ " <> desc <> ": " <> show actualCount <> " events"
 
 -- | Test a Pattern directly (not through parsing)
 testPatternDirect

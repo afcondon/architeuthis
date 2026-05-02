@@ -34,6 +34,18 @@ module Tidal.Pattern.Core
   , trunc
   , steptake
   , stepdrop
+    -- * Higher-order combinators
+  , palindrome
+  , superimpose
+  , off
+  , inside
+  , outside
+  , range
+  , brak
+  , loopFirst
+  , stutter
+  , ply
+  , chunk
     -- * Oscillators (continuous patterns)
   , sine
   , cosine
@@ -631,6 +643,141 @@ stepdrop n pat
     mapEventTimes f (Analog e) =
       let Arc p = e.part
       in Analog e { part = Arc { start: f p.start, stop: f p.stop } }
+
+-------------------------------------------------------------------------------
+-- Higher-order combinators
+-------------------------------------------------------------------------------
+
+-- | Play a pattern forwards then backwards.
+-- |
+-- | `palindrome p` plays p in cycle 0, then `rev p` in cycle 1, then loops.
+palindrome :: forall a. Pattern a -> Pattern a
+palindrome p = cat [p, rev p]
+
+-- | Layer the original pattern with a transformed copy.
+-- |
+-- | `superimpose rev p` plays p stacked with `rev p`.
+superimpose :: forall a. (Pattern a -> Pattern a) -> Pattern a -> Pattern a
+superimpose f p = stack [p, f p]
+
+-- | Layer the original pattern with a delayed, transformed copy.
+-- |
+-- | `off (1 % 8) (fast 2) p` overlays a sped-up p shifted right by 1/8 cycle.
+off :: forall a. Time -> (Pattern a -> Pattern a) -> Pattern a -> Pattern a
+off t f p = stack [p, rotR t (f p)]
+
+-- | Apply a transform to a pattern slowed by n, then speed back up.
+-- |
+-- | `inside 2 rev p` reverses pairs of cycles instead of single cycles.
+-- | Equivalent to `fast n (f (slow n p))`.
+inside :: forall a. Rational -> (Pattern a -> Pattern a) -> Pattern a -> Pattern a
+inside n f p = fast n (f (slow n p))
+
+-- | Dual of `inside`: apply a transform to a pattern sped up by n, then slow back down.
+outside :: forall a. Rational -> (Pattern a -> Pattern a) -> Pattern a -> Pattern a
+outside n f p = slow n (f (fast n p))
+
+-- | Scale a continuous numeric pattern from [0, 1] to [lo, hi].
+-- |
+-- | `range 100.0 200.0 sine` produces a sine that swings between 100 and 200.
+range :: Number -> Number -> Pattern Number -> Pattern Number
+range lo hi p = (\v -> v * (hi - lo) + lo) <$> p
+
+-- | "Broken beat" — on odd cycles, squeeze the pattern into the middle half
+-- | of the cycle, with silence padding either side. Even cycles play normally.
+brak :: forall a. Pattern a -> Pattern a
+brak = whenMod 2 (\m -> m == 1) (\p -> rotR (one / fromInt 4) (fastCat [p, silence]))
+
+-- | Replay the first cycle of a pattern over and over.
+-- |
+-- | `loopFirst p` queries cycle 0 of p for every requested cycle, shifting
+-- | events to the appropriate time so the pattern appears to repeat its
+-- | opening cycle indefinitely.
+loopFirst :: forall a. Pattern a -> Pattern a
+loopFirst pat = pattern \(State st) ->
+  let
+    cycleArcs = splitArcByCycles st.arc
+
+    processOneCycle cycleArc =
+      let
+        cyc = sam (arcStart cycleArc)
+        Arc { start: qs, stop: qe } = cycleArc
+        mappedArc = Arc { start: qs - cyc, stop: qe - cyc }
+        events = query pat (State st { arc = mappedArc })
+      in map (shiftEventTime cyc) events
+  in Array.concatMap processOneCycle cycleArcs
+
+-- | Repeat each event by overlaying n copies of the pattern, each shifted
+-- | by t cycles relative to the previous one.
+-- |
+-- | `stutter 3 (1 % 8) p` stacks p, p shifted by 1/8, and p shifted by 2/8.
+stutter :: forall a. Int -> Time -> Pattern a -> Pattern a
+stutter n t p
+  | n <= 0 = silence
+  | n == 1 = p
+  | otherwise = stack
+      (map (\i -> rotR (fromInt i * t) p) (Array.range 0 (n - 1)))
+
+-- | Repeat each event n times within its own time slot.
+-- |
+-- | `ply 3 (s "bd sn")` turns each "bd" and "sn" event into three rapid hits
+-- | filling the same duration.
+ply :: forall a. Int -> Pattern a -> Pattern a
+ply n pat
+  | n <= 0 = silence
+  | n == 1 = pat
+  | otherwise = pattern \(State st) ->
+      let
+        Arc q = st.arc
+        events = query pat (State st)
+
+        plyEvent (Digital e) =
+          let
+            Arc w = e.whole
+            len = w.stop - w.start
+            sub = len / fromInt n
+            mkSub i =
+              let
+                whStart = w.start + fromInt i * sub
+                whStop = whStart + sub
+                pStart = max whStart q.start
+                pStop = min whStop q.stop
+              in if pStart >= pStop
+                 then Nothing
+                 else Just (Digital
+                   { context: e.context
+                   , whole: Arc { start: whStart, stop: whStop }
+                   , part: Arc { start: pStart, stop: pStop }
+                   , value: e.value
+                   })
+          in Array.mapMaybe mkSub (Array.range 0 (n - 1))
+        plyEvent (Analog e) = [Analog e]
+      in Array.concatMap plyEvent events
+
+-- | Divide each cycle into n parts, applying f to a different part each cycle.
+-- |
+-- | `chunk 4 (fast 2) p` plays p with `fast 2` applied to slice 0 in cycle 0,
+-- | slice 1 in cycle 1, slice 2 in cycle 2, slice 3 in cycle 3, then loops.
+chunk :: forall a. Int -> (Pattern a -> Pattern a) -> Pattern a -> Pattern a
+chunk n f p
+  | n <= 0 = p
+  | otherwise = cat (map applyAtIndex (Array.range 0 (n - 1)))
+  where
+    applyAtIndex i =
+      let
+        s = fromInt i / fromInt n
+        e = fromInt (i + 1) / fromInt n
+        inSlice ev =
+          let t = cyclePos (eventStartTime ev)
+          in t >= s && t < e
+      in stack
+           [ filterEvents inSlice (f p)
+           , filterEvents (not <<< inSlice) p
+           ]
+
+    eventStartTime :: Event a -> Time
+    eventStartTime (Digital ev) = let Arc a = ev.part in a.start
+    eventStartTime (Analog ev) = let Arc a = ev.part in a.start
 
 -------------------------------------------------------------------------------
 -- Filtering
