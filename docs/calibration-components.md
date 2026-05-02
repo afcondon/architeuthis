@@ -29,13 +29,15 @@ that part of the chain.**
 | `plaits-audio-engine` | 10 | Plaits gate-to-first-audio: envelope/excitation + macro-oscillator + DAC. Pure synthesis, no sample-lookup phase | Plaits full-chain (0012) median 38.02 ms minus `fh2-trigger-baseline` |
 | `aum-au-path` | 50 | A4C USB-MIDI host→device + iPad CoreMIDI → AUM matrix routing → AU plugin internal MIDI subscription → AU plugin instrument engine + AUM mixbus → A4C analog out → Live input | iPad-Patterning recording 0004 (lat 0): median 50.9 ms, std 4.05 ms, n=20 |
 | `live-drum-rack` | 30 | "IAC Driver Tidal" CoreMIDI port → Live's MIDI input quantization to next audio buffer → Drum Rack pad → Live audio bus | Pre-existing Live calibration (vs Live's own internal clip); peak -0.04 ms at lat 30, std 2.2 ms |
+| `es9-silentway-trigger-baseline` | 54 | Tidal `ES5Gate` binding → cv-router `/esx5gate` (UDP 57120) → cv-router atomic write → audio callback packs byte into ES-5 L lane (24-bit PCM ADAT) → ES-9 USB out 5/6 → ES-5 decodes high byte → panel gate jack | Bare ES-5 gate (recording 0013): median 54.6 ms, std 7.26 ms, n=32. Roughly 2× the FH-2 path baseline — buffer-traversal end-to-end vs CoreMIDI's event-driven dispatch |
 
 ## Pending components
 
-- **`es9-silentway-trigger-baseline`** — Tidal → Silent Way encoder →
-  ES-9 audio out → ES-5 → ESX-8GT gate; the audio-rate trigger path
-  baseline. Needed for any module triggered via that path. Tomorrow's
-  measurement target.
+- **`es9-cv-trigger-baseline`** — Tidal `Gate` binding → cv-router
+  `/tidal/gate/trig` → cpal bus 8-15 → ES-9 panel jack 1-8. The other
+  audio-rate trigger path (direct ES-9 panel CV/Gate, no ADAT/ES-5).
+  About to measure (panel jack 1 is conveniently flashing from
+  link-spike's per-beat trig, so just patch it to a free ES-9 input).
 
 ## Setup-file references
 

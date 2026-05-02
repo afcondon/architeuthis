@@ -1,0 +1,33 @@
+-- ES-5 built-in gates via cv-router /esx5gate.
+--
+-- Trigger path (orthogonal to the FH-2 MIDI/MCV path):
+--   Tidal binding (es5gate <bit>)
+--     → cv-router OSC `/esx5gate <bit> <state>` (UDP 57120)
+--     → cv-router writes byte to es5_l_gates AtomicU8
+--     → audio callback packs byte into high byte of the ES-5 L lane
+--       (24-bit PCM ADAT, sample-rate-paced)
+--     → ES-9 USB out 5/6 → ES-5 L (ADAT)
+--     → ES-5 decodes high byte → 8 panel gate jacks
+--
+-- Bit N (0-indexed) → ES-5 panel gate (N+1) (1-indexed). Bit 0 = gate 1.
+--
+-- Pre-conditions:
+--   1. cv-router running (default device "ES-9", listening UDP 57120):
+--        cd music/expert-sleepers/cv-router && ./target/release/cv-router
+--   2. ES-9 loaded with `cv-router-with-es5.es9` config so USB 5 → ES-5 L:
+--        cd music/expert-sleepers/es9-config && \
+--          spago run -- --live-set configs/cv-router-with-es5.es9
+--   3. ES-5 module connected to ES-9 via ADAT expansion port
+--
+-- This is the second trigger pathway in the rig (alongside the MIDI/FH-2
+-- path used by Rample, QuadDrum, Plaits). Calibration baseline pending —
+-- see docs/calibration-components.md for status.
+
+bind es5g1 es5gate 0
+bind es5g2 es5gate 1
+bind es5g3 es5gate 2
+bind es5g4 es5gate 3
+bind es5g5 es5gate 4
+bind es5g6 es5gate 5
+bind es5g7 es5gate 6
+bind es5g8 es5gate 7

@@ -187,6 +187,42 @@ Format per entry:
 
 ---
 
+## 2026-05-02 — ES-5 trigger baseline (`es9-silentway-trigger-baseline = 54 ms`)
+
+- **What it measures:** the second trigger pathway in the rig — Tidal-driven
+  audio-rate gate via cv-router, packed into the high byte of the ES-5 L
+  ADAT lane, decoded by ES-5 to a panel gate jack. Orthogonal to the
+  MIDI/FH-2 path (which uses CoreMIDI for event-driven dispatch); this
+  one is end-to-end audio-buffer-paced.
+- **New binding:** `ES5Gate Int` in `Tidal.Binding`, dispatcher in
+  `Tidal.MIDIScheduler`, FFI in `Tidal.OSC.{purs,erl}`. Setup file
+  `setup/es5.tidal` exposes `es5g1..es5g8` for ES-5 panel gates 1..8.
+- **Pre-conditions verified:** ES-9 loaded with `cv-router-with-es5.es9`
+  (USB 5 → ES-5 L), cv-router running with default device "ES-9",
+  ES-5 module connected via ADAT.
+- **Patch:** ES-5 gate jack 1 → ES-9 input 9 → Live R channel
+- **Method:** stereo recording L = `live-tick`, R = ES-5 gate 1.
+  `live-tick "x ~ x ~ x ~ x ~"` and `es5g1 "x ~ x ~ x ~ x ~"` in unison.
+- **Result:** median +54.58 ms, mean +53.91 ms, std 7.26 ms, n = 32
+  (beat 1 outlier at +22 ms — same first-event scheduling artifact as
+  prior calibrations; beats 2-8 cluster 48-58 ms).
+  - source: `Tidal Test Rample QD Laplace Project/Samples/Recorded/3-Audio 0013 [2026-05-01 220316].aif`
+- **Notes:**
+  - About 2× the FH-2 baseline (28 ms). Makes physical sense — ES-5 path
+    is buffer-traversal (cv-router audio callback → next audio buffer →
+    ES-9 USB output buffering → ADAT → ES-5 decode). FH-2 path is
+    event-driven CoreMIDI, kernel-timestamped.
+  - Higher std (7.26 vs FH-2's 3.25) from audio-buffer-edge alignment.
+  - Drift slope 343 µs/s — same range as previous measurements; treat as
+    measurement artifact (Live input bus alignment) until proven otherwise.
+- **Structural follow-up:** OSC-path bindings (`Gate`, `ESX`, `ES5Gate`)
+  don't yet carry a per-binding `lat` field — that compensation lives
+  only on `midi-device` lines. To phase-lock an ES-5-triggered module
+  with Live's grid, the binding needs lat support added. Tracked as
+  next refactor in this session.
+
+---
+
 ## Procedure for a new destination
 
 1. Add a `midi-device <name> "<port>" lat 0` line in a setup file.

@@ -21,6 +21,7 @@ module Tidal.OSC
   , sendGateTrigAfter
   , sendCVAfter
   , sendESXAfter
+  , sendES5GateTrigAfter
   ) where
 
 import Prelude
@@ -125,3 +126,12 @@ foreign import sendCVAfter :: OSCClient -> Int -> Number -> Number -> Effect Uni
 -- | port 2). Value range: -1.0..1.0 (mapped to ±2048 i12 in cv-router).
 -- | Auto-enables Silent Way mode on cv-router on first send.
 foreign import sendESXAfter :: OSCClient -> Int -> Number -> Number -> Effect Unit
+
+-- | BEAM-side delayed ES-5 gate trig. After `delay_ms` sets bit `bit` (0..7)
+-- | high via `/esx5gate`; after `delay_ms + duration_ms` sets it low. The
+-- | byte map: cv-router packs the 8 gate bits into the high byte of the ES-5
+-- | L lane (24-bit PCM ADAT); ES-5 decodes the high byte to its 8 built-in
+-- | gate jacks. Pre-conditions: cv-router running with default device "ES-9",
+-- | ES-9 loaded with `cv-router-with-es5.es9` (USB 5 → ES-5 L).
+-- | /esx5gate <bit> <state>
+foreign import sendES5GateTrigAfter :: OSCClient -> Int -> Number -> Number -> Effect Unit

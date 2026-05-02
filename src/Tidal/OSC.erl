@@ -1,6 +1,6 @@
 -module(tidal_oSC@foreign).
 -export([startClient/1, stopClient/1, sendNote/3, sendSample/4]).
--export([sendCV/3, sendCVSlew/4, sendGate/3, sendGateTrig/3, sendGateTrigAt/4, sendGateTrigAfter/4, sendCVAfter/4, sendESXAfter/4]).
+-export([sendCV/3, sendCVSlew/4, sendGate/3, sendGateTrig/3, sendGateTrigAt/4, sendGateTrigAfter/4, sendCVAfter/4, sendESXAfter/4, sendES5GateTrigAfter/4]).
 
 %% Start UDP socket for OSC
 startClient(Config) ->
@@ -160,6 +160,37 @@ sendESXAfter(Client, Slot, Value, DelayMs) ->
             end
         end),
         unit
+    end.
+
+%% BEAM-side delayed ES-5 gate trigger. cv-router's /esx5gate sets one bit
+%% in the byte that gets packed into the high byte of the ES-5 L ADAT lane;
+%% the byte's 8 bits map directly to ES-5 panel gates 1..8. To trig-style
+%% the gate, send <bit> 1 then <bit> 0 after gateDuration.
+sendES5GateTrigAfter(Client, Bit, DurationMs, DelayMs) ->
+    fun() ->
+        {_StoredSocket, Host, Port} = Client,
+        DelayInt = max(0, round(DelayMs)),
+        DurInt = max(1, round(DurationMs)),
+        spawn(fun() ->
+            timer:sleep(DelayInt),
+            send_one_osc(Host, Port, <<"/esx5gate">>, [Bit, 1]),
+            timer:sleep(DurInt),
+            send_one_osc(Host, Port, <<"/esx5gate">>, [Bit, 0])
+        end),
+        unit
+    end.
+
+%% Helper for the *Trig style: open fresh socket per send. Same robustness
+%% model as the existing sendGateTrigAfter/sendCVAfter — survives cv-router
+%% restarts because we never reuse a long-lived socket.
+send_one_osc(Host, Port, Addr, Args) ->
+    case gen_udp:open(0, [binary]) of
+        {ok, Socket} ->
+            Msg = encode_osc(Addr, Args),
+            gen_udp:send(Socket, Host, Port, Msg),
+            gen_udp:close(Socket);
+        _ ->
+            ok
     end.
 
 %% ============================================

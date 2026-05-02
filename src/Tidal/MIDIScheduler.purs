@@ -478,6 +478,13 @@ midiSchedulerLoop stateRef = do
                             liftEffect $ Log.debug $ "⚡ [" <> b.name <> "] gate " <> show ch <> " in " <> show delayInt <> "ms"
                             liftEffect $ OSC.sendGateTrigAfter osc ch state.config.gate.gateDuration delayClamped
                           Nothing -> pure unit
+                    Binding.ES5Gate bit ->
+                      when (token /= "~") do
+                        case state.oscClient of
+                          Just osc -> do
+                            liftEffect $ Log.debug $ "✦ [" <> b.name <> "] es5gate " <> show bit <> " in " <> show delayInt <> "ms"
+                            liftEffect $ OSC.sendES5GateTrigAfter osc bit state.config.gate.gateDuration delayClamped
+                          Nothing -> pure unit
                     Binding.MidiNote m ->
                       when (token /= "~") do
                         case Map.lookup m.device state.midiDevices of

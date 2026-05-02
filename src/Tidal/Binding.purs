@@ -85,6 +85,7 @@ data PrimAction
   = Gate Int                     -- gate channel 0..7 → cv-router /tidal/gate
   | CV Int CVMapping             -- bus 0..15, value mapping → cv-router /cv
   | ESX Int                      -- ESX-8CV slot 0..7 → cv-router /esx
+  | ES5Gate Int                  -- ES-5 built-in gate bit 0..7 → cv-router /esx5gate
   -- MIDI primitives — device-aware. The `device` field is an alias
   -- registered via `midi-device <alias> <real-name>`; lets the same
   -- binding shape target FH-2, iPad-AUM, Yarns, IAC bus, etc. by
@@ -204,6 +205,11 @@ parseAction s =
       case Int.fromString slotStr of
         Just slot -> Right (ESX slot)
         Nothing -> Left ("esx: expected integer slot, got '" <> slotStr <> "'")
+
+    ["es5gate", bitStr] ->
+      case Int.fromString bitStr of
+        Just bit -> Right (ES5Gate bit)
+        Nothing -> Left ("es5gate: expected integer bit, got '" <> bitStr <> "'")
 
     -- midi-note <alias> <ch> <note> [velocity [duration-ms]]
     ["midi-note", device, chStr, noteStr] ->
