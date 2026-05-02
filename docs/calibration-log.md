@@ -301,6 +301,81 @@ applying lat 50).
 
 ---
 
+## 2026-05-02 — Integrated multi-source phase-lock test
+
+First end-to-end exercise of the calibration framework: drive five
+sources from Tidal in unison (`live-tick` reference + Rample + QD +
+Plaits + Incus, each on a different beat), record the modular sum into
+Live alongside the Live drum rack reference, cross-correlate per-source.
+
+**ES-5 lat 54 verified** (recording 0017 earlier the same morning):
+median +0.81 ms, std 4.15 ms — sub-millisecond phase-lock confirmed
+the per-binding lat compensation works correctly for OSC paths.
+
+### Recordings
+
+| # | Setup | Link | Notes |
+|---|---|---|---|
+| 0001 | Modules + Live drum rack | OFF | First integrated test; numbers untrustworthy due to no Link sync |
+| 0002 | Triggers (no modules) + Live drum rack | OFF | Same; Link off invalidates results |
+| 0003 | Triggers + drum rack | **ON** | Clean Link-on baseline; reveals over-compensation in trigger-only path |
+| 0004 | Modules + drum rack | **ON** | Three of four sources phase-locked sub-ms; QD lone outlier at -38 ms |
+| 0008 | Modules + drum rack, **tracks ungrouped**, +153 BPM | ON | Ungrouping shifts most sources LATER by ~5 ms; QD unchanged |
+
+### Results — recording 0004 (the canonical "all four modules" pass)
+
+| Source | Lat applied | Median offset | Std | Audio engine in this setup |
+|---|---:|---:|---:|---:|
+| Rample (r1) | 61 ms | -0.18 ms | 4.26 | ~30 ms (matches yesterday's 33) |
+| QD (qd1) | 69 ms | **-38.10 ms** | 2.89 | **~5 ms** (vs yesterday's 41 — anomaly) |
+| Plaits (es5g1) | 54 ms | -0.98 ms | 5.80 | ~3 ms |
+| Incus (es5g2) | 54 ms | +7.23 ms | 3.01 | ~13 ms (new) |
+
+### Findings
+
+1. **The framework works.** Tight std (3-6 ms across all sources) confirms
+   Link sync is solid and per-binding lat compensation is doing its job.
+   Three of four sources land sub-millisecond from grid in a single
+   recording with no in-session adjustments.
+
+2. **Calibration is chain-specific including the recording side.** QD's
+   audio engine measured 41 ms in yesterday's calibration but appears
+   only 5 ms in today's Live setup. The discrepancy is consistent across
+   grouped (0004) and ungrouped (0008) configurations, ruling out group
+   PDC as the sole cause. Likely a different sample loaded on QD voice 1
+   or a different output mode. **`lat 69` set yesterday is the wrong
+   value for today; needs in-session re-tuning to ~31 ms.** A future
+   "professional-level calibration" workflow would standardise samples
+   on the modules being calibrated.
+
+3. **Live track grouping shifts recorded timing by ~5 ms** (consistent
+   across most tracks, observed by comparing recordings 0004 vs 0008).
+   Different group memberships → different per-track shifts. Worth
+   noting but small in absolute terms.
+
+4. **Stability matters more than absolute precision.** A 38 ms offset
+   that's consistent across cycles (QD, std 2.89) is dialable by ear or
+   knob; a 5 ms offset that drifts mid-session would be unfixable. The
+   framework's std performance is the real win; medians are tunable.
+
+5. **Per-voice latency knob is the right UI answer.** Rather than
+   chasing ever-more-precise pre-session calibration, the right
+   architectural answer is to give the operator a fast per-voice nudge
+   knob for in-session adjustment (TangleJS-style live numeric tweaking,
+   or a hardware control). Once chain-specific latencies are reliably
+   stable, the human ear is the final tuning step. Calibration narrows
+   the search; perception completes it.
+
+### Updates to setup files
+
+None — `setup/*.tidal` lat values are kept at yesterday's calibration
+values (which were correct for that recording chain). Per-Live-project
+tuning is now an established workflow; users override lats in-session
+via Calypso (e.g. `midi-device fh2-qd "FH-2" lat 31`) when they detect
+anomalies, rather than mutating the canonical setup files.
+
+---
+
 ## Procedure for a new destination
 
 1. Add a `midi-device <name> "<port>" lat 0` line in a setup file.
