@@ -25,6 +25,7 @@ import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Number (fromString) as Number
+import Data.String (joinWith) as Str
 import Data.Rational (Rational, fromInt, toNumber) as R
 import Data.Time.Duration (Milliseconds(..))
 import Data.Tuple (Tuple(..))
@@ -203,7 +204,16 @@ data ParsedTrack
   -- | PrimActions; each pattern event fires every action. Replaces the
   -- | hardcoded `gate <ch>` / `cv <bus>` dispatch when the user has
   -- | registered a name like `kick` or `plaits`.
-  | BoundTrack { pattern :: Pattern String, name :: String, binding :: Binding.Binding }
+  | BoundTrack
+      { pattern :: Pattern String
+      , name :: String
+      , binding :: Binding.Binding
+      , params :: Map String (Pattern String)
+        -- ^ Joined parameter patterns from `#` segments.  At dispatch
+        -- time, each is queried at the same `eventCycle` as the
+        -- structure pattern; the resulting per-event values override
+        -- corresponding fields on the bound PrimActions.
+      }
   -- | FH-2 trigger track. Each pattern token fires a MIDI note on the FH-2
   -- | for the given voice. The voice's MIDI channel is looked up from
   -- | `state.fh2VoiceChannels` at dispatch time (registered via
@@ -501,13 +511,24 @@ midiSchedulerLoop stateRef = do
                             let note = case Map.lookup token noteNameMidi of
                                   Just n -> n
                                   Nothing -> m.defaultNote
+                            -- `# vel "..."` — query the velocity pattern at
+                            -- this event's cycle time and override the
+                            -- binding's default.  Out-of-range / non-numeric
+                            -- tokens (rest `~`, words) fall back to default.
+                            let velocity = case Map.lookup "vel" b.params of
+                                  Nothing -> m.velocity
+                                  Just velPat -> case samplePatternAt eventCycle velPat of
+                                    Just velTok -> case param7bit velTok of
+                                      Just v -> v
+                                      Nothing -> m.velocity
+                                    Nothing -> m.velocity
                             -- Latency compensation: emit earlier by the
                             -- device's reported latency so this destination
                             -- arrives in unison with faster ones.
                             let adjustedDelayMs = max 0.0 (delayClamped - dev.latencyMs)
                             let adjustedUnixUs = nowUnixUs + adjustedDelayMs * 1000.0
-                            liftEffect $ Log.debug $ "  [" <> b.name <> "] midi " <> dev.name <> " ch" <> show m.channel <> " note " <> show note <> " (dur " <> show m.durationMs <> "ms) in " <> show (Int.floor adjustedDelayMs) <> "ms"
-                            liftEffect $ scheduleNoteAt state.bridgeClient dev.name m.channel note m.velocity m.durationMs adjustedUnixUs
+                            liftEffect $ Log.debug $ "  [" <> b.name <> "] midi " <> dev.name <> " ch" <> show m.channel <> " note " <> show note <> " vel " <> show velocity <> " (dur " <> show m.durationMs <> "ms) in " <> show (Int.floor adjustedDelayMs) <> "ms"
+                            liftEffect $ scheduleNoteAt state.bridgeClient dev.name m.channel note velocity m.durationMs adjustedUnixUs
                     Binding.MidiCC m ->
                       case Number.fromString token of
                         Nothing -> pure unit  -- ~ rest or non-numeric → skip
@@ -525,6 +546,43 @@ midiSchedulerLoop stateRef = do
                               let adjustedUnixUs = nowUnixUs + adjustedDelayMs * 1000.0
                               liftEffect $ Log.debug $ "◇ [" <> b.name <> "] midi " <> dev.name <> " ch" <> show m.channel <> " cc" <> show m.cc <> " = " <> show value7bit
                               liftEffect $ scheduleCCAt state.bridgeClient dev.name m.channel m.cc value7bit adjustedUnixUs
+
+                  -- Compositional `#` joins: any param NAME that matches
+                  -- another registered binding fires that binding's actions
+                  -- at the same event time, with the value drawn from the
+                  -- joined pattern.  This is how cross-binding chaining
+                  -- works — `lap "x*4" # laplace-resonator-strength "0.2 0.7"`
+                  -- both plays the note AND sweeps the resonator CC.
+                  --
+                  -- Slot-override params (currently just "vel") are skipped
+                  -- here because they were already consumed by the matching
+                  -- PrimAction case above.  Names that don't match any
+                  -- registered binding are silently ignored — the user may
+                  -- have a typo, but a noisy log per-event would drown the
+                  -- useful traces.
+                  let composed = Map.toUnfoldable b.params
+                          :: Array (Tuple String (Pattern String))
+                  for_ composed \(Tuple paramName paramPat) ->
+                    when (not (isSlotOverride paramName b.binding)) do
+                      case Map.lookup paramName state.bindings of
+                        Nothing -> pure unit
+                        Just composedBinding ->
+                          case samplePatternAt eventCycle paramPat of
+                            Nothing -> pure unit  -- rest token → no fire
+                            Just composedToken ->
+                              for_ composedBinding \action -> case action of
+                                Binding.MidiCC m -> case Number.fromString composedToken of
+                                  Nothing -> pure unit
+                                  Just raw ->
+                                    case Map.lookup m.device state.midiDevices of
+                                      Nothing -> pure unit
+                                      Just dev -> do
+                                        let v7 = clamp7bit (raw * 127.0)
+                                        let dms = max 0.0 (delayClamped - dev.latencyMs)
+                                        let uus = nowUnixUs + dms * 1000.0
+                                        liftEffect $ Log.debug $ "  ◇ [" <> b.name <> " # " <> paramName <> "] cc " <> show m.cc <> " = " <> show v7
+                                        liftEffect $ scheduleCCAt state.bridgeClient dev.name m.channel m.cc v7 uus
+                                _ -> pure unit  -- only MidiCC composition for now
 
                 Fh2TriggerTrack f ->
                   -- Look up the voice's MIDI channel. If unregistered (user
@@ -670,7 +728,7 @@ midiSchedulerLoop stateRef = do
       liftEffect $ log $ "unbind " <> name
       midiSchedulerLoop stateRef
 
-    PlayByName name patStr fullText -> do
+    PlayByName name patStr fullText paramSpecs -> do
       state <- liftEffect $ Ref.read stateRef
       case Map.lookup name state.bindings of
         Just binding ->
@@ -678,17 +736,32 @@ midiSchedulerLoop stateRef = do
             Left _ ->
               liftEffect $ log $ "play '" <> name <> "' parse error: " <> patStr
             Right ast -> do
+              -- Parse each `# <name> <pat>` segment.  Spec entries that
+              -- don't parse are silently dropped — the structure pattern
+              -- still fires; the user just doesn't get that override.
+              let parsedParams = Map.fromFoldable
+                    $ Array.mapMaybe
+                        (\ps -> case parse ps.pat of
+                          Right p -> Just (Tuple ps.name (tpatToPattern p))
+                          Left _ -> Nothing)
+                        paramSpecs
               let newTrack = BoundTrack
                     { pattern: tpatToPattern ast
                     , name
                     , binding
+                    , params: parsedParams
                     }
               let isOther = case _ of
                     BoundTrack b -> b.name /= name
                     _            -> true
               let newTracks = Array.filter isOther state.tracks <> [newTrack]
               liftEffect $ Ref.write (state { tracks = newTracks }) stateRef
-              liftEffect $ log $ name <> ": " <> patStr
+              let paramSummary = case Array.length paramSpecs of
+                    0 -> ""
+                    n -> "  (+" <> show n <> " param"
+                      <> (if n == 1 then "" else "s") <> ": "
+                      <> Str.joinWith ", " (map _.name paramSpecs) <> ")"
+              liftEffect $ log $ name <> ": " <> patStr <> paramSummary
         Nothing -> do
           -- Fallback: treat fullText as a legacy whole-message pattern.
           -- This preserves backward compat for `bd sn hh cp`-style messages
@@ -808,6 +881,52 @@ interpretCV = case _ of
       Just midi -> Just (voctValue midi)
       Nothing -> Nothing
   Binding.SampleNameMap m -> \tok -> Map.lookup tok m
+
+-- | Sample a parameter pattern at a single cycle time.  Used for `#`
+-- | parameter joins: the structure pattern's event determines `when`;
+-- | each `# <name> <pat>` segment's pattern, queried at that same time,
+-- | provides the parameter value used to override a binding-default
+-- | field (velocity, note, duration, …) for this one event.
+samplePatternAt :: forall a. R.Rational -> Pattern a -> Maybe a
+samplePatternAt cycleAt pat =
+  let
+    -- A thin window starting AT `cycleAt`. An event whose arc covers
+    -- this point is returned; if none cover (e.g. a rest token), Nothing.
+    -- The epsilon must be positive so digital event lookup hits — Tidal
+    -- digital events span half-open arcs, so a zero-width query at the
+    -- arc start would return [].
+    epsilon = R.fromInt 1 / R.fromInt 1000000
+    events = queryArc pat cycleAt (cycleAt + epsilon)
+  in case Array.head events of
+    Just (Digital ev) -> Just ev.value
+    Just (Analog ev) -> Just ev.value
+    Nothing -> Nothing
+
+-- | Parse a parameter token as a 7-bit integer in [0..127].  Used for
+-- | the `# vel ...` and (future) `# cc... ...` overrides where the
+-- | wire byte is bounded.  Out-of-range values fall back to Nothing
+-- | so the dispatcher uses the binding default rather than wrap.
+param7bit :: String -> Maybe Int
+param7bit tok = case Number.fromString tok of
+  Just n | n >= 0.0 && n <= 127.0 -> Just (Int.floor n)
+  _ -> Nothing
+
+-- | Is this `#` parameter name consumed by a slot override on any of
+-- | the binding's actions?  If yes, the BoundTrack's per-PrimAction
+-- | dispatch already used it; the compositional fallback should skip
+-- | it to avoid double-dispatch.
+-- |
+-- | Currently only `vel` is a recognised slot, applying to MidiNote
+-- | actions.  Add cases as more slots become pattern-driven (`note`,
+-- | `dur`, MIDI CC value scaling, etc.).
+isSlotOverride :: String -> Binding.Binding -> Boolean
+isSlotOverride name binding = case name of
+  "vel" -> Array.any isMidiNote binding
+    where
+    isMidiNote = case _ of
+      Binding.MidiNote _ -> true
+      _ -> false
+  _ -> false
 
 -- | Convert a wire-level TransformSpec into a typed Transform for use
 -- | by `applyTransforms`. The two types are parallel today; if the

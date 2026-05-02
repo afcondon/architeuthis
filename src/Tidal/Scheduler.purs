@@ -5,6 +5,7 @@ module Tidal.Scheduler
   ( SchedulerConfig
   , ScheduledEvent
   , TrackInfo
+  , ParamSpec
   , Msg(..)
   , TransformSpec(..)
   , startScheduler
@@ -58,6 +59,14 @@ type ScheduledEvent =
 -- | A track with its pattern string and MIDI channel
 type TrackInfo = { pattern :: String, channel :: Int }
 
+-- | One named-parameter join from a `#` segment.  Carried alongside the
+-- | structure pattern in PlayByName so the scheduler can build per-event
+-- | parameter values when a binding fires.
+-- |
+-- |   `kick "x*4" # vel "100 64 80 50"` →
+-- |       PlayByName "kick" "x*4" "<text>" [{ name: "vel", pat: "100 64 80 50" }]
+type ParamSpec = { name :: String, pat :: String }
+
 -- | Messages to the scheduler process
 data Msg
   = Tick              -- Time to schedule more events
@@ -78,7 +87,9 @@ data Msg
   -- play the patternStr through the binding; if not, treat fullText as
   -- a legacy whole-message pattern (so `bd sn hh cp` still works for
   -- users without bindings).
-  | PlayByName String String String  -- name, patternStr, fullText
+  | PlayByName String String String (Array ParamSpec)
+      -- name, patternStr, fullText, joined-parameter patterns from `#`
+      -- segments (empty when no `#` used)
   | SetSlot String Number         -- slot name, current value (input bindings scaffold)
   -- Tidal-compat: silence everything, kill all running tracks. Bindings
   -- registry is preserved (so subsequent `kick bd*4` works without
@@ -260,7 +271,7 @@ schedulerLoop stateRef = do
     -- Ignore so the Cowboy handler can broadcast to either scheduler kind.
     AddBinding _ _ -> schedulerLoop stateRef
     RemoveBinding _ -> schedulerLoop stateRef
-    PlayByName _ _ _ -> schedulerLoop stateRef
+    PlayByName _ _ _ _ -> schedulerLoop stateRef
     SetSlot _ _ -> schedulerLoop stateRef
     Hush -> do
       state <- liftEffect $ Ref.read stateRef

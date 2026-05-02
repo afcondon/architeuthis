@@ -307,6 +307,49 @@ split_first_word(Text) ->
         [Word] -> {Word, <<>>}
     end.
 
+%% Split a `#`-joined named-binding line into the structure pattern
+%% plus a list of joined parameter specs.
+%%
+%%   `kick "x*4" # vel "100 64 80 50"`            →
+%%       {<<"kick">>, <<"x*4">>, [#{name => <<"vel">>, pat => <<"100 64 80 50">>}]}
+%%
+%%   `kick "x*4" # vel "100" # cutoff "30 60"`    →
+%%       {<<"kick">>, <<"x*4">>, [#{name => <<"vel">>, pat => <<"100">>},
+%%                                #{name => <<"cutoff">>, pat => <<"30 60">>}]}
+%%
+%%   `kick "x*4"`                                 →
+%%       {<<"kick">>, <<"x*4">>, []}
+%%
+%% Each segment uses split_first_word to peel off the leading word and
+%% strip outer quotes from the body.  Pre-`#`-split avoids the
+%% strip_quotes-on-mixed-content trap (where `kick "x*4" # vel "..."`
+%% has its outer quotes mis-stripped if treated as a single word+rest).
+parse_with_join(Text) ->
+    case binary:split(Text, <<" # ">>, [global]) of
+        [Single] ->
+            %% No join — return the existing word+rest shape with empty params.
+            {Word, Rest} = split_first_word(Single),
+            {Word, Rest, []};
+        [First | RestSegments] ->
+            {Word, StructPat} = split_first_word(First),
+            ParamSpecs = [parse_join_segment(S) || S <- RestSegments],
+            %% Drop any segments that didn't yield a name+body shape.
+            ValidSpecs = [P || P <- ParamSpecs, P =/= invalid],
+            {Word, StructPat, ValidSpecs}
+    end.
+
+%% Parse one `<name> <body>` segment from after a `#`.  The body may
+%% be quoted; strip_quotes handles the unquoted case idempotently.
+%% Returns `invalid` rather than a partial spec if the segment doesn't
+%% have at least name + body — the caller drops invalid specs.
+parse_join_segment(Segment) ->
+    case binary:split(string:trim(Segment), <<" ">>) of
+        [Name, Body] when Body =/= <<>> ->
+            #{name => Name, pat => strip_quotes(Body)};
+        _ ->
+            invalid
+    end.
+
 %% Strip a single pair of surrounding double quotes if present.
 %% `<<"\"bd*4\"">>` → `<<"bd*4">>`. Idempotent on already-unquoted input.
 strip_quotes(Bin) ->
@@ -538,7 +581,7 @@ handle_pattern_message(Text, SchedulerPid, State) ->
                 <<"{", _/binary>> ->
                     handle_legacy_pattern_message(Text, SchedulerPid, State);
                 _ ->
-                    {Word, Rest} = split_first_word(Text),
+                    {Word, Rest, ParamSpecs} = parse_with_join(Text),
                     %% Pre-flight parse so malformed input (non-ASCII chars
                     %% reaching the upstream parser, etc.) returns [err]
                     %% instead of crashing the scheduler. Check `Rest`
@@ -552,7 +595,12 @@ handle_pattern_message(Text, SchedulerPid, State) ->
                     %% the parser doesn't understand.
                     case safe_parse(Rest) of
                         {ok, _} ->
-                            SchedulerPid ! {playByName, Word, Rest, Text},
+                            %% PureScript Array a is encoded as Erlang
+                            %% `array` (sparse-array module), not list —
+                            %% sending a plain list here makes array:size
+                            %% crash with badarg in the scheduler.
+                            ParamSpecsArray = array:from_list(ParamSpecs),
+                            SchedulerPid ! {playByName, Word, Rest, Text, ParamSpecsArray},
                             Reply = {text, <<"OK: dispatched '", Word/binary, "'">>},
                             {reply, Reply, State};
                         {parse_err, ErrBin} ->
@@ -892,11 +940,13 @@ classify_line(_) -> code.
 dispatch_setup_line(Line, SchedulerPid) ->
     case try_parse_prefixed(Line) of
         none ->
-            %% Unprefixed line — treat as named-binding dispatch.
-            {Word, Rest} = split_first_word(Line),
+            %% Unprefixed line — treat as named-binding dispatch with
+            %% optional `#` parameter joins.
+            {Word, Rest, ParamSpecs} = parse_with_join(Line),
             case safe_parse(Rest) of
                 {ok, _} ->
-                    SchedulerPid ! {playByName, Word, Rest, Line},
+                    ParamSpecsArray = array:from_list(ParamSpecs),
+                    SchedulerPid ! {playByName, Word, Rest, Line, ParamSpecsArray},
                     ok;
                 {parse_err, _} ->
                     io:format("[load] parse error on line: ~s~n", [Line]),
