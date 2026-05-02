@@ -82,10 +82,10 @@ derive instance eqCVMapping :: Eq CVMapping
 -- | adding a constructor here and a dispatcher branch — no change to the
 -- | binding registry shape, no churn for existing actions.
 data PrimAction
-  = Gate Int                     -- gate channel 0..7 → cv-router /tidal/gate
-  | CV Int CVMapping             -- bus 0..15, value mapping → cv-router /cv
-  | ESX Int                      -- ESX-8CV slot 0..7 → cv-router /esx
-  | ES5Gate Int                  -- ES-5 built-in gate bit 0..7 → cv-router /esx5gate
+  = Gate     { channel :: Int, latencyMs :: Int }     -- → cv-router /tidal/gate
+  | CV       Int CVMapping                            -- bus 0..15 → cv-router /cv
+  | ESX      { slot :: Int,    latencyMs :: Int }     -- ESX-8CV slot 0..7 → /esx
+  | ES5Gate  { bit :: Int,     latencyMs :: Int }     -- ES-5 panel gate 0..7 → /esx5gate
   -- MIDI primitives — device-aware. The `device` field is an alias
   -- registered via `midi-device <alias> <real-name>`; lets the same
   -- binding shape target FH-2, iPad-AUM, Yarns, IAC bus, etc. by
@@ -120,32 +120,38 @@ type BindingRegistry = Map String Binding
 -- | aliases in `MIDIScheduler.defaultSampleGateMap`.
 drumBindings :: Array (Tuple String Binding)
 drumBindings =
-  [ Tuple "bd"    [Gate 0]
-  , Tuple "kick"  [Gate 0]
-  , Tuple "sn"    [Gate 1]
-  , Tuple "snare" [Gate 1]
-  , Tuple "hh"    [Gate 2]
-  , Tuple "hihat" [Gate 2]
-  , Tuple "ho"    [Gate 3]
-  , Tuple "oh"    [Gate 3]
-  , Tuple "cp"    [Gate 3]
-  , Tuple "clap"  [Gate 3]
-  , Tuple "rim"   [Gate 4]
-  , Tuple "lt"    [Gate 5]
-  , Tuple "tom"   [Gate 5]
-  , Tuple "mt"    [Gate 5]
-  , Tuple "ht"    [Gate 6]
-  , Tuple "cy"    [Gate 7]
-  , Tuple "crash" [Gate 7]
-  , Tuple "rd"    [Gate 7]
-  , Tuple "ride"  [Gate 7]
+  [ Tuple "bd"    [gate0 0]
+  , Tuple "kick"  [gate0 0]
+  , Tuple "sn"    [gate0 1]
+  , Tuple "snare" [gate0 1]
+  , Tuple "hh"    [gate0 2]
+  , Tuple "hihat" [gate0 2]
+  , Tuple "ho"    [gate0 3]
+  , Tuple "oh"    [gate0 3]
+  , Tuple "cp"    [gate0 3]
+  , Tuple "clap"  [gate0 3]
+  , Tuple "rim"   [gate0 4]
+  , Tuple "lt"    [gate0 5]
+  , Tuple "tom"   [gate0 5]
+  , Tuple "mt"    [gate0 5]
+  , Tuple "ht"    [gate0 6]
+  , Tuple "cy"    [gate0 7]
+  , Tuple "crash" [gate0 7]
+  , Tuple "rd"    [gate0 7]
+  , Tuple "ride"  [gate0 7]
   ]
+
+-- | Helper: Gate with latencyMs = 0. Default registry uses this so that
+-- | the drum aliases work uncompensated; users can rebind with explicit
+-- | `lat N` in the action spec if they want compensation.
+gate0 :: Int -> PrimAction
+gate0 ch = Gate { channel: ch, latencyMs: 0 }
 
 -- | The Plaits voice: gate ch 6 + V/oct on bus 15. Replaces the implicit
 -- | note-name-→-Plaits behaviour previously hardcoded in
 -- | `defaultSampleGateMap` / `defaultSampleCVMap`.
 plaitsBinding :: Tuple String Binding
-plaitsBinding = Tuple "plaits" [Gate 6, CV 15 NoteNameVoct]
+plaitsBinding = Tuple "plaits" [gate0 6, CV 15 NoteNameVoct]
 
 -- | Default registry. Drum aliases + Plaits. Loaded into the scheduler
 -- | state at startup. Users can add/replace via the `bind` WS verb.
@@ -179,16 +185,22 @@ parseCompoundAction body =
 
 -- | Parse a single primitive-action spec.
 -- |
--- |   `gate <int>`              → Gate
--- |   `cv <int> [literal|voct]` → CV (default: literal)
--- |   `esx <int>`               → ESX
+-- |   `gate <int> [lat <int>]`             → Gate
+-- |   `cv <int> [literal|voct]`            → CV (default: literal)
+-- |   `esx <int> [lat <int>]`              → ESX
+-- |   `es5gate <int> [lat <int>]`          → ES5Gate
+-- |
+-- | The optional `lat N` suffix specifies a per-binding latency in ms;
+-- | the dispatcher will fire this binding N ms earlier than the pattern
+-- | clock would otherwise demand, so the audio onset arrives in phase
+-- | with other calibrated sources. Default 0 if omitted.
 parseAction :: String -> Either String PrimAction
 parseAction s =
   case String.split (Pattern " ") (trim s) of
     ["gate", chStr] ->
-      case Int.fromString chStr of
-        Just ch -> Right (Gate ch)
-        Nothing -> Left ("gate: expected integer channel, got '" <> chStr <> "'")
+      mkGate chStr "0"
+    ["gate", chStr, "lat", latStr] ->
+      mkGate chStr latStr
 
     ["cv", busStr] ->
       case Int.fromString busStr of
@@ -202,14 +214,14 @@ parseAction s =
         _, Nothing -> Left ("cv: expected mapping mode (literal|voct), got '" <> modeStr <> "'")
 
     ["esx", slotStr] ->
-      case Int.fromString slotStr of
-        Just slot -> Right (ESX slot)
-        Nothing -> Left ("esx: expected integer slot, got '" <> slotStr <> "'")
+      mkESX slotStr "0"
+    ["esx", slotStr, "lat", latStr] ->
+      mkESX slotStr latStr
 
     ["es5gate", bitStr] ->
-      case Int.fromString bitStr of
-        Just bit -> Right (ES5Gate bit)
-        Nothing -> Left ("es5gate: expected integer bit, got '" <> bitStr <> "'")
+      mkES5Gate bitStr "0"
+    ["es5gate", bitStr, "lat", latStr] ->
+      mkES5Gate bitStr latStr
 
     -- midi-note <alias> <ch> <note> [velocity [duration-ms]]
     ["midi-note", device, chStr, noteStr] ->
@@ -228,6 +240,31 @@ parseAction s =
 
     other ->
       Left ("unrecognized action: '" <> String.joinWith " " other <> "'")
+
+-- | Helpers for the OSC-binding variants. Each takes the channel/slot/bit
+-- | and an (already-stringified) latency-ms, validates both as Ints, and
+-- | emits a typed PrimAction. Reduces the parseAction case body to one
+-- | call per shape.
+mkGate :: String -> String -> Either String PrimAction
+mkGate chStr latStr =
+  case Int.fromString chStr, Int.fromString latStr of
+    Just ch, Just lat -> Right (Gate { channel: ch, latencyMs: lat })
+    Nothing, _ -> Left ("gate: expected integer channel, got '" <> chStr <> "'")
+    _, Nothing -> Left ("gate: expected integer lat, got '" <> latStr <> "'")
+
+mkESX :: String -> String -> Either String PrimAction
+mkESX slotStr latStr =
+  case Int.fromString slotStr, Int.fromString latStr of
+    Just slot, Just lat -> Right (ESX { slot, latencyMs: lat })
+    Nothing, _ -> Left ("esx: expected integer slot, got '" <> slotStr <> "'")
+    _, Nothing -> Left ("esx: expected integer lat, got '" <> latStr <> "'")
+
+mkES5Gate :: String -> String -> Either String PrimAction
+mkES5Gate bitStr latStr =
+  case Int.fromString bitStr, Int.fromString latStr of
+    Just bit, Just lat -> Right (ES5Gate { bit, latencyMs: lat })
+    Nothing, _ -> Left ("es5gate: expected integer bit, got '" <> bitStr <> "'")
+    _, Nothing -> Left ("es5gate: expected integer lat, got '" <> latStr <> "'")
 
 -- | Helper for the midi-note variants — packs a typed Int validation
 -- | and emits a sensible error message per missing field.

@@ -20,14 +20,21 @@
 --   3. ES-5 module connected to ES-9 via ADAT expansion port
 --
 -- This is the second trigger pathway in the rig (alongside the MIDI/FH-2
--- path used by Rample, QuadDrum, Plaits). Calibration baseline pending —
--- see docs/calibration-components.md for status.
+-- path used by Rample, QuadDrum, Plaits). About 2× the FH-2 budget but
+-- gives 8 more gate outputs without burning FH-2 MCV slots.
+--
+-- lat 54 = es5-trigger-baseline (single-component composition for now —
+-- there's no module-specific audio engine in this path; modules
+-- triggered VIA an ES-5 gate would compose es5-trigger-baseline +
+-- their own audio-engine component, in a per-module setup file
+-- analogous to fh2-rample / fh2-qd / fh2-plaits). See
+-- docs/calibration-components.md.
 
-bind es5g1 es5gate 0
-bind es5g2 es5gate 1
-bind es5g3 es5gate 2
-bind es5g4 es5gate 3
-bind es5g5 es5gate 4
-bind es5g6 es5gate 5
-bind es5g7 es5gate 6
-bind es5g8 es5gate 7
+bind es5g1 es5gate 0 lat 54
+bind es5g2 es5gate 1 lat 54
+bind es5g3 es5gate 2 lat 54
+bind es5g4 es5gate 3 lat 54
+bind es5g5 es5gate 4 lat 54
+bind es5g6 es5gate 5 lat 54
+bind es5g7 es5gate 6 lat 54
+bind es5g8 es5gate 7 lat 54

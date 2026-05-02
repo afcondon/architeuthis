@@ -223,6 +223,84 @@ Format per entry:
 
 ---
 
+## 2026-05-02 — ES-9 panel-out trigger baseline (`es9-cv-panel-baseline = 82 ms`)
+
+- **What it measures:** the third trigger pathway — Tidal `Gate`
+  binding → cv-router `/tidal/gate/trig` → cv-router IIR smoother
+  ramps target → ES-9 analog DAC → analog output stage → ES-9 panel
+  jack. Same dispatch shape as `Gate` bindings already used for the
+  default drum aliases (`bd`, `sn`, `hh`, etc.).
+- **Probe:** `bind es9-tick gate 1` issued live in Calypso (no setup
+  file change). gate ch 1 = cpal bus 9 = ES-9 panel jack 2.
+- **Patch:** ES-9 panel jack 2 → ES-9 input 10 → Live R channel.
+- **Method:** stereo recording L = `live-tick`, R = ES-9 input 10.
+- **Result (lat 0):** median +81.6 ms, mean +81.1 ms, std 6.27 ms,
+  n = 40
+  - source: `Tidal Test Rample QD Laplace Project/Samples/Recorded/3-Audio 0015 [2026-05-02 080529].aif`
+- **Notes:**
+  - 28 ms HIGHER than the ES-5 path (54 ms) — at first surprising,
+    since the ES-9 panel out has no ADAT/ES-5 stage. Source of the
+    extra latency: cv-router's IIR smoother (5 ms default lag, but the
+    ramp adds little to threshold-crossing) + ES-9 analog DAC + analog
+    output stage. The smoother is helpful for CV but pays for it on
+    sharp triggers.
+  - This recording established the path-quality ranking documented in
+    docs/calibration-components.md ("FH-2 best, ES-5 second, panel-outs
+    third").
+
+## 2026-05-02 — link-spike vs Tidal cv-router scheduling-path divergence
+
+- **What it measures:** internal cv-router scheduling-path difference
+  between link-spike's `/cv/trig/at` (sample-accurate, audio callback
+  evaluates `pending_start` at exact frame) and Tidal's
+  `/tidal/gate/trig` (BEAM `timer:sleep` then immediate-on-receipt
+  set_target + sample-counted release deadline). Both paths share
+  cv-router's IIR smoother + ES-9 analog stage downstream.
+- **Patch:** ES-9 panel jack 1 → ES-9 input 9 (link-spike's path,
+  L), ES-9 panel jack 2 → ES-9 input 10 (Tidal's path, R).
+- **Method:** stereo recording with link-spike running its default
+  per-beat trig on bus 8 (50% duty), Tidal firing
+  `es9-tick "x ~ x ~ x ~ x ~"` to bus 9.
+- **Result:** median R−L = +6.5 ms, std 4.49 ms, n = 36
+  - source: `Tidal Test Rample QD Laplace Project/Samples/Recorded/3-Audio 0016 [2026-05-02 081506].aif`
+- **Derived:** `link-spike-cv-trigger-baseline ≈ 75 ms` (= 82 − 6.5).
+  Same chain as `es9-cv-panel-baseline` but with a 6.5 ms head start
+  due to cv-router's sample-accurate scheduling on `/cv/trig/at`.
+- **Why this matters:** lets us reason about how link-spike's per-beat
+  trig (which drives the rig's hardware clock if/when used) aligns with
+  Tidal-driven gates. If both fire on the same Link beat at the same
+  bus, link-spike's gate arrives 6.5 ms earlier and may pre-empt
+  Tidal's set_target via cv-router's single-pending-start-slot
+  contention.
+
+---
+
+## 2026-05-02 — Refactor: per-binding `lat` for OSC paths
+
+Concurrent with the above measurements, refactored the `Gate`, `ESX`,
+and `ES5Gate` PrimAction constructors to carry a `latencyMs` field.
+Parser accepts optional trailing `lat <int>` on the action spec:
+
+```
+bind es5g1 es5gate 0          -- lat 0 (uncompensated)
+bind es5g1 es5gate 0 lat 54   -- compensated by 54 ms
+```
+
+Dispatcher subtracts `latencyMs` from `delayClamped` before the BEAM
+sleep, mirroring the `dev.latencyMs` adjustment already applied for
+MIDI bindings. Default 0 if `lat` is omitted (preserves the existing
+default-drum-binding behaviour).
+
+`setup/es5.tidal` now bakes `lat 54` into all `es5g1..es5g8` so they
+phase-lock with Live's grid out of the box.
+
+**Verification still pending:** rebuild, restart purerl-tidal, rerun
+the `live-tick` + `es5g1` recording. Expect the median offset to
+collapse to near zero (analogous to ipad-patterning's behaviour after
+applying lat 50).
+
+---
+
 ## Procedure for a new destination
 
 1. Add a `midi-device <name> "<port>" lat 0` line in a setup file.

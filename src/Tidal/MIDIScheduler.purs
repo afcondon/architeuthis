@@ -465,25 +465,28 @@ midiSchedulerLoop stateRef = do
                           liftEffect $ Log.debug $ "〰 [" <> b.name <> "] cv bus " <> show bus <> " = " <> show value
                           liftEffect $ OSC.sendCVAfter osc bus value cvDelay
                         _, _ -> pure unit
-                    Binding.ESX slot ->
+                    Binding.ESX e ->
                       case state.oscClient, Number.fromString token of
                         Just osc, Just value -> do
-                          liftEffect $ Log.debug $ "⌇ [" <> b.name <> "] esx slot " <> show slot <> " = " <> show value
-                          liftEffect $ OSC.sendESXAfter osc slot value delayClamped
+                          let adjusted = max 0.0 (delayClamped - Int.toNumber e.latencyMs)
+                          liftEffect $ Log.debug $ "⌇ [" <> b.name <> "] esx slot " <> show e.slot <> " = " <> show value <> " (lat " <> show e.latencyMs <> "ms)"
+                          liftEffect $ OSC.sendESXAfter osc e.slot value adjusted
                         _, _ -> pure unit
-                    Binding.Gate ch ->
+                    Binding.Gate g ->
                       when (token /= "~") do
                         case state.oscClient of
                           Just osc -> do
-                            liftEffect $ Log.debug $ "⚡ [" <> b.name <> "] gate " <> show ch <> " in " <> show delayInt <> "ms"
-                            liftEffect $ OSC.sendGateTrigAfter osc ch state.config.gate.gateDuration delayClamped
+                            let adjusted = max 0.0 (delayClamped - Int.toNumber g.latencyMs)
+                            liftEffect $ Log.debug $ "⚡ [" <> b.name <> "] gate " <> show g.channel <> " in " <> show delayInt <> "ms (lat " <> show g.latencyMs <> "ms)"
+                            liftEffect $ OSC.sendGateTrigAfter osc g.channel state.config.gate.gateDuration adjusted
                           Nothing -> pure unit
-                    Binding.ES5Gate bit ->
+                    Binding.ES5Gate g ->
                       when (token /= "~") do
                         case state.oscClient of
                           Just osc -> do
-                            liftEffect $ Log.debug $ "✦ [" <> b.name <> "] es5gate " <> show bit <> " in " <> show delayInt <> "ms"
-                            liftEffect $ OSC.sendES5GateTrigAfter osc bit state.config.gate.gateDuration delayClamped
+                            let adjusted = max 0.0 (delayClamped - Int.toNumber g.latencyMs)
+                            liftEffect $ Log.debug $ "✦ [" <> b.name <> "] es5gate " <> show g.bit <> " in " <> show delayInt <> "ms (lat " <> show g.latencyMs <> "ms)"
+                            liftEffect $ OSC.sendES5GateTrigAfter osc g.bit state.config.gate.gateDuration adjusted
                           Nothing -> pure unit
                     Binding.MidiNote m ->
                       when (token /= "~") do
