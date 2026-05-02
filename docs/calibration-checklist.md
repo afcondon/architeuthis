@@ -78,6 +78,39 @@ This is the manual MVP of `rig-doctor calibrate`'s pre-flight phase.
   tree (cv-router stdout, link-spike stdout, Tidal stdout) before
   blaming the rig.
 
+## Pitch calibration (V/oct)
+
+Latency is one axis of calibration; **pitch is the other**. Any module
+receiving V/oct from cv-router (ES-9 panel CV, ESX-8CV, ES-5 channels
+configured for CV) needs verification that 0V/+1V produce the expected
+reference pitch and exactly one octave above it. CV chains drift with
+temperature and have per-DAC offset/gain errors that aren't captured by
+the latency framework.
+
+- [ ] **Tuner / reference pitch source available** — guitar tuner with
+  modular input, a known-tuned reference VCO, or a calibrated synth
+  voice you can A/B against.
+- [ ] **Identify each CV-routed pitch destination in the session.** What
+  patches to what:
+  - Plaits V/oct ← which ES-9 panel out / ESX-8CV slot?
+  - Other VCO V/oct inputs same question
+  - Maths attenuator-as-pitch-source (rare but happens) same
+- [ ] **Reference-pitch test:** send `cv <bus> 0.0 voct` and check that
+  the destination module produces the expected reference note (typically
+  C2 at 0V in the cv-router convention; verify with your tuner).
+- [ ] **Octave test:** send `cv <bus> 1.0 voct` and verify the
+  destination module produces exactly +1 octave (12 semitones up). If
+  off by more than ~5 cents, compensate either in module trim (some
+  modules expose this) or in software via a per-binding gain/offset
+  (not yet implemented in purerl-tidal — flag for rig-doctor).
+- [ ] **Multi-octave test if accuracy matters:** repeat at +2V, +3V to
+  rule out cumulative DAC nonlinearity. ESX-8CV is 12-bit so expect
+  some quantisation; ES-9 panel CV is 24-bit and should be linear to
+  ear precision across its full range.
+- [ ] **Pitch tuning is per-module, latency is per-chain.** They're
+  orthogonal — don't conflate them. A module can be perfectly in tune
+  but late on the trigger; or perfectly on-time but a quarter-tone flat.
+
 ## Calibration setup
 
 - [ ] **Same audio path on both L and R if possible** — using identical
