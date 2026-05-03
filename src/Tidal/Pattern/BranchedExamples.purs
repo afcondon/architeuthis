@@ -13,7 +13,6 @@ import Prelude
 
 import Data.Map as Map
 import Data.Rational (fromInt)
-import Data.Tuple (Tuple(..))
 import Tidal.Pattern.Branched
   ( Branched
   , Voice(..)
@@ -24,6 +23,7 @@ import Tidal.Pattern.Branched
   , jux
   , merge
   , mult
+  , voiced
   )
 import Tidal.Pattern.Core (every, fast, fastCat, rev, slow, stack)
 import Tidal.Pattern.Types (Pattern, pattern, query, silence)
@@ -57,9 +57,9 @@ example_jux = jux rev melody
 
 example_fugue3 :: Pattern String
 example_fugue3 = mult
-  [ Tuple (Voice "head1") identity
-  , Tuple (Voice "head2") (slow (fromInt 2))
-  , Tuple (Voice "head3") (fast (fromInt 2))
+  [ voiced "head1" identity
+  , voiced "head2" (slow (fromInt 2))
+  , voiced "head3" (fast (fromInt 2))
   ]
   melody
 
@@ -71,9 +71,9 @@ example_fugue3 = mult
 
 ensemble :: Branched String
 ensemble = fanOut
-  [ Tuple (Voice "lead") identity
-  , Tuple (Voice "pad")  (slow (fromInt 2))
-  , Tuple (Voice "bass") identity
+  [ voiced "lead" identity
+  , voiced "pad"  (slow (fromInt 2))
+  , voiced "bass" identity
   ]
   melody  -- placeholder — in a piece each branch would fork from its own source
 
@@ -83,9 +83,9 @@ example_verse = merge ensemble
 example_chorus :: Pattern String
 example_chorus = gate
   (Map.fromFoldable
-     [ Tuple (Voice "lead") (pure true)
-     , Tuple (Voice "pad")  (pure false)
-     , Tuple (Voice "bass") (pure false)
+     [ voiced "lead" (pure true)
+     , voiced "pad"  (pure false)
+     , voiced "bass" (pure false)
      ])
   ensemble
 
@@ -116,9 +116,9 @@ example_bridge = crossfade bridgeSchedule ensemble
 example_trade :: Pattern String
 example_trade = alternate
   (fanOut
-    [ Tuple (Voice "kit-a") identity
-    , Tuple (Voice "kit-b") (every 2 rev)
-    , Tuple (Voice "kit-c") (fast (fromInt 2))
+    [ voiced "kit-a" identity
+    , voiced "kit-b" (every 2 rev)
+    , voiced "kit-c" (fast (fromInt 2))
     ]
     drums)
 
@@ -130,7 +130,7 @@ example_trade = alternate
 
 example_unmerged :: Branched String
 example_unmerged = fanOut
-  [ Tuple (Voice "plaits") identity
-  , Tuple (Voice "rample") (slow (fromInt 2))
+  [ voiced "plaits" identity
+  , voiced "rample" (slow (fromInt 2))
   ]
   melody

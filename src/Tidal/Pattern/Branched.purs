@@ -30,6 +30,7 @@ module Tidal.Pattern.Branched
   , branches
     -- * Construction
   , fanOut
+  , voiced
     -- * Merges
   , merge
   , gate
@@ -116,6 +117,22 @@ fanOut
   -> Branched a
 fanOut transforms p =
   Branched (map (\(Tuple v f) -> Tuple v (f p)) transforms)
+
+-- | Cell-friendly pair builder for any value keyed by Voice.
+-- |
+-- | `voiced "L" x` is sugar for `Tuple (Voice "L") x`. Use it everywhere
+-- | a Voice-keyed pair appears — fan-out branch entries, gate maps,
+-- | binding maps:
+-- |
+-- | > mult [ voiced "head1" identity
+-- | >      , voiced "head2" (slow (fromInt 2))
+-- | >      , voiced "head3" (fast (fromInt 2)) ] melody
+-- |
+-- | > gate (Map.fromFoldable
+-- | >        [ voiced "lead" (pure true)
+-- | >        , voiced "pad"  (pure false) ]) ensemble
+voiced :: forall a. String -> a -> Tuple Voice a
+voiced name x = Tuple (Voice name) x
 
 -------------------------------------------------------------------------------
 -- Merges
