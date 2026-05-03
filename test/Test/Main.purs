@@ -5,6 +5,7 @@ import Prelude
 import Data.Either (Either(..))
 import Effect (Effect)
 import Effect.Console (log)
+import Test.BranchedSpec (runBranchedTests)
 import Test.ControlSpec (runControlTests)
 import Test.LawSpec (runLawTests)
 import Test.PatternSpec (runPatternTests)
@@ -131,6 +132,9 @@ main = do
 
   -- Run utility tests
   runUtilTests
+
+  -- Run Branched (fork/merge) tests
+  runBranchedTests
 
   log ""
   log "=== All tests completed ==="
