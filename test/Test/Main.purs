@@ -7,6 +7,7 @@ import Effect (Effect)
 import Effect.Console (log)
 import Test.BranchedSpec (runBranchedTests)
 import Test.ControlSpec (runControlTests)
+import Test.ExprSpec (runExprTests)
 import Test.LawSpec (runLawTests)
 import Test.PatternSpec (runPatternTests)
 import Test.UtilSpec (runUtilTests)
@@ -135,6 +136,9 @@ main = do
 
   -- Run Branched (fork/merge) tests
   runBranchedTests
+
+  -- Run Tidal.Expr (host-language) tests
+  runExprTests
 
   log ""
   log "=== All tests completed ==="
