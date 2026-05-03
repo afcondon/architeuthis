@@ -61,6 +61,13 @@ test: erl
 		-eval 'F = test_main@ps:main(), F()' \
 		-s init stop
 
+# Run the Branched guided tour (test/Test/BranchedTour.purs)
+tour: erl
+	@echo "==> Running Branched tour..."
+	ERL_LIBS="_build/default/lib" erl -pa ebin -noshell \
+		-eval 'F = test_branchedTour@ps:runTour(), F()' \
+		-s init stop
+
 # Start the server (with rebuild)
 run: erl
 	@echo "==> Starting purerl-tidal server on port 3012..."
