@@ -460,14 +460,22 @@ split_lat_suffix(Bin) ->
 handle_pattern_message(Text, SchedulerPid, State) ->
     case try_parse_prefixed(Text) of
         {gate, Ch, Pattern} ->
-            case safe_parse(Pattern) of
-                {ok, _} ->
-                    SchedulerPid ! {updateGateTrack, Ch, Pattern},
-                    Reply = {text, <<"OK: gate ", (integer_to_binary(Ch))/binary, " ", Pattern/binary>>},
-                    {reply, Reply, State};
-                {parse_err, ErrBin} ->
-                    Reply = {text, <<"ERROR: gate parse: ", ErrBin/binary>>},
-                    {reply, Reply, State}
+            case Pattern of
+                <<":", ExprSrc/binary>> ->
+                    %% Host-language expression form: `gate <ch> :<expr>`.
+                    %% Calls `Tidal.Expr.eval`, which returns either a
+                    %% pre-built Pattern closure or an error string.
+                    handle_gate_expr(Ch, ExprSrc, SchedulerPid, State);
+                _ ->
+                    case safe_parse(Pattern) of
+                        {ok, _} ->
+                            SchedulerPid ! {updateGateTrack, Ch, Pattern},
+                            Reply = {text, <<"OK: gate ", (integer_to_binary(Ch))/binary, " ", Pattern/binary>>},
+                            {reply, Reply, State};
+                        {parse_err, ErrBin} ->
+                            Reply = {text, <<"ERROR: gate parse: ", ErrBin/binary>>},
+                            {reply, Reply, State}
+                    end
             end;
         {cv, Bus, RawPattern} ->
             {Pattern, Specs} = split_transforms(RawPattern),
@@ -626,6 +634,33 @@ safe_parse(Text) ->
         Class:Reason ->
             {parse_err, list_to_binary(io_lib:format("~p:~p", [Class, Reason]))}
     end.
+
+%% Run a host-language expression against `Tidal.Expr.eval` and ship the
+%% resulting Pattern closure to the scheduler. Errors come back as a
+%% Left whose payload is a binary explanation string.
+handle_gate_expr(Ch, ExprSrc, SchedulerPid, State) ->
+    Result = try ('tidal_expr@ps':eval())(ExprSrc)
+             catch Class:Reason ->
+                 {crash, list_to_binary(io_lib:format("~p:~p", [Class, Reason]))}
+             end,
+    case Result of
+        {right, Pat} ->
+            SchedulerPid ! {updateGateTrackP, Ch, Pat},
+            {reply,
+             {text, <<"OK: gate ",
+                      (integer_to_binary(Ch))/binary,
+                      " :", ExprSrc/binary>>},
+             State};
+        {left, Err} ->
+            ErrBin = to_binary(Err),
+            {reply, {text, <<"ERROR: expr: ", ErrBin/binary>>}, State};
+        {crash, CrashBin} ->
+            {reply, {text, <<"ERROR: expr crash: ", CrashBin/binary>>}, State}
+    end.
+
+to_binary(B) when is_binary(B) -> B;
+to_binary(L) when is_list(L) -> list_to_binary(L);
+to_binary(Other) -> list_to_binary(io_lib:format("~p", [Other])).
 
 handle_legacy_pattern_message(Text, SchedulerPid, State) ->
     case parse_message(Text) of

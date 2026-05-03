@@ -74,6 +74,10 @@ data Msg
   | UpdatePatternWithChannel String Int  -- Update pattern with specific MIDI channel
   | UpdateTracks (Array TrackInfo)  -- Update multiple tracks, each with own channel
   | UpdateGateTrack Int String   -- Replace gate track at channel idx with pattern
+  -- Pre-parsed gate track. Carries a `Pattern String` closure built by
+  -- the host-language layer (`Tidal.Expr`), bypassing the mini-notation
+  -- parse step. Used by the `gate <ch> :<expr>` cell form.
+  | UpdateGateTrackP Int (Pattern String)
   | UpdateCVTrack Int String (Array TransformSpec)
                                  -- Replace CV track at bus idx with pattern + transforms
   | UpdateESXTrack Int String (Array TransformSpec)
@@ -256,6 +260,13 @@ schedulerLoop stateRef = do
             Right ast -> tpatToPattern ast
             Left _ -> state.pattern
       liftEffect $ Ref.write (state { pattern = newPat }) stateRef
+      schedulerLoop stateRef
+
+    UpdateGateTrackP _ pat -> do
+      -- Base scheduler: same as UpdateGateTrack but the pattern is
+      -- already built by the host-language evaluator.
+      state <- liftEffect $ Ref.read stateRef
+      liftEffect $ Ref.write (state { pattern = pat }) stateRef
       schedulerLoop stateRef
 
     UpdateCVTrack _ _ _ -> do

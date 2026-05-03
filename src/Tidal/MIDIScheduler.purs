@@ -662,6 +662,19 @@ midiSchedulerLoop stateRef = do
           liftEffect $ log $ "gate parse error: " <> patStr
       midiSchedulerLoop stateRef
 
+    UpdateGateTrackP ch pat -> do
+      -- Pre-parsed gate track from the host-language evaluator.
+      -- Same as UpdateGateTrack but skips the mini-notation parse step.
+      state <- liftEffect $ Ref.read stateRef
+      let newTrack = GateTrack { pattern: pat, channel: ch, fanout: false }
+      let isOther = case _ of
+            GateTrack g -> g.channel /= ch
+            _           -> true
+      let newTracks = Array.filter isOther state.tracks <> [newTrack]
+      liftEffect $ Ref.write (state { tracks = newTracks }) stateRef
+      liftEffect $ log $ "gate ch " <> show ch <> ": <expr>"
+      midiSchedulerLoop stateRef
+
     UpdateCVTrack bus patStr specs -> do
       -- Replace just the CV track at this bus; leave others untouched.
       state <- liftEffect $ Ref.read stateRef
