@@ -120,6 +120,14 @@ data Msg
   -- evaluation, like fh2-envelope. Lets the user reshape envelopes live
   -- without touching the FH-2 Configurator.
   | Fh2Shape Int Int Int Int Int       -- voice, attack, decay, sustain, release (each 0-127)
+  -- Live config writes (in-memory; not yet persisted to current.tidal).
+  -- Mid-session BPM change without Link will glitch the cycle counter
+  -- (currentCycle = elapsedMs / cycleDurationMs and both sides shift);
+  -- with Link active the rate change is smooth.
+  | SetBpm Number                      -- BPM, e.g. 120.0
+  | SetDefaultMidiDevice String        -- legacy default MIDI device name
+  | SetGateEnabled Boolean             -- toggles OSC gate output to cv-router
+  | SetLookAheadMs Number              -- scheduler look-ahead in ms
   | Stop              -- Stop the scheduler
 
 -- | Wire-level transform shape: matches the Erlang tuples sent by the
@@ -297,6 +305,13 @@ schedulerLoop stateRef = do
     Fh2Envelope _ _ _ -> schedulerLoop stateRef
     UpdateFh2TriggerTrack _ _ -> schedulerLoop stateRef
     Fh2Shape _ _ _ _ _ -> schedulerLoop stateRef
+
+    -- Live config writes are handled in MIDIScheduler; the base
+    -- scheduler doesn't carry that state, so swallow them.
+    SetBpm _ -> schedulerLoop stateRef
+    SetDefaultMidiDevice _ -> schedulerLoop stateRef
+    SetGateEnabled _ -> schedulerLoop stateRef
+    SetLookAheadMs _ -> schedulerLoop stateRef
 
     Stop -> do
       liftEffect $ log "Scheduler stopped"

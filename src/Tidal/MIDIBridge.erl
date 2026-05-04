@@ -3,7 +3,7 @@
 %% subprocess-spawn path with a single UDP send per event.
 
 -module(tidal_mIDIBridge@foreign).
--export([startClient/0, scheduleNoteAt/7, scheduleCCAt/6]).
+-export([startClient/0, scheduleNoteAt/7, scheduleCCAt/6, setLinkTempo/2]).
 
 -define(LINK_SPIKE_HOST, "127.0.0.1").
 -define(LINK_SPIKE_PORT, 57122).
@@ -47,6 +47,20 @@ scheduleCCAt(Socket, PortName, Channel, CC, Value, UnixUsAt) ->
         unit
     end.
 
+%% Send /link/set-tempo. link-spike's handler captures its AblLink
+%% session, mutates tempo, commits — Link broadcasts to all peers.
+setLinkTempo(Socket, Bpm) ->
+    fun() ->
+        Packet = encode_link_set_tempo(Bpm),
+        case gen_udp:send(Socket, ?LINK_SPIKE_HOST, ?LINK_SPIKE_PORT, Packet) of
+            ok -> ok;
+            {error, Reason} ->
+                tidal_log:err("MIDIBridge.setLinkTempo: gen_udp:send failed: ~p~n",
+                              [Reason])
+        end,
+        unit
+    end.
+
 %% =========================================================================
 %% OSC encoding
 %% =========================================================================
@@ -84,6 +98,15 @@ encode_cc_at(PortName, Channel, CC, Value, UnixUsAt) ->
         (round(UnixUsAt)):64/big-signed-integer
     >>,
     <<Addr/binary, TypeTag/binary, PortPadded/binary, Body/binary>>.
+
+%% /link/set-tempo  ,f  bpm  — single 32-bit IEEE 754 big-endian float.
+%% Link's tempo range is 20..999 BPM; clamp on the link-spike side.
+encode_link_set_tempo(Bpm) ->
+    Addr = pad_string(<<"/link/set-tempo">>),
+    TypeTag = pad_string(<<",f">>),
+    BpmF = case is_float(Bpm) of true -> Bpm; false -> float(Bpm) end,
+    Body = <<BpmF:32/float-big>>,
+    <<Addr/binary, TypeTag/binary, Body/binary>>.
 
 %% Pad a string to a 4-byte boundary with at least one trailing null.
 pad_string(Bin) when is_binary(Bin) ->

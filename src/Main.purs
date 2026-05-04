@@ -41,7 +41,7 @@ main = do
         { bpm: 120.0
         , lookAhead: 100.0
         , scheduleInterval: 50
-        , midi: { device: "AUDIO4c USB2", channel: 1, defaultVelocity: 100 }
+        , midi: { device: "IAC Driver Tidal", channel: 1, defaultVelocity: 100 }
         , noteMap: defaultDrumMap
         , noteDuration: 50
         , gate: gateConfig

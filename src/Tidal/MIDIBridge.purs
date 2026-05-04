@@ -33,6 +33,7 @@ module Tidal.MIDIBridge
   , startClient
   , scheduleNoteAt
   , scheduleCCAt
+  , setLinkTempo
   ) where
 
 import Prelude
@@ -68,4 +69,13 @@ foreign import scheduleCCAt
   -> Int           -- cc 0-127
   -> Int           -- value 0-127
   -> Number        -- unix_micros_at
+  -> Effect Unit
+
+-- | Send `/link/set-tempo <bpm>` to link-spike. link-spike captures
+-- | its AblLink session, calls `set_tempo`, and Link's protocol
+-- | propagates to all peers (Ableton, modular clocks, etc.). Non-
+-- | scheduling — fires immediately, ignores any per-track latency.
+foreign import setLinkTempo
+  :: BridgeClient
+  -> Number        -- bpm (e.g. 120.0)
   -> Effect Unit

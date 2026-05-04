@@ -266,6 +266,40 @@ try_parse_prefixed(<<"load ", Rest/binary>>) ->
         nomatch -> {load, Name};
         _ -> none
     end;
+try_parse_prefixed(<<"state">>) ->
+    %% state — read latest StateBus snapshot (ETS-backed) and reply.
+    %% No args; trailing chars after `state` aren't accepted to keep
+    %% the verb unambiguous.
+    {state};
+try_parse_prefixed(<<"bpm ", Rest/binary>>) ->
+    %% Shortcut for `config bpm <n>` — bpm is the most-likely-to-change
+    %% config dimension and warrants a one-word verb.  Same SetBpm
+    %% scheduler path: sends /link/set-tempo to link-spike AND updates
+    %% the local free-run fallback.
+    case parse_number(trim_binary(Rest)) of
+        {ok, N} -> {set_bpm, N};
+        error -> none
+    end;
+try_parse_prefixed(<<"config bpm ", Rest/binary>>) ->
+    case parse_number(trim_binary(Rest)) of
+        {ok, N} -> {set_bpm, N};
+        error -> none
+    end;
+try_parse_prefixed(<<"config midi-device ", Rest/binary>>) ->
+    %% Device name may be quoted ("AUDIO4c USB2"); strip surrounding
+    %% quotes idempotently.  Per-line trailing whitespace also goes.
+    {set_default_midi_device, strip_surrounding_quotes(trim_binary(Rest))};
+try_parse_prefixed(<<"config gate-enabled ", Rest/binary>>) ->
+    case trim_binary(Rest) of
+        <<"true">> -> {set_gate_enabled, true};
+        <<"false">> -> {set_gate_enabled, false};
+        _ -> none
+    end;
+try_parse_prefixed(<<"config look-ahead-ms ", Rest/binary>>) ->
+    case parse_number(trim_binary(Rest)) of
+        {ok, N} -> {set_look_ahead_ms, N};
+        error -> none
+    end;
 try_parse_prefixed(_) ->
     none.
 
@@ -581,6 +615,26 @@ handle_pattern_message(Text, SchedulerPid, State) ->
                              " S=", (integer_to_binary(S))/binary,
                              " R=", (integer_to_binary(R))/binary>>},
             {reply, Reply, State};
+        {state} ->
+            %% Read latest snapshot from StateBus (ETS-backed).  Falls
+            %% back to "{}" if the table doesn't exist yet (boot window).
+            Json = (tidal_stateBus@foreign:read())(),
+            {reply, {text, Json}, State};
+        {set_bpm, N} ->
+            SchedulerPid ! {setBpm, N},
+            NumBin = list_to_binary(io_lib:format("~p", [N])),
+            {reply, {text, <<"OK: bpm = ", NumBin/binary>>}, State};
+        {set_default_midi_device, Name} ->
+            SchedulerPid ! {setDefaultMidiDevice, Name},
+            {reply, {text, <<"OK: midi-device = ", Name/binary>>}, State};
+        {set_gate_enabled, B} ->
+            SchedulerPid ! {setGateEnabled, B},
+            BBin = case B of true -> <<"true">>; false -> <<"false">> end,
+            {reply, {text, <<"OK: gate-enabled = ", BBin/binary>>}, State};
+        {set_look_ahead_ms, N} ->
+            SchedulerPid ! {setLookAheadMs, N},
+            NumBin = list_to_binary(io_lib:format("~p", [N])),
+            {reply, {text, <<"OK: look-ahead-ms = ", NumBin/binary>>}, State};
         none ->
             %% Not a built-in verb. Try named-binding dispatch, falling back
             %% to legacy whole-text pattern if the name isn't registered.

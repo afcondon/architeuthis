@@ -26,6 +26,7 @@ import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Number (fromString) as Number
 import Data.String (joinWith) as Str
+import Data.String as String
 import Data.Rational (Rational, fromInt, toNumber) as R
 import Data.Time.Duration (Milliseconds(..))
 import Data.Tuple (Tuple(..))
@@ -49,6 +50,7 @@ import Tidal.Parse.Parser (parse)
 import Tidal.Pattern.Core (queryArc)
 import Tidal.Pattern.Types (Event(..), Pattern, Arc(..))
 import Tidal.Scheduler (sendAfter, currentTimeMs, TrackInfo, Msg(..), TransformSpec(..))
+import Tidal.StateBus as StateBus
 
 -- | Gate output configuration (for Expert Sleepers ES-9 via cv-router)
 type GateConfig =
@@ -310,6 +312,8 @@ startMIDIScheduler config patternStr = do
           Right ast -> [GateTrack { pattern: tpatToPattern ast, channel: config.midi.channel, fanout: true }]
           Left _ -> []
 
+    liftEffect StateBus.init
+
     stateRef <- liftEffect $ Ref.new
       { config
       , startTime
@@ -336,9 +340,14 @@ startMIDIScheduler config patternStr = do
 
     midiSchedulerLoop stateRef
 
--- | Main loop
+-- | Main loop. Each iteration publishes the current state to the
+-- | StateBus before blocking on `receive` — that way Calypso's
+-- | `state` verb (read via ETS) always sees the post-handle state
+-- | of the most recent message. ~20 writes/sec from Tick is fine
+-- | (ETS insert of a few-KB binary is sub-microsecond).
 midiSchedulerLoop :: Ref MIDISchedulerState -> ProcessM Msg Unit
 midiSchedulerLoop stateRef = do
+  liftEffect (publishState stateRef)
   msg <- receive
   case msg of
     Tick -> do
@@ -879,6 +888,32 @@ midiSchedulerLoop stateRef = do
           liftEffect $ scheduleCCAt state.bridgeClient dev.name channel ccR (clamp r) nowUnixUs
       midiSchedulerLoop stateRef
 
+    SetBpm bpm -> do
+      -- Update the local fallback (used when no Link peer broadcasts
+      -- a tempo) AND send /link/set-tempo to link-spike. With Link
+      -- active, the broadcast wins on the next anchor; without Link,
+      -- the fallback is what the cycle counter uses.
+      state <- liftEffect $ Ref.read stateRef
+      liftEffect $ MIDIBridge.setLinkTempo state.bridgeClient bpm
+      liftEffect $ Ref.modify_ (\s -> s { config = s.config { bpm = bpm } }) stateRef
+      liftEffect $ log $ "bpm: " <> show bpm <> " (sent to link-spike + updated fallback)"
+      midiSchedulerLoop stateRef
+
+    SetDefaultMidiDevice deviceName -> do
+      liftEffect $ Ref.modify_ (\s -> s { config = s.config { midi = s.config.midi { device = deviceName } } }) stateRef
+      liftEffect $ log $ "config: midi-device = " <> deviceName
+      midiSchedulerLoop stateRef
+
+    SetGateEnabled enabled -> do
+      liftEffect $ Ref.modify_ (\s -> s { config = s.config { gate = s.config.gate { enabled = enabled } } }) stateRef
+      liftEffect $ log $ "config: gate-enabled = " <> show enabled
+      midiSchedulerLoop stateRef
+
+    SetLookAheadMs lookAhead -> do
+      liftEffect $ Ref.modify_ (\s -> s { config = s.config { lookAhead = lookAhead } }) stateRef
+      liftEffect $ log $ "config: look-ahead-ms = " <> show lookAhead
+      midiSchedulerLoop stateRef
+
     Stop -> do
       liftEffect $ log "MIDI Scheduler stopped"
 
@@ -997,3 +1032,112 @@ eventSample :: Event String -> String
 eventSample = case _ of
   Digital { value } -> value
   Analog { value } -> value
+
+-- ---------------------------------------------------------------------------
+-- State publication for the `state` debug verb
+-- ---------------------------------------------------------------------------
+
+-- | Read the current scheduler state and publish a JSON snapshot to
+-- | the StateBus ETS table.  Called at the top of every loop
+-- | iteration so the latest snapshot reflects the post-handle state
+-- | of the most recent message.
+publishState :: Ref MIDISchedulerState -> Effect Unit
+publishState stateRef = do
+  s <- Ref.read stateRef
+  StateBus.write (serializeState s)
+
+-- | Serialize a `MIDISchedulerState` as a JSON string.  Hand-rolled
+-- | because Argonaut isn't currently in the purerl-tidal dep set;
+-- | the shape is small and stable enough that the cost is fine.
+-- | Handles standard JSON-string escaping for `\` and `"`; other
+-- | control chars are unlikely in the values we produce (device
+-- | names, binding names, etc.).
+serializeState :: MIDISchedulerState -> String
+serializeState s =
+  let
+    cfg = s.config
+    mc = cfg.midi
+    gc = cfg.gate
+
+    configObj = "{"
+      <> "\"bpm\":" <> show cfg.bpm
+      <> ",\"lookAheadMs\":" <> show cfg.lookAhead
+      <> ",\"scheduleIntervalMs\":" <> show cfg.scheduleInterval
+      <> ",\"noteDurationMs\":" <> show cfg.noteDuration
+      <> ",\"midi\":{"
+      <>   "\"device\":" <> jsStr mc.device
+      <>   ",\"channel\":" <> show mc.channel
+      <>   ",\"defaultVelocity\":" <> show mc.defaultVelocity
+      <> "}"
+      <> ",\"gate\":{"
+      <>   "\"enabled\":" <> jsBool gc.enabled
+      <>   ",\"oscHost\":" <> jsStr gc.oscHost
+      <>   ",\"oscPort\":" <> show gc.oscPort
+      <>   ",\"gateDurationMs\":" <> show gc.gateDuration
+      <>   ",\"cvLeadMs\":" <> show gc.cvLeadMs
+      <>   ",\"channelOffset\":" <> show gc.channelOffset
+      <> "}"
+      <> "}"
+
+    midiDeviceEntry (Tuple alias dev) =
+      "{\"alias\":" <> jsStr alias
+        <> ",\"name\":" <> jsStr dev.name
+        <> ",\"latencyMs\":" <> show dev.latencyMs <> "}"
+    midiDevicesArr = jsArrOf midiDeviceEntry
+      (Map.toUnfoldable s.midiDevices :: Array (Tuple String { name :: String, latencyMs :: Number }))
+
+    bindingNamesArr = jsArrOf jsStr
+      (Array.fromFoldable (Map.keys s.bindings))
+
+    trackEntry track = case track of
+      GateTrack g ->
+        "{\"kind\":\"gate\",\"channel\":" <> show g.channel
+          <> ",\"fanout\":" <> jsBool g.fanout <> "}"
+      CVTrack c ->
+        "{\"kind\":\"cv\",\"bus\":" <> show c.bus <> "}"
+      ESXTrack e ->
+        "{\"kind\":\"esx\",\"slot\":" <> show e.slot <> "}"
+      BoundTrack b ->
+        "{\"kind\":\"bound\",\"name\":" <> jsStr b.name <> "}"
+      Fh2TriggerTrack f ->
+        "{\"kind\":\"fh2-trigger\",\"voice\":" <> show f.voice <> "}"
+    tracksArr = jsArrOf trackEntry s.tracks
+
+    fh2Entry (Tuple voice channel) =
+      "{\"voice\":" <> show voice <> ",\"channel\":" <> show channel <> "}"
+    fh2Arr = jsArrOf fh2Entry
+      (Map.toUnfoldable s.fh2VoiceChannels :: Array (Tuple Int Int))
+
+    slotEntry (Tuple name value) =
+      "{\"name\":" <> jsStr name <> ",\"value\":" <> show value <> "}"
+    slotsArr = jsArrOf slotEntry
+      (Map.toUnfoldable s.slots :: Array (Tuple String Number))
+
+  in
+    "{\"config\":" <> configObj
+      <> ",\"midiDevices\":" <> midiDevicesArr
+      <> ",\"bindingNames\":" <> bindingNamesArr
+      <> ",\"tracks\":" <> tracksArr
+      <> ",\"fh2VoiceChannels\":" <> fh2Arr
+      <> ",\"slots\":" <> slotsArr
+      <> "}"
+
+-- | JSON string literal — escape `\` and `"` and wrap in double quotes.
+jsStr :: String -> String
+jsStr s = "\"" <> escapeJson s <> "\""
+
+jsBool :: Boolean -> String
+jsBool b = if b then "true" else "false"
+
+-- | Build a JSON array literal by mapping a per-element renderer
+-- | over an `Array a`.  Handles the empty-array case (`[]`) cleanly.
+jsArrOf :: forall a. (a -> String) -> Array a -> String
+jsArrOf f xs = "[" <> Str.joinWith "," (map f xs) <> "]"
+
+-- | Replace JSON-string-relevant escapes.  Order matters: backslash
+-- | first so the doubled `\\` doesn't get re-escaped on the quote pass.
+escapeJson :: String -> String
+escapeJson s0 =
+  let s1 = String.replaceAll (String.Pattern "\\") (String.Replacement "\\\\") s0
+      s2 = String.replaceAll (String.Pattern "\"") (String.Replacement "\\\"") s1
+  in s2
