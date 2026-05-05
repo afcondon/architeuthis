@@ -801,6 +801,68 @@ midiSchedulerLoop stateRef = do
           liftEffect $ log $ "Pattern updated (legacy): " <> fullText
       midiSchedulerLoop stateRef
 
+    PlayByNameP name pat fullText -> do
+      state <- liftEffect $ Ref.read stateRef
+      case Map.lookup name state.bindings of
+        Just binding -> do
+          let newTrack = BoundTrack
+                { pattern: pat
+                , name
+                , binding
+                , params: Map.empty
+                }
+          let isOther = case _ of
+                BoundTrack b -> b.name /= name
+                _            -> true
+          let newTracks = Array.filter isOther state.tracks <> [newTrack]
+          liftEffect $ Ref.write (state { tracks = newTracks }) stateRef
+          liftEffect $ log $ name <> ": " <> fullText
+        Nothing ->
+          liftEffect $ log $ "(no binding '" <> name <> "', :expr ignored)"
+      midiSchedulerLoop stateRef
+
+    PlayMultiByName entries fullText -> do
+      -- Bare `:<expr>` form. Each entry is (binding-name, transformed
+      -- pattern); each becomes a BoundTrack so the binding's note
+      -- resolver applies and the destination is the binding's
+      -- channel.  Atomic replacement: drop all existing BoundTracks
+      -- whose name appears in the incoming entries, then append the
+      -- new ones.  Entries whose name has no binding are logged and
+      -- dropped.
+      state <- liftEffect $ Ref.read stateRef
+      let
+        resolved = Array.mapMaybe
+          (\(Tuple n p) -> case Map.lookup n state.bindings of
+              Just binding -> Just
+                ( BoundTrack
+                    { pattern: p
+                    , name: n
+                    , binding
+                    , params: Map.empty
+                    }
+                )
+              Nothing -> Nothing)
+          entries
+        unresolved = Array.mapMaybe
+          (\(Tuple n _) -> case Map.lookup n state.bindings of
+              Just _  -> Nothing
+              Nothing -> Just n)
+          entries
+        replacing = Array.mapMaybe
+          (\(Tuple n _) -> case Map.lookup n state.bindings of
+              Just _  -> Just n
+              Nothing -> Nothing)
+          entries
+        isReplaced = case _ of
+          BoundTrack b -> Array.elem b.name replacing
+          _            -> false
+        newTracks = Array.filter (not <<< isReplaced) state.tracks <> resolved
+      liftEffect $ Ref.write (state { tracks = newTracks }) stateRef
+      liftEffect $ log $ "multi: " <> fullText
+      for_ unresolved \n ->
+        liftEffect $ log $ "(no binding '" <> n <> "', voice skipped)"
+      midiSchedulerLoop stateRef
+
     SetSlot name value -> do
       state <- liftEffect $ Ref.read stateRef
       let newSlots = Map.insert name value state.slots
@@ -1006,19 +1068,35 @@ showTransforms ts =
     Scale a b -> "scale " <> show a <> " " <> show b
 
 -- | Note name → MIDI number (C-1 = 0, C0 = 12, C4 = 60, etc.).
--- | Covers C3..C6 (the range used by `defaultSampleCVMap` previously).
+-- | Covers C0..C8. Tokens outside this range fall back to the binding's
+-- | `defaultNote`, so add octaves here when a session needs them.
 noteNameMidi :: Map String Int
 noteNameMidi = Map.fromFoldable
-  [ Tuple "c3" 48,  Tuple "cs3" 49, Tuple "d3" 50,  Tuple "ds3" 51
-  , Tuple "e3" 52,  Tuple "f3" 53,  Tuple "fs3" 54, Tuple "g3" 55
-  , Tuple "gs3" 56, Tuple "a3" 57,  Tuple "as3" 58, Tuple "b3" 59
-  , Tuple "c4" 60,  Tuple "cs4" 61, Tuple "d4" 62,  Tuple "ds4" 63
-  , Tuple "e4" 64,  Tuple "f4" 65,  Tuple "fs4" 66, Tuple "g4" 67
-  , Tuple "gs4" 68, Tuple "a4" 69,  Tuple "as4" 70, Tuple "b4" 71
-  , Tuple "c5" 72,  Tuple "cs5" 73, Tuple "d5" 74,  Tuple "ds5" 75
-  , Tuple "e5" 76,  Tuple "f5" 77,  Tuple "fs5" 78, Tuple "g5" 79
-  , Tuple "gs5" 80, Tuple "a5" 81,  Tuple "as5" 82, Tuple "b5" 83
-  , Tuple "c6" 84
+  [ Tuple "c0"  12, Tuple "cs0" 13, Tuple "d0"  14, Tuple "ds0" 15
+  , Tuple "e0"  16, Tuple "f0"  17, Tuple "fs0" 18, Tuple "g0"  19
+  , Tuple "gs0" 20, Tuple "a0"  21, Tuple "as0" 22, Tuple "b0"  23
+  , Tuple "c1"  24, Tuple "cs1" 25, Tuple "d1"  26, Tuple "ds1" 27
+  , Tuple "e1"  28, Tuple "f1"  29, Tuple "fs1" 30, Tuple "g1"  31
+  , Tuple "gs1" 32, Tuple "a1"  33, Tuple "as1" 34, Tuple "b1"  35
+  , Tuple "c2"  36, Tuple "cs2" 37, Tuple "d2"  38, Tuple "ds2" 39
+  , Tuple "e2"  40, Tuple "f2"  41, Tuple "fs2" 42, Tuple "g2"  43
+  , Tuple "gs2" 44, Tuple "a2"  45, Tuple "as2" 46, Tuple "b2"  47
+  , Tuple "c3"  48, Tuple "cs3" 49, Tuple "d3"  50, Tuple "ds3" 51
+  , Tuple "e3"  52, Tuple "f3"  53, Tuple "fs3" 54, Tuple "g3"  55
+  , Tuple "gs3" 56, Tuple "a3"  57, Tuple "as3" 58, Tuple "b3"  59
+  , Tuple "c4"  60, Tuple "cs4" 61, Tuple "d4"  62, Tuple "ds4" 63
+  , Tuple "e4"  64, Tuple "f4"  65, Tuple "fs4" 66, Tuple "g4"  67
+  , Tuple "gs4" 68, Tuple "a4"  69, Tuple "as4" 70, Tuple "b4"  71
+  , Tuple "c5"  72, Tuple "cs5" 73, Tuple "d5"  74, Tuple "ds5" 75
+  , Tuple "e5"  76, Tuple "f5"  77, Tuple "fs5" 78, Tuple "g5"  79
+  , Tuple "gs5" 80, Tuple "a5"  81, Tuple "as5" 82, Tuple "b5"  83
+  , Tuple "c6"  84, Tuple "cs6" 85, Tuple "d6"  86, Tuple "ds6" 87
+  , Tuple "e6"  88, Tuple "f6"  89, Tuple "fs6" 90, Tuple "g6"  91
+  , Tuple "gs6" 92, Tuple "a6"  93, Tuple "as6" 94, Tuple "b6"  95
+  , Tuple "c7"  96, Tuple "cs7" 97, Tuple "d7"  98, Tuple "ds7" 99
+  , Tuple "e7" 100, Tuple "f7" 101, Tuple "fs7" 102, Tuple "g7" 103
+  , Tuple "gs7" 104, Tuple "a7" 105, Tuple "as7" 106, Tuple "b7" 107
+  , Tuple "c8" 108
   ]
 
 -- | Get cycle start time from event

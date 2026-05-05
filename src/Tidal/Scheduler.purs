@@ -22,6 +22,7 @@ import Data.Foldable (for_)
 import Data.Int (round, toNumber, floor) as Int
 import Data.Rational (Rational, fromInt, toNumber) as R
 import Data.Time.Duration (Milliseconds(..))
+import Data.Tuple (Tuple)
 import Effect (Effect)
 import Effect.Class (liftEffect)
 import Effect.Console (log)
@@ -94,6 +95,23 @@ data Msg
   | PlayByName String String String (Array ParamSpec)
       -- name, patternStr, fullText, joined-parameter patterns from `#`
       -- segments (empty when no `#` used)
+  -- Like PlayByName but with a pre-evaluated structure pattern (from
+  -- `Tidal.Expr.eval`).  Used by the `<bound-name> :<expr>` form so
+  -- the host language's Branched combinators flow through the
+  -- binding's per-event note resolver instead of GateTrack's
+  -- drum-map fallback.  Param specs (`# vel "..."`) are ignored on
+  -- this path in v1 — the expression already produces a complete
+  -- Pattern.
+  | PlayByNameP String (Pattern String) String
+      -- name, pre-evaluated pattern, fullText (for logging only)
+  -- Multi-destination dispatch from the bare `:<expr>` form (e.g.
+  -- `:mult [bass:id, lead:rev] "c4 e4 g4 b4"`).  Each (name, pattern)
+  -- becomes a BoundTrack on its named binding, replacing any prior
+  -- BoundTrack with the same name.  All voices in a single message
+  -- update atomically.  Voices whose name has no registered binding
+  -- are logged and skipped — the rest still ship.
+  | PlayMultiByName (Array (Tuple String (Pattern String))) String
+      -- per-voice patterns, fullText (for logging only)
   | SetSlot String Number         -- slot name, current value (input bindings scaffold)
   -- Tidal-compat: silence everything, kill all running tracks. Bindings
   -- registry is preserved (so subsequent `kick bd*4` works without
@@ -291,6 +309,8 @@ schedulerLoop stateRef = do
     AddBinding _ _ -> schedulerLoop stateRef
     RemoveBinding _ -> schedulerLoop stateRef
     PlayByName _ _ _ _ -> schedulerLoop stateRef
+    PlayByNameP _ _ _ -> schedulerLoop stateRef
+    PlayMultiByName _ _ -> schedulerLoop stateRef
     SetSlot _ _ -> schedulerLoop stateRef
     Hush -> do
       state <- liftEffect $ Ref.read stateRef

@@ -196,7 +196,7 @@ parseCompoundAction body =
 -- | with other calibrated sources. Default 0 if omitted.
 parseAction :: String -> Either String PrimAction
 parseAction s =
-  case String.split (Pattern " ") (trim s) of
+  case Array.filter (_ /= "") (String.split (Pattern " ") (trim s)) of
     ["gate", chStr] ->
       mkGate chStr "0"
     ["gate", chStr, "lat", latStr] ->

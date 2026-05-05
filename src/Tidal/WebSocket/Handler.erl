@@ -337,7 +337,7 @@ parse_number(Bin) ->
 %% `kick "bd*4"` works the same as our native `kick bd*4`.
 split_first_word(Text) ->
     case binary:split(Text, <<" ">>) of
-        [Word, Rest] -> {Word, strip_quotes(Rest)};
+        [Word, Rest] -> {Word, strip_quotes(trim_binary(Rest))};
         [Word] -> {Word, <<>>}
     end.
 
@@ -642,32 +642,56 @@ handle_pattern_message(Text, SchedulerPid, State) ->
             case Text of
                 <<"{", _/binary>> ->
                     handle_legacy_pattern_message(Text, SchedulerPid, State);
+                <<":", ExprSrc/binary>> ->
+                    %% Bare `:<expr>` form. Voice tags inside the
+                    %% expression's fan-out spec name bindings
+                    %% directly, so each voice flows to its own
+                    %% destination. Distinct from `<binding> :<expr>`
+                    %% which fans-out-then-merges through one channel.
+                    handle_multi_expr(ExprSrc, Text, SchedulerPid, State);
                 _ ->
                     {Word, Rest, ParamSpecs} = parse_with_join(Text),
-                    %% Pre-flight parse so malformed input (non-ASCII chars
-                    %% reaching the upstream parser, etc.) returns [err]
-                    %% instead of crashing the scheduler. Check `Rest`
-                    %% (quote-stripped pattern body) — that's what the
-                    %% scheduler uses for the bound-name case, AND it
-                    %% covers the legacy-fallback case adequately because
-                    %% if Rest contains crash-inducing input, Text will too.
-                    %% Crucially, checking Text instead would reject valid
-                    %% bound-name dispatches with quoted patterns
-                    %% (`kick "bd*4"`), since Text contains the quote chars
-                    %% the parser doesn't understand.
-                    case safe_parse(Rest) of
-                        {ok, _} ->
-                            %% PureScript Array a is encoded as Erlang
-                            %% `array` (sparse-array module), not list —
-                            %% sending a plain list here makes array:size
-                            %% crash with badarg in the scheduler.
-                            ParamSpecsArray = array:from_list(ParamSpecs),
-                            SchedulerPid ! {playByName, Word, Rest, Text, ParamSpecsArray},
-                            Reply = {text, <<"OK: dispatched '", Word/binary, "'">>},
-                            {reply, Reply, State};
-                        {parse_err, ErrBin} ->
-                            Reply = {text, <<"ERROR: parse: ", ErrBin/binary>>},
-                            {reply, Reply, State}
+                    case Rest of
+                        <<":", ExprSrc/binary>> ->
+                            %% Named-binding + host-language expression
+                            %% form (`bass :rev "c2*4 g2*4"`). Evaluate
+                            %% via Tidal.Expr and dispatch the result as
+                            %% a BoundTrack so the binding's note
+                            %% resolver applies.  Param specs from `#`
+                            %% segments are ignored on this path in v1;
+                            %% the expression already produces a
+                            %% complete Pattern.
+                            handle_play_by_name_expr(Word, ExprSrc, Text, SchedulerPid, State);
+                        _ ->
+                            %% Pre-flight parse so malformed input
+                            %% (non-ASCII chars reaching the upstream
+                            %% parser, etc.) returns [err] instead of
+                            %% crashing the scheduler.  Check `Rest`
+                            %% (quote-stripped pattern body) — that's
+                            %% what the scheduler uses for the
+                            %% bound-name case, AND it covers the
+                            %% legacy-fallback case adequately because
+                            %% if Rest contains crash-inducing input,
+                            %% Text will too.  Crucially, checking Text
+                            %% instead would reject valid bound-name
+                            %% dispatches with quoted patterns
+                            %% (`kick "bd*4"`), since Text contains the
+                            %% quote chars the parser doesn't understand.
+                            case safe_parse(Rest) of
+                                {ok, _} ->
+                                    %% PureScript Array a is encoded as
+                                    %% Erlang `array` (sparse-array
+                                    %% module), not list — sending a
+                                    %% plain list here makes array:size
+                                    %% crash with badarg in the scheduler.
+                                    ParamSpecsArray = array:from_list(ParamSpecs),
+                                    SchedulerPid ! {playByName, Word, Rest, Text, ParamSpecsArray},
+                                    Reply = {text, <<"OK: dispatched '", Word/binary, "'">>},
+                                    {reply, Reply, State};
+                                {parse_err, ErrBin} ->
+                                    Reply = {text, <<"ERROR: parse: ", ErrBin/binary>>},
+                                    {reply, Reply, State}
+                            end
                     end
             end
     end.
@@ -715,6 +739,74 @@ handle_gate_expr(Ch, ExprSrc, SchedulerPid, State) ->
 to_binary(B) when is_binary(B) -> B;
 to_binary(L) when is_list(L) -> list_to_binary(L);
 to_binary(Other) -> list_to_binary(io_lib:format("~p", [Other])).
+
+%% Mirror of handle_gate_expr for the bound-name path. Run a
+%% host-language expression against `Tidal.Expr.eval` and ship the
+%% resulting Pattern to the scheduler as a BoundTrack via
+%% PlayByNameP.  The binding's note resolver then handles per-event
+%% dispatch, so things like `bass :rev "c2*4 g2*4"` and
+%% `lead :mult [L:id, R:rev] "c4 e4 g4 b4"` actually sound
+%% melodically — unlike `gate <ch> :…` which falls through to the
+%% drum-only token map.
+handle_play_by_name_expr(Word, ExprSrc, FullText, SchedulerPid, State) ->
+    Result = try ('tidal_expr@ps':eval())(ExprSrc)
+             catch Class:Reason ->
+                 {crash, list_to_binary(io_lib:format("~p:~p", [Class, Reason]))}
+             end,
+    case Result of
+        {right, Pat} ->
+            SchedulerPid ! {playByNameP, Word, Pat, FullText},
+            {reply,
+             {text, <<"OK: dispatched '", Word/binary, "' :", ExprSrc/binary>>},
+             State};
+        {left, Err} ->
+            ErrBin = to_binary(Err),
+            {reply, {text, <<"ERROR: expr: ", ErrBin/binary>>}, State};
+        {crash, CrashBin} ->
+            {reply, {text, <<"ERROR: expr crash: ", CrashBin/binary>>}, State}
+    end.
+
+%% Bare `:<expr>` form: voice tags name bindings, each voice flows to
+%% its own destination. Tidal.Expr.evalMulti returns the per-voice
+%% (name, Pattern) pairs as an Erlang array of `{tuple, Name, Pat}`
+%% (PureScript Array (Tuple String (Pattern String))). We pass the
+%% array through unchanged — the scheduler handler iterates it.
+handle_multi_expr(ExprSrc, FullText, SchedulerPid, State) ->
+    Result = try ('tidal_expr@ps':evalMulti())(ExprSrc)
+             catch Class:Reason ->
+                 {crash, list_to_binary(io_lib:format("~p:~p", [Class, Reason]))}
+             end,
+    case Result of
+        {right, Entries} ->
+            SchedulerPid ! {playMultiByName, Entries, FullText},
+            Names = entries_names(Entries),
+            NamesBin = case Names of
+                <<>> -> <<"(no voices)">>;
+                _    -> Names
+            end,
+            {reply,
+             {text, <<"OK: dispatched multi [", NamesBin/binary, "] :",
+                      ExprSrc/binary>>},
+             State};
+        {left, Err} ->
+            ErrBin = to_binary(Err),
+            {reply, {text, <<"ERROR: expr: ", ErrBin/binary>>}, State};
+        {crash, CrashBin} ->
+            {reply, {text, <<"ERROR: expr crash: ", CrashBin/binary>>}, State}
+    end.
+
+%% Pull the binding-names out of an Array of {tuple, Name, _Pat} for
+%% the WS reply text. Comma-separated. Names is whatever Tidal.Expr
+%% put in the first slot of each Tuple — bare String, so a binary.
+entries_names(Entries) ->
+    Names = [Name || {tuple, Name, _Pat} <- array:to_list(Entries)],
+    join_binary(Names, <<", ">>).
+
+join_binary([], _Sep) -> <<>>;
+join_binary([X], _Sep) -> X;
+join_binary([X | Rest], Sep) ->
+    RestJoined = join_binary(Rest, Sep),
+    <<X/binary, Sep/binary, RestJoined/binary>>.
 
 handle_legacy_pattern_message(Text, SchedulerPid, State) ->
     case parse_message(Text) of

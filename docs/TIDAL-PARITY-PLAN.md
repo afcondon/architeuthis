@@ -3,6 +3,13 @@
 This document tracks progress toward matching the TidalCycles Haskell test suite.
 Work can be done incrementally across multiple sessions.
 
+> **See also**: [`live-coding-feasibility.md`](live-coding-feasibility.md)
+> — broader design exploration of how purerl-tidal might evolve
+> toward GHCI-flavoured live coding. Compares our architecture to
+> TidalCycles' GHCI+SuperDirt split, measures compile-latency, and
+> sketches the per-track BEAM decomposition. Not parity-test
+> material but useful design context.
+
 **Reference**: `/Users/afc/work/afc-work/GitHub/Tidal/tidal-core/test/`
 
 ## Current Status

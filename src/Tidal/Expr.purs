@@ -36,6 +36,7 @@ module Tidal.Expr
   , EvalResult(..)
   , evalExpr
   , eval
+  , evalMulti
   ) where
 
 import Prelude
@@ -62,7 +63,23 @@ import Tidal.Eval.Interpret (tpatToPattern)
 import Tidal.Parse.Parser (parseTPat)
 import Tidal.Pattern.Branched (Voice(..))
 import Tidal.Pattern.Branched as Branched
-import Tidal.Pattern.Core (every, fast, palindrome, rev, slow)
+import Tidal.Pattern.Core
+  ( brak
+  , compress
+  , every
+  , fast
+  , iter
+  , linger
+  , off
+  , palindrome
+  , rev
+  , rotL
+  , rotR
+  , slow
+  , stutter
+  , trunc
+  , zoom
+  )
 import Tidal.Pattern.Types (Pattern, silence)
 
 -- ---------------------------------------------------------------------------
@@ -103,7 +120,7 @@ eofP = PC.notFollowedBy (satisfy (const true)) PC.<?> "end of input"
 -- A top-level expression is either a function application (head + args)
 -- or a single atom on its own.
 exprTop :: Parser Expr
-exprTop = do
+exprTop = defer \_ -> do
   h <- atom
   args <- many atom
   pure case args of
@@ -113,8 +130,21 @@ exprTop = do
 -- An "atom" is something that could appear as a head or as an argument.
 atom :: Parser Expr
 atom = defer \_ -> do
-  e <- pStringLit <|> pListLit <|> pNumberE <|> pTagOrVar
+  e <- pStringLit <|> pListLit <|> pParens <|> pNumberE <|> pTagOrVar
   skipWS
+  pure e
+
+-- Parenthesised expression — grouping for nested function application.
+-- `palindrome (fast 4 "bd sn")` parses as `palindrome` applied to one
+-- argument (the `fast 4 "bd sn"` sub-application). Without parens
+-- the same source would parse as `palindrome` applied to three
+-- arguments, which is an arity error.
+pParens :: Parser Expr
+pParens = defer \_ -> do
+  _ <- char '('
+  skipWS
+  e <- exprTop
+  _ <- char ')'
   pure e
 
 pTagOrVar :: Parser Expr
@@ -147,13 +177,31 @@ pNumberE :: Parser Expr
 pNumberE = do
   sign <- PC.option 1 (char '-' $> -1)
   num <- pInt
-  rest <- PC.optionMaybe (char '/' *> pInt)
-  let
-    n = sign * num
-    r = case rest of
-      Nothing -> Rational.fromInt n
-      Just d -> n % d
-  pure (ENum r)
+  let signed = sign * num
+  mTail <- PC.optionMaybe
+    ( PC.try (do
+        _ <- char '/'
+        d <- pInt
+        pure (signed % d))
+    <|>
+      (do
+        _ <- char '.'
+        digits <- many1 digit
+        let
+          fracInt = case Int.fromString (SCU.fromCharArray digits) of
+            Just k -> k
+            Nothing -> 0
+          den = pow10 (Array.length digits)
+          absN = if signed < 0 then negate signed else signed
+          sgn = if signed < 0 then -1 else 1
+        pure ((sgn * (absN * den + fracInt)) % den))
+    )
+  pure (ENum (case mTail of
+    Just r -> r
+    Nothing -> Rational.fromInt signed))
+
+pow10 :: Int -> Int
+pow10 n = if n <= 0 then 1 else 10 * pow10 (n - 1)
 
 pInt :: Parser Int
 pInt = do
@@ -220,6 +268,48 @@ eval src = do
   r <- evalExpr e
   asPattern r
 
+-- | Multi-destination evaluator for the bare `:<expr>` form.
+-- |
+-- | Voice tags in the fan-out spec name destinations directly
+-- | (`[bass:id, lead:rev]` → bass and lead bindings).  The result is an
+-- | array of (binding-name, Pattern) pairs the scheduler dispatches as
+-- | parallel BoundTracks — each voice's transformed pattern flows
+-- | through its own binding's note resolver and goes to its own
+-- | destination.
+-- |
+-- | v1 only supports `mult` at the top level.  `alternate`, `crossfade`,
+-- | and `gate` need pattern-level masking to give a sensible
+-- | per-destination interpretation; until that exists, they return an
+-- | error pointing the user at the bound-name `<name> :<expr>` form
+-- | (which merges through one channel).
+evalMulti :: String -> Either String (Array (Tuple String (Pattern String)))
+evalMulti src = do
+  e <- parseExpr src
+  case e of
+    EApp (EVar "mult") [ specE, patE ] -> do
+      specR <- evalExpr specE
+      patR <- evalExpr patE
+      spec <- asFanOutSpec "mult" specR
+      pat <- asPattern patR
+      Right (perVoicePatterns (Branched.fanOut spec pat))
+    EApp (EVar "mult") args ->
+      Left ("mult: expected 2 arguments, got " <> show (Array.length args))
+    EApp (EVar "alternate") _ ->
+      Left "alternate is not yet supported in bare :expr form — use `<binding> :alternate ...` instead"
+    EApp (EVar "crossfade") _ ->
+      Left "crossfade is not yet supported in bare :expr form — use `<binding> :crossfade ...` instead"
+    EApp (EVar "gate") _ ->
+      Left "gate is not yet supported in bare :expr form — use `<binding> :gate ...` instead"
+    _ -> Left "bare :expr requires a multi-destination form (mult [name:fn, ...] pat)"
+
+-- | Pull the `Voice` newtype back to a `String` and pair it with its
+-- | per-voice pattern.  Insertion order is preserved by `Branched`.
+perVoicePatterns
+  :: Branched.Branched String
+  -> Array (Tuple String (Pattern String))
+perVoicePatterns b =
+  map (\(Tuple (Voice name) p) -> Tuple name p) (Branched.branches b)
+
 traverseArgs :: Array Expr -> Either String (Array EvalResult)
 traverseArgs = go []
   where
@@ -237,6 +327,7 @@ resolveVar n = case n of
   "id" -> Right (VFunc identity)
   "rev" -> Right (VFunc rev)
   "palindrome" -> Right (VFunc palindrome)
+  "brak" -> Right (VFunc brak)
   "silence" -> Right (VPattern silence)
   "true" -> Right (VBool true)
   "false" -> Right (VBool false)
@@ -253,8 +344,18 @@ applyExprByName n args = case n of
   "id" -> oneArg "id" args >>= asPattern <#> VPattern
   "rev" -> oneArg "rev" args >>= asPattern <#> (rev >>> VPattern)
   "palindrome" -> oneArg "palindrome" args >>= asPattern <#> (palindrome >>> VPattern)
+  "brak" -> oneArg "brak" args >>= asPattern <#> (brak >>> VPattern)
   "slow" -> binOp "slow" slow args
   "fast" -> binOp "fast" fast args
+  "linger" -> binOp "linger" linger args
+  "trunc" -> binOp "trunc" trunc args
+  "rotL" -> binOp "rotL" rotL args
+  "rotR" -> binOp "rotR" rotR args
+  "iter" -> intBinOp "iter" iter args
+  "compress" -> ratPairOp "compress" compress args
+  "zoom" -> ratPairOp "zoom" zoom args
+  "off" -> ratFunOp "off" off args
+  "stutter" -> intRatOp "stutter" stutter args
   "every" -> applyExprEvery args
   -- Branched combinators
   "jux" -> applyJux args
@@ -264,28 +365,115 @@ applyExprByName n args = case n of
   "gate" -> applyGate args
   _ -> Left ("unknown function: " <> n)
 
--- `slow N pat` / `fast N pat`.
+-- `slow N pat` / `fast N pat`.  1-arg partial application returns a
+-- `VFunc` so `(slow 2)` can sit inside a fan-out spec
+-- (`[lead2:(slow 2)]`) — useful for Fugue Machine vocabulary.
 binOp
   :: String
   -> (Rational -> Pattern String -> Pattern String)
   -> Array EvalResult
   -> Either String EvalResult
 binOp fname f args = case args of
+  [ a ] -> do
+    n <- asRational fname a
+    Right (VFunc (f n))
   [ a, b ] -> do
     n <- asRational fname a
     p <- asPattern b
     Right (VPattern (f n p))
-  _ -> Left (fname <> ": expected 2 arguments, got " <> show (Array.length args))
+  _ -> Left (fname <> ": expected 1 or 2 arguments, got " <> show (Array.length args))
 
--- `every N f pat`.
+-- `iter N pat` etc.  Int + Pattern.  1-arg partial returns VFunc.
+intBinOp
+  :: String
+  -> (Int -> Pattern String -> Pattern String)
+  -> Array EvalResult
+  -> Either String EvalResult
+intBinOp fname f args = case args of
+  [ a ] -> do
+    n <- asInt fname a
+    Right (VFunc (f n))
+  [ a, b ] -> do
+    n <- asInt fname a
+    p <- asPattern b
+    Right (VPattern (f n p))
+  _ -> Left (fname <> ": expected 1 or 2 arguments, got " <> show (Array.length args))
+
+-- `compress lo hi pat` / `zoom lo hi pat`.  2 rationals + Pattern.
+-- 2-arg partial application returns a `VFunc`.
+ratPairOp
+  :: String
+  -> (Rational -> Rational -> Pattern String -> Pattern String)
+  -> Array EvalResult
+  -> Either String EvalResult
+ratPairOp fname f args = case args of
+  [ a, b ] -> do
+    x <- asRational fname a
+    y <- asRational fname b
+    Right (VFunc (f x y))
+  [ a, b, c ] -> do
+    x <- asRational fname a
+    y <- asRational fname b
+    p <- asPattern c
+    Right (VPattern (f x y p))
+  _ -> Left (fname <> ": expected 2 or 3 arguments, got " <> show (Array.length args))
+
+-- `off N g pat`.  Rational + (Pattern -> Pattern) + Pattern.
+-- 2-arg partial application returns a `VFunc`.
+ratFunOp
+  :: String
+  -> ( Rational
+       -> (Pattern String -> Pattern String)
+       -> Pattern String
+       -> Pattern String
+     )
+  -> Array EvalResult
+  -> Either String EvalResult
+ratFunOp fname f args = case args of
+  [ a, b ] -> do
+    n <- asRational fname a
+    g <- asFunc fname b
+    Right (VFunc (f n g))
+  [ a, b, c ] -> do
+    n <- asRational fname a
+    g <- asFunc fname b
+    p <- asPattern c
+    Right (VPattern (f n g p))
+  _ -> Left (fname <> ": expected 2 or 3 arguments, got " <> show (Array.length args))
+
+-- `stutter N rate pat`.  Int + Rational + Pattern.
+-- 2-arg partial application returns a `VFunc`.
+intRatOp
+  :: String
+  -> (Int -> Rational -> Pattern String -> Pattern String)
+  -> Array EvalResult
+  -> Either String EvalResult
+intRatOp fname f args = case args of
+  [ a, b ] -> do
+    n <- asInt fname a
+    r <- asRational fname b
+    Right (VFunc (f n r))
+  [ a, b, c ] -> do
+    n <- asInt fname a
+    r <- asRational fname b
+    p <- asPattern c
+    Right (VPattern (f n r p))
+  _ -> Left (fname <> ": expected 2 or 3 arguments, got " <> show (Array.length args))
+
+-- `every N f pat`.  2-arg partial application returns a `VFunc`
+-- so `(every 4 rev)` can sit inside a fan-out spec.
 applyExprEvery :: Array EvalResult -> Either String EvalResult
 applyExprEvery args = case args of
+  [ a, b ] -> do
+    n <- asInt "every" a
+    f <- asFunc "every" b
+    Right (VFunc (every n f))
   [ a, b, c ] -> do
     n <- asInt "every" a
     f <- asFunc "every" b
     p <- asPattern c
     Right (VPattern (every n f p))
-  _ -> Left ("every: expected 3 arguments, got " <> show (Array.length args))
+  _ -> Left ("every: expected 2 or 3 arguments, got " <> show (Array.length args))
 
 oneArg :: String -> Array EvalResult -> Either String EvalResult
 oneArg fname args = case args of
@@ -352,12 +540,19 @@ asPattern = case _ of
   VPattern p -> Right p
   _ -> Left "expected a pattern"
 
+-- A list of functions is treated as left-to-right composition:
+-- `[rev, (slow 2)]` means "apply rev, then slow 2" — i.e. the
+-- composed function is `(slow 2) . rev`.  Empty list = identity.
+-- Recursive: lists of lists also compose.
 asFunc
   :: String
   -> EvalResult
   -> Either String (Pattern String -> Pattern String)
 asFunc ctx = case _ of
   VFunc f -> Right f
+  VList items -> do
+    fs <- traverseEither (asFunc ctx) items
+    Right (Array.foldl (\acc f -> f <<< acc) identity fs)
   _ -> Left (ctx <> ": expected a function argument")
 
 asRational :: String -> EvalResult -> Either String Rational
@@ -391,10 +586,9 @@ asFanOutSpec ctx = case _ of
   _ -> Left (ctx <> ": expected a fan-out spec like [L:rev, R:id]")
   where
     oneEntry c = case _ of
-      VTagged name (VFunc f) -> Right (Tuple (Voice name) f)
-      VTagged name _ -> Left
-        (c <> ": branch \"" <> name
-          <> "\" must be a bare function name (id/rev/palindrome)")
+      VTagged name v -> do
+        f <- asFunc (c <> ": branch \"" <> name <> "\"") v
+        Right (Tuple (Voice name) f)
       _ -> Left (c <> ": fan-out spec entries must be name:function")
 
 -- A gate map is `[name:bool, ...]` — a `VList` of `VTagged String VBool`.

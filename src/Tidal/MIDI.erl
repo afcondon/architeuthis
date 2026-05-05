@@ -17,6 +17,11 @@ listDevices() ->
     fun() ->
         Cmd = ?SENDMIDI ++ " list 2>/dev/null || echo 'sendmidi not found'",
         Result = os:cmd(Cmd),
-        io:format("MIDI Devices:~n~s~n", [Result]),
+        %% ~ts (translate-string) handles Unicode codepoints — needed
+        %% because device names can contain smart quotes (e.g. macOS
+        %% Bluetooth advertises "Andrew's Mac mini Bluetooth" with
+        %% codepoint 8217 for the apostrophe).  ~s would crash boot
+        %% with badarg the moment such a device appeared in the list.
+        io:format("MIDI Devices:~n~ts~n", [Result]),
         unit
     end.

@@ -2,6 +2,13 @@
 
 A real-time Tidal pattern scheduler running on the Erlang/BEAM VM, written in PureScript and compiled via purerl.
 
+> **See also**: [`live-coding-feasibility.md`](live-coding-feasibility.md)
+> — design exploration of the eDSL question, BEAM features we
+> underutilise, compile-latency measurements, and the per-track
+> gen_server decomposition we should pursue. Captures a 2026-05-05
+> conversation; not a current spec but the reasoning behind the
+> intended next moves.
+
 ## Overview
 
 ```
