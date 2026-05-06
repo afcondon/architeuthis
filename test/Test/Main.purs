@@ -10,6 +10,7 @@ import Test.ControlSpec (runControlTests)
 import Test.ExprSpec (runExprTests)
 import Test.LawSpec (runLawTests)
 import Test.PatternSpec (runPatternTests)
+import Test.PredictiveSpec (runPredictiveTests)
 import Test.UtilSpec (runUtilTests)
 import Tidal.AST.Pretty (pretty)
 import Tidal.AST.Types (TPat)
@@ -124,6 +125,9 @@ main = do
 
   -- Run pattern evaluation tests
   runPatternTests
+
+  -- Run predictive event-shape tests (whole + part assertions)
+  runPredictiveTests
 
   -- Run control pattern tests
   runControlTests
