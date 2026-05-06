@@ -104,6 +104,16 @@ data Msg
   -- Pattern.
   | PlayByNameP String (Pattern String) String
       -- name, pre-evaluated pattern, fullText (for logging only)
+  -- Same colon-prefix form as PlayByNameP, but carries the raw expression
+  -- source rather than a pre-evaluated pattern.  This lets the scheduler
+  -- choose between `Tidal.Expr.eval` (string-typed pattern, dispatched
+  -- via BoundTrack) and `Tidal.Expr.evalNum` (number-typed pattern,
+  -- dispatched via ContinuousTrack) based on whether the name is
+  -- registered as a continuous binding.  WS handler sends this for the
+  -- `<name> :<expr>` form; the registry lookup is the only thing that
+  -- decides which dispatch path to take.
+  | PlayByNameExpr String String String
+      -- name, exprSrc, fullText
   -- Multi-destination dispatch from the bare `:<expr>` form (e.g.
   -- `:mult [bass:id, lead:rev] "c4 e4 g4 b4"`).  Each (name, pattern)
   -- becomes a BoundTrack on its named binding, replacing any prior
@@ -310,6 +320,7 @@ schedulerLoop stateRef = do
     RemoveBinding _ -> schedulerLoop stateRef
     PlayByName _ _ _ _ -> schedulerLoop stateRef
     PlayByNameP _ _ _ -> schedulerLoop stateRef
+    PlayByNameExpr _ _ _ -> schedulerLoop stateRef
     PlayMultiByName _ _ -> schedulerLoop stateRef
     SetSlot _ _ -> schedulerLoop stateRef
     Hush -> do

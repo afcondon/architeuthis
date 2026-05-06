@@ -740,31 +740,21 @@ to_binary(B) when is_binary(B) -> B;
 to_binary(L) when is_list(L) -> list_to_binary(L);
 to_binary(Other) -> list_to_binary(io_lib:format("~p", [Other])).
 
-%% Mirror of handle_gate_expr for the bound-name path. Run a
-%% host-language expression against `Tidal.Expr.eval` and ship the
-%% resulting Pattern to the scheduler as a BoundTrack via
-%% PlayByNameP.  The binding's note resolver then handles per-event
-%% dispatch, so things like `bass :rev "c2*4 g2*4"` and
-%% `lead :mult [L:id, R:rev] "c4 e4 g4 b4"` actually sound
-%% melodically — unlike `gate <ch> :…` which falls through to the
-%% drum-only token map.
+%% Mirror of handle_gate_expr for the bound-name path. Sends the raw
+%% expression source to the scheduler, which evaluates it against the
+%% binding registry — `Tidal.Expr.eval` (string-typed pattern, BoundTrack)
+%% if the name is a discrete binding, or as `VNumPattern`
+%% (number-typed, ContinuousTrack) if the name is a continuous-voice
+%% binding (`midi-cc-cont`/`cv-cont`).  The scheduler-side dispatch lets
+%% the same `<name> :<expr>` syntax serve both kinds without the WS
+%% handler needing to consult the registry.  Errors surface in the BEAM
+%% logs rather than as a reply payload — the cell stays running and
+%% the user notices via missing audio + log.
 handle_play_by_name_expr(Word, ExprSrc, FullText, SchedulerPid, State) ->
-    Result = try ('tidal_expr@ps':eval())(ExprSrc)
-             catch Class:Reason ->
-                 {crash, list_to_binary(io_lib:format("~p:~p", [Class, Reason]))}
-             end,
-    case Result of
-        {right, Pat} ->
-            SchedulerPid ! {playByNameP, Word, Pat, FullText},
-            {reply,
-             {text, <<"OK: dispatched '", Word/binary, "' :", ExprSrc/binary>>},
-             State};
-        {left, Err} ->
-            ErrBin = to_binary(Err),
-            {reply, {text, <<"ERROR: expr: ", ErrBin/binary>>}, State};
-        {crash, CrashBin} ->
-            {reply, {text, <<"ERROR: expr crash: ", CrashBin/binary>>}, State}
-    end.
+    SchedulerPid ! {playByNameExpr, Word, ExprSrc, FullText},
+    {reply,
+     {text, <<"OK: dispatched '", Word/binary, "' :", ExprSrc/binary>>},
+     State}.
 
 %% Bare `:<expr>` form: voice tags name bindings, each voice flows to
 %% its own destination. Tidal.Expr.evalMulti returns the per-voice

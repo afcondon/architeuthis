@@ -13,12 +13,13 @@ import Prelude
 import Data.Array as Array
 import Data.Either (Either(..), isLeft)
 import Data.Map as Map
+import Data.Maybe (Maybe(..))
 import Data.Rational (fromInt)
 import Data.Tuple (Tuple(..))
 import Effect (Effect)
 import Effect.Console (log)
 import Tidal.Eval.Interpret (tpatToPattern)
-import Tidal.Expr (eval, parseExpr)
+import Tidal.Expr (EvalResult(..), eval, evalExpr, parseExpr)
 import Tidal.Parse.Parser (parseTPat)
 import Tidal.Pattern.Branched
   ( Voice(..)
@@ -29,8 +30,10 @@ import Tidal.Pattern.Branched
   , jux
   , mult
   )
+import Data.Int as Int
+import Data.Rational ((%))
 import Tidal.Pattern.Core (every, fast, palindrome, queryArc, rev, slow)
-import Tidal.Pattern.Types (Pattern)
+import Tidal.Pattern.Types (Event(..), Pattern)
 
 -- ---------------------------------------------------------------------------
 -- Helpers
@@ -201,10 +204,115 @@ runExprTests = do
     (eval "crossfade [L:id] \"bd sn\"")
 
   log ""
+  log "--- eval: oscillators (continuous numeric patterns) ---"
+  -- Oscillators produce VNumPattern.  Each is sampled at the midpoint
+  -- of the queried arc, so a thin window at cycle position 0 gives
+  -- sine(2π·0) = 0 ⇒ (0+1)/2 = 0.5; at 0.25 ⇒ sine(π/2) = 1 ⇒ 1.0; etc.
+  expectNumAt "sine at cycle 0"        "sine"           0.0    0.5
+  expectNumAt "sine at cycle 0.25"     "sine"           0.25   1.0
+  expectNumAt "sine at cycle 0.5"      "sine"           0.5    0.5
+  expectNumAt "sine at cycle 0.75"     "sine"           0.75   0.0
+  expectNumAt "saw at cycle 0"         "saw"            0.0    0.0
+  expectNumAt "saw at cycle 0.5"       "saw"            0.5    0.5
+  expectNumAt "isaw at cycle 0.25"     "isaw"           0.25   0.75
+  expectNumAt "tri at cycle 0.25"      "tri"            0.25   0.5
+  expectNumAt "tri at cycle 0.5"       "tri"            0.5    1.0
+  expectNumAt "square at cycle 0.25"   "square"         0.25   0.0
+  expectNumAt "square at cycle 0.75"   "square"         0.75   1.0
+
+  log ""
+  log "--- eval: range scales 0..1 → [lo, hi] ---"
+  expectNumAt "range 0 127 sine @ 0.25"   "range 0 127 sine"    0.25  127.0
+  expectNumAt "range 0 127 sine @ 0.75"   "range 0 127 sine"    0.75    0.0
+  expectNumAt "range 30 80 sine @ 0"      "range 30 80 sine"    0.0    55.0
+  expectNumAt "range -1 1 sine @ 0.25"    "range -1 1 sine"     0.25    1.0
+  expectNumAt "range -1 1 sine @ 0.75"    "range -1 1 sine"     0.75  (-1.0)
+
+  log ""
+  log "--- eval: slow / fast on numeric patterns ---"
+  -- slow 4 sine puts a full sine cycle across 4 scheduler cycles.
+  -- At cycle 0 we're 1/16 into a slow cycle, expecting a small
+  -- positive offset from 0.5.  Just check the broad shape: sample
+  -- at four points and confirm one full sine has happened.
+  expectNumAt "slow 4 sine @ 0"   "slow 4 sine"   0.0   0.5
+  expectNumAt "slow 4 sine @ 1"   "slow 4 sine"   1.0   1.0
+  expectNumAt "slow 4 sine @ 2"   "slow 4 sine"   2.0   0.5
+  expectNumAt "slow 4 sine @ 3"   "slow 4 sine"   3.0   0.0
+
+  log ""
+  log "--- eval: arithmetic on numeric patterns ---"
+  -- add: at cycle 0, sine = 0.5, saw = 0; sum = 0.5
+  expectNumAt "add sine saw @ 0"        "add sine saw"        0.0   0.5
+  -- mul scalar: at cycle 0.25, sine = 1.0; *0.5 = 0.5
+  expectNumAt "mul 0.5 sine @ 0.25"     "mul 0.5 sine"        0.25  0.5
+  -- sub: at cycle 0.25, sine = 1.0, saw = 0.25; diff = 0.75
+  expectNumAt "sub sine saw @ 0.25"     "sub sine saw"        0.25  0.75
+  -- neg: at cycle 0.25, sine = 1.0; neg = -1.0
+  expectNumAt "neg sine @ 0.25"         "neg sine"            0.25 (-1.0)
+  -- combined: range 0 1 sine + range 0 0.1 saw = sweep + small linear ramp
+  -- at cycle 0, sine = 0.5, saw = 0; sum = 0.5
+  expectNumAt "range+add @ 0"
+    "add (range 0 1 sine) (range 0 0.1 saw)" 0.0  0.5
+
+  log ""
+  log "--- eval: rejects mis-typed args ---"
+  expectEvalLeft "range with non-numeric pattern"
+    (case parseExpr "range 0 1 \"bd sn\"" of
+      Right e -> case evalExpr e of
+        Right (VNumPattern _) -> Right (mini "x")  -- shouldn't happen
+        _ -> Left "expected error"
+      Left err -> Left err)
+  expectEvalLeft "add with mis-shaped second arg"
+    (case parseExpr "add sine \"bd sn\"" of
+      Right e -> case evalExpr e of
+        Right (VNumPattern _) -> Right (mini "x")
+        _ -> Left "expected error"
+      Left err -> Left err)
+
+  log ""
 
 -- ---------------------------------------------------------------------------
 -- Assertion helpers
 -- ---------------------------------------------------------------------------
+
+-- | Evaluate a source expression to `VNumPattern`, query at a single
+-- | cycle position, and assert the first event's value matches
+-- | `expected` within `lfoEps`.  Cycle position is a Number (e.g.
+-- | 0.25 means a quarter into the first cycle); converted to a
+-- | millicycle Rational for queryArc.
+expectNumAt :: String -> String -> Number -> Number -> Effect Unit
+expectNumAt desc src cyc expected =
+  case parseExpr src of
+    Left err -> log $ "  ✗ " <> desc <> " — parse: " <> err
+    Right e -> case evalExpr e of
+      Left err -> log $ "  ✗ " <> desc <> " — eval: " <> err
+      Right (VNumPattern p) ->
+        let
+          -- Center the query window on `cyc` so the midpoint sample
+          -- (which oscillators use) lands exactly at `cyc`.  Window
+          -- is 2 / 1000000 cycles wide, midpoint = cyc.
+          centerMicro = Int.round (cyc * 1000000.0)
+          start' = (centerMicro - 1) % 1000000
+          stop'  = (centerMicro + 1) % 1000000
+          events = queryArc p start' stop'
+          got = case Array.head events of
+            Just (Digital ev) -> Just ev.value
+            Just (Analog ev) -> Just ev.value
+            Nothing -> Nothing
+        in case got of
+          Nothing ->
+            log $ "  ✗ " <> desc <> ": no event at cycle " <> show cyc
+          Just v
+            | abs (v - expected) <= lfoEps ->
+                log $ "  ✓ " <> desc <> ": " <> show v
+            | otherwise ->
+                log $ "  ✗ " <> desc <> ": got " <> show v
+                  <> ", expected " <> show expected
+      Right _ ->
+        log $ "  ✗ " <> desc <> ": eval returned non-numeric pattern"
+  where
+    lfoEps = 0.001
+    abs n = if n < 0.0 then -n else n
 
 expectParses :: String -> String -> Effect Unit
 expectParses desc src = case parseExpr src of

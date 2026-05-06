@@ -66,21 +66,32 @@ import Tidal.Pattern.Branched as Branched
 import Tidal.Pattern.Core
   ( brak
   , compress
+  , cosine
   , every
   , fast
+  , isaw
   , iter
   , linger
   , off
   , palindrome
+  , rand
+  , range
   , rev
   , rotL
   , rotR
+  , saw
+  , sine
   , slow
+  , square
   , stutter
+  , tri
   , trunc
   , zoom
   )
-import Tidal.Pattern.Types (Pattern, silence)
+import Tidal.Pattern.Types
+  ( Arc(..), Event(..), Pattern, State(..), emptyContext, pattern, silence )
+import Control.Apply (lift2)
+import Data.Rational (toNumber) as RT
 
 -- ---------------------------------------------------------------------------
 -- AST
@@ -240,6 +251,12 @@ many1 p = do
 -- | scalar results through the same dispatch path.
 data EvalResult
   = VPattern (Pattern String)
+  -- ^ A discrete sample-name / mini-notation pattern.
+  | VNumPattern (Pattern Number)
+  -- ^ A continuous numeric pattern — oscillators (`sine`, `saw`, …),
+  --   results of `range`/`add`/`mul`/`sub`/`neg`, and any time-warp
+  --   (`slow`/`fast`/`rev`/…) applied to one. Routed to a continuous
+  --   voice (MIDI CC or CV bus) by the scheduler.
   | VFunc (Pattern String -> Pattern String)
   | VInt Int
   | VRat Rational
@@ -331,6 +348,16 @@ resolveVar n = case n of
   "silence" -> Right (VPattern silence)
   "true" -> Right (VBool true)
   "false" -> Right (VBool false)
+  -- Continuous oscillators — values 0..1 over each cycle.  Wrap as
+  -- VNumPattern so they propagate through arithmetic / `range` /
+  -- `slow` and end up driving a continuous voice.
+  "sine"   -> Right (VNumPattern sine)
+  "cosine" -> Right (VNumPattern cosine)
+  "saw"    -> Right (VNumPattern saw)
+  "isaw"   -> Right (VNumPattern isaw)
+  "tri"    -> Right (VNumPattern tri)
+  "square" -> Right (VNumPattern square)
+  "rand"   -> Right (VNumPattern rand)
   _ -> Left ("unknown identifier: " <> n)
 
 -- Apply a head expression to an array of evaluated arguments.
@@ -342,11 +369,11 @@ applyExpr head args = case head of
 applyExprByName :: String -> Array EvalResult -> Either String EvalResult
 applyExprByName n args = case n of
   "id" -> oneArg "id" args >>= asPattern <#> VPattern
-  "rev" -> oneArg "rev" args >>= asPattern <#> (rev >>> VPattern)
-  "palindrome" -> oneArg "palindrome" args >>= asPattern <#> (palindrome >>> VPattern)
+  "rev" -> oneArgPoly "rev" rev rev args
+  "palindrome" -> oneArgPoly "palindrome" palindrome palindrome args
   "brak" -> oneArg "brak" args >>= asPattern <#> (brak >>> VPattern)
-  "slow" -> binOp "slow" slow args
-  "fast" -> binOp "fast" fast args
+  "slow" -> binOpPoly "slow" slow slow args
+  "fast" -> binOpPoly "fast" fast fast args
   "linger" -> binOp "linger" linger args
   "trunc" -> binOp "trunc" trunc args
   "rotL" -> binOp "rotL" rotL args
@@ -363,6 +390,12 @@ applyExprByName n args = case n of
   "alternate" -> applyAlternate args
   "crossfade" -> applyCrossfade args
   "gate" -> applyGate args
+  -- Continuous-numeric pattern operators.  All return VNumPattern.
+  "range" -> applyRange args
+  "add" -> numArithOp "add" (+) args
+  "mul" -> numArithOp "mul" (*) args
+  "sub" -> numArithOp "sub" (-) args
+  "neg" -> applyNeg args
   _ -> Left ("unknown function: " <> n)
 
 -- `slow N pat` / `fast N pat`.  1-arg partial application returns a
@@ -382,6 +415,128 @@ binOp fname f args = case args of
     p <- asPattern b
     Right (VPattern (f n p))
   _ -> Left (fname <> ": expected 1 or 2 arguments, got " <> show (Array.length args))
+
+-- | Polymorphic version of `binOp` — accepts both `VPattern` (Pattern
+-- | String) and `VNumPattern` (Pattern Number) and returns the matching
+-- | variant.  Takes the time-warp at both type specialisations because
+-- | PureScript's type inference doesn't propagate the polymorphism
+-- | through case branches without explicit annotations.
+-- |
+-- | The 1-arg partial returns a `VFunc` over Pattern String only —
+-- | partial-app of `slow 2` against a Number pattern would need a
+-- | `VNumFunc` constructor we haven't added.  For LFOs the
+-- | full-application form (`slow 4 sine`) covers the common case.
+binOpPoly
+  :: String
+  -> (Rational -> Pattern String -> Pattern String)
+  -> (Rational -> Pattern Number -> Pattern Number)
+  -> Array EvalResult
+  -> Either String EvalResult
+binOpPoly fname fStr fNum args = case args of
+  [ a ] -> do
+    n <- asRational fname a
+    Right (VFunc (fStr n))
+  [ a, b ] -> do
+    n <- asRational fname a
+    case b of
+      VPattern p -> Right (VPattern (fStr n p))
+      VNumPattern p -> Right (VNumPattern (fNum n p))
+      _ -> Left (fname <> ": expected pattern, got " <> showResult b)
+  _ -> Left (fname <> ": expected 1 or 2 arguments, got " <> show (Array.length args))
+
+-- | Polymorphic version of `oneArg`-style transforms (rev, palindrome).
+oneArgPoly
+  :: String
+  -> (Pattern String -> Pattern String)
+  -> (Pattern Number -> Pattern Number)
+  -> Array EvalResult
+  -> Either String EvalResult
+oneArgPoly fname fStr fNum args = case args of
+  [ a ] -> case a of
+    VPattern p -> Right (VPattern (fStr p))
+    VNumPattern p -> Right (VNumPattern (fNum p))
+    _ -> Left (fname <> ": expected pattern, got " <> showResult a)
+  _ -> Left (fname <> ": expected 1 argument, got " <> show (Array.length args))
+
+-- | `range lo hi pat` — scales a 0..1 pattern to [lo, hi].  All three
+-- | args must be Numeric; the pattern is coerced from VRat/VInt scalars
+-- | (interpreted as constant patterns) if needed.
+applyRange :: Array EvalResult -> Either String EvalResult
+applyRange args = case args of
+  [ a, b, c ] -> do
+    lo <- asNumber "range" a
+    hi <- asNumber "range" b
+    p <- asNumPattern "range" c
+    Right (VNumPattern (range lo hi p))
+  _ -> Left ("range: expected 3 arguments (lo hi pat), got " <> show (Array.length args))
+
+-- | `add a b` / `mul a b` / `sub a b` — pointwise arithmetic on two
+-- | numeric patterns.  Either argument may be a scalar (Int / Rational),
+-- | in which case it's promoted to the constant pattern `pure n`.
+numArithOp
+  :: String
+  -> (Number -> Number -> Number)
+  -> Array EvalResult
+  -> Either String EvalResult
+numArithOp fname op args = case args of
+  [ a, b ] -> do
+    pa <- asNumPattern fname a
+    pb <- asNumPattern fname b
+    Right (VNumPattern (lift2 op pa pb))
+  _ -> Left (fname <> ": expected 2 arguments, got " <> show (Array.length args))
+
+applyNeg :: Array EvalResult -> Either String EvalResult
+applyNeg args = case args of
+  [ a ] -> do
+    p <- asNumPattern "neg" a
+    Right (VNumPattern (negate <$> p))
+  _ -> Left ("neg: expected 1 argument, got " <> show (Array.length args))
+
+-- | Coerce an `EvalResult` to a `Pattern Number`.  Promotes scalars
+-- | (`VInt`, `VRat`) to constant *Analog* patterns; passes
+-- | `VNumPattern` through.  Errors on `VPattern` (string-typed) and
+-- | other shapes.
+-- |
+-- | Why Analog and not `pure`?  `pure n` produces Digital events,
+-- | one per cycle.  Tidal's default `Apply` for `Pattern` filters
+-- | the right side to Digital when the left is Digital — so
+-- | `lift2 (*) (pure 0.5) sine` would drop sine's Analog events
+-- | and produce silence.  Wrapping scalars as Analog (covering the
+-- | full query arc, value constant) means `combineAnalog` runs
+-- | instead and the arithmetic comes through.
+asNumPattern :: String -> EvalResult -> Either String (Pattern Number)
+asNumPattern fname r = case r of
+  VNumPattern p -> Right p
+  VInt n -> Right (constAnalog (Int.toNumber n))
+  VRat n -> Right (constAnalog (RT.toNumber n))
+  _ -> Left (fname <> ": expected numeric pattern, got " <> showResult r)
+
+-- | Continuous constant pattern: returns one Analog event covering the
+-- | query arc, with the supplied value.  Used to promote scalar
+-- | arguments when mixing them with oscillators.
+constAnalog :: Number -> Pattern Number
+constAnalog v = pattern \(State { arc }) ->
+  [ Analog { context: emptyContext, part: arc, value: v } ]
+
+-- | Pull a `Number` out of an `EvalResult`.  Accepts both `VInt` and
+-- | `VRat` (since `range` / arithmetic don't need rational precision).
+asNumber :: String -> EvalResult -> Either String Number
+asNumber fname r = case r of
+  VInt n -> Right (Int.toNumber n)
+  VRat n -> Right (RT.toNumber n)
+  _ -> Left (fname <> ": expected number, got " <> showResult r)
+
+-- | Short tag of an EvalResult variant, for error messages.
+showResult :: EvalResult -> String
+showResult = case _ of
+  VPattern _ -> "pattern (string)"
+  VNumPattern _ -> "pattern (number)"
+  VFunc _ -> "function"
+  VInt _ -> "int"
+  VRat _ -> "rational"
+  VBool _ -> "bool"
+  VList _ -> "list"
+  VTagged _ _ -> "tagged"
 
 -- `iter N pat` etc.  Int + Pattern.  1-arg partial returns VFunc.
 intBinOp

@@ -20,7 +20,7 @@ import Prelude
 import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Foldable (for_)
-import Data.Int (floor, toNumber) as Int
+import Data.Int (floor, fromString, toNumber) as Int
 import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe)
@@ -40,6 +40,7 @@ import Effect.Ref as Ref
 import Erl.Process (Process, ProcessM, spawn, receive)
 import Erl.Process.Raw as Raw
 import Tidal.Eval.Interpret (tpatToPattern)
+import Tidal.Expr as Expr
 import Tidal.Binding as Binding
 import Tidal.MIDI (MIDIConfig)
 import Tidal.MIDIBridge (BridgeClient, scheduleNoteAt, scheduleCCAt)
@@ -224,12 +225,48 @@ data ParsedTrack
   -- | default trigger note; bare tokens (e.g. `bd`) fall back to MIDI 60.
   | Fh2TriggerTrack { pattern :: Pattern String, voice :: Int }
 
+-- | Where a continuous (LFO-style) voice sends its sampled value.
+-- |
+-- | A continuous voice runs at the scheduler tick rate (one sample per
+-- | tick, default 50ms = 20Hz) and emits one MIDI CC or CV update per
+-- | sample.  Distinct from the discrete event-driven dispatch path of
+-- | `BoundTrack`.
+data ContDest
+  = ContMidiCC { device :: String, channel :: Int, cc :: Int }
+  | ContCV     { bus :: Int, transforms :: Array Transform }
+
+-- | A continuous-sampling voice.  Held in `MIDISchedulerState.continuousTracks`
+-- | rather than `tracks` because the pattern type differs (`Pattern Number`
+-- | vs the discrete `Pattern String` used by every other track variant).
+-- | Each scheduler tick samples the pattern at the current cycle position
+-- | and emits one CC/CV value to `dest`.
+type ContinuousTrackData =
+  { pattern :: Pattern Number
+  , name :: String
+  , dest :: ContDest
+  }
+
 -- | Internal state
 type MIDISchedulerState =
   { config :: MIDISchedulerConfig
   , startTime :: Milliseconds
   , nextCycle :: R.Rational
   , tracks :: Array ParsedTrack  -- Multiple tracks, each with own channel
+  , continuousTracks :: Array ContinuousTrackData
+                                          -- LFO-style voices sampled once
+                                          -- per scheduler tick.  Held
+                                          -- separately because the pattern
+                                          -- type is `Pattern Number`.
+  , continuousBindings :: Map String ContDest
+                                          -- Registry of named continuous
+                                          -- voices (`bind plaits-cutoff
+                                          -- midi-cc-cont …`).  When a cell
+                                          -- writes `<name> :<expr>` and the
+                                          -- name is in this map, the expr
+                                          -- evaluates as `Pattern Number`
+                                          -- and a `ContinuousTrack` is
+                                          -- installed pointing at the
+                                          -- recorded `ContDest`.
   , bridgeClient :: BridgeClient        -- UDP socket to link-spike's MIDI dispatcher
   , oscClient :: Maybe OSC.OSCClient  -- For gate output (if enabled)
   , lastTrigger :: R.Rational  -- Avoid double-triggering (global for simplicity)
@@ -320,6 +357,8 @@ startMIDIScheduler config patternStr = do
       , startTime
       , nextCycle: zero
       , tracks: initialTrack
+      , continuousTracks: []
+      , continuousBindings: Map.empty
       , bridgeClient
       , oscClient
       , lastTrigger: R.fromInt (-1)
@@ -625,6 +664,18 @@ midiSchedulerLoop stateRef = do
 
       liftEffect $ Ref.modify_ (_ { nextCycle = toCycle }) stateRef
 
+      -- Continuous (LFO-style) voices: sampled once per tick regardless
+      -- of whether any discrete events fired this window.  The window
+      -- machinery above is irrelevant for these — they don't have a
+      -- discrete "next event" to look ahead toward; they're a function
+      -- of current cycle time, end of story.
+      let cycleAt = numberToCycleRat currentCycle
+      for_ state.continuousTracks \ct ->
+        case samplePatternAt cycleAt ct.pattern of
+          Nothing -> pure unit
+          Just rawValue ->
+            liftEffect $ dispatchContValue state ct.dest ct.name rawValue nowUnixUs
+
       pid <- liftEffect Raw.self
       liftEffect $ sendAfter state.config.scheduleInterval pid Tick
       midiSchedulerLoop stateRef
@@ -735,19 +786,36 @@ midiSchedulerLoop stateRef = do
 
     AddBinding name actionSpec -> do
       state <- liftEffect $ Ref.read stateRef
-      case Binding.parseCompoundAction actionSpec of
-        Left err ->
-          liftEffect $ log $ "bind " <> name <> ": ✗ " <> err
-        Right binding -> do
-          let newRegistry = Map.insert name binding state.bindings
-          liftEffect $ Ref.write (state { bindings = newRegistry }) stateRef
-          liftEffect $ log $ "bind " <> name <> ": " <> actionSpec
+      -- Try the continuous-voice declaration first (`midi-cc-cont` /
+      -- `cv-cont`).  If it matches, the name lives in continuousBindings
+      -- — distinct registry from discrete bindings — and a cell writing
+      -- `<name> :<expr>` will install a ContinuousTrack against the
+      -- recorded destination.  Falls through to the existing discrete
+      -- binding parser if the spec doesn't match a continuous shape.
+      case parseContBinding actionSpec of
+        Just dest -> do
+          let newCont = Map.insert name dest state.continuousBindings
+          liftEffect $ Ref.write (state { continuousBindings = newCont }) stateRef
+          liftEffect $ log $ "bind " <> name <> ": " <> actionSpec <> " (continuous)"
+        Nothing ->
+          case Binding.parseCompoundAction actionSpec of
+            Left err ->
+              liftEffect $ log $ "bind " <> name <> ": ✗ " <> err
+            Right binding -> do
+              let newRegistry = Map.insert name binding state.bindings
+              liftEffect $ Ref.write (state { bindings = newRegistry }) stateRef
+              liftEffect $ log $ "bind " <> name <> ": " <> actionSpec
       midiSchedulerLoop stateRef
 
     RemoveBinding name -> do
       state <- liftEffect $ Ref.read stateRef
       let newRegistry = Map.delete name state.bindings
-      liftEffect $ Ref.write (state { bindings = newRegistry }) stateRef
+      let newCont = Map.delete name state.continuousBindings
+      let newCTs = Array.filter (\ct -> ct.name /= name) state.continuousTracks
+      liftEffect $ Ref.write (state { bindings = newRegistry
+                                    , continuousBindings = newCont
+                                    , continuousTracks = newCTs
+                                    }) stateRef
       liftEffect $ log $ "unbind " <> name
       midiSchedulerLoop stateRef
 
@@ -822,6 +890,51 @@ midiSchedulerLoop stateRef = do
           liftEffect $ log $ "(no binding '" <> name <> "', :expr ignored)"
       midiSchedulerLoop stateRef
 
+    PlayByNameExpr name exprSrc fullText -> do
+      -- Carrier for the colon-prefix `<name> :<expr>` form when the name
+      -- might be a continuous voice.  Three-way dispatch:
+      --   1. Continuous binding → eval source as VNumPattern, install
+      --      ContinuousTrack (replacing any prior CT with same name).
+      --   2. Discrete binding → eval source as VPattern, install
+      --      BoundTrack (mirrors the PlayByNameP path).
+      --   3. Unknown name → log and skip.
+      state <- liftEffect $ Ref.read stateRef
+      case Map.lookup name state.continuousBindings of
+        Just dest ->
+          case Expr.parseExpr exprSrc >>= Expr.evalExpr of
+            Right (Expr.VNumPattern p) -> do
+              let newCT = { pattern: p, name, dest }
+              let isOther ct = ct.name /= name
+              let newCTs = Array.filter isOther state.continuousTracks <> [newCT]
+              liftEffect $ Ref.write (state { continuousTracks = newCTs }) stateRef
+              liftEffect $ log $ "≈ " <> name <> ": " <> fullText
+            Right _ ->
+              liftEffect $ log $ "✗ " <> name <> ": :expr did not evaluate to a numeric pattern (continuous voice expects sine, range, add, etc.)"
+            Left err ->
+              liftEffect $ log $ "✗ " <> name <> ": eval error: " <> err
+        Nothing ->
+          case Map.lookup name state.bindings of
+            Just binding ->
+              case Expr.eval exprSrc of
+                Right pat -> do
+                  let newTrack = BoundTrack
+                        { pattern: pat
+                        , name
+                        , binding
+                        , params: Map.empty
+                        }
+                  let isOther = case _ of
+                        BoundTrack b -> b.name /= name
+                        _            -> true
+                  let newTracks = Array.filter isOther state.tracks <> [newTrack]
+                  liftEffect $ Ref.write (state { tracks = newTracks }) stateRef
+                  liftEffect $ log $ name <> ": " <> fullText
+                Left err ->
+                  liftEffect $ log $ "✗ " <> name <> ": eval error: " <> err
+            Nothing ->
+              liftEffect $ log $ "(no binding '" <> name <> "', :expr ignored)"
+      midiSchedulerLoop stateRef
+
     PlayMultiByName entries fullText -> do
       -- Bare `:<expr>` form. Each entry is (binding-name, transformed
       -- pattern); each becomes a BoundTrack so the binding's note
@@ -872,11 +985,11 @@ midiSchedulerLoop stateRef = do
       midiSchedulerLoop stateRef
 
     Hush -> do
-      -- Tidal-compat: silence everything. Drop all running tracks but
-      -- preserve the binding registry so the user can immediately
-      -- play a name again without rebinding.
+      -- Tidal-compat: silence everything. Drop all running tracks
+      -- (discrete and continuous) but preserve the binding registry so
+      -- the user can immediately play a name again without rebinding.
       state <- liftEffect $ Ref.read stateRef
-      liftEffect $ Ref.write (state { tracks = [] }) stateRef
+      liftEffect $ Ref.write (state { tracks = [], continuousTracks = [] }) stateRef
       liftEffect $ log "hush"
       midiSchedulerLoop stateRef
 
@@ -1012,6 +1125,73 @@ samplePatternAt cycleAt pat =
     Just (Digital ev) -> Just ev.value
     Just (Analog ev) -> Just ev.value
     Nothing -> Nothing
+
+-- | Try to parse a binding spec as a continuous-voice declaration.
+-- | Recognised shapes:
+-- |
+-- |   `midi-cc-cont <device> <channel> <cc>`
+-- |     Each scheduler tick the voice's pattern is sampled and the
+-- |     resulting 0..1 value is scaled to a 0..127 MIDI CC.
+-- |
+-- |   `cv-cont <bus>`
+-- |     Each tick samples the pattern and emits the raw value as a
+-- |     CV update on the given bus (cv-router OSC).  No scaling —
+-- |     the user controls the range via `range` in the expression.
+-- |
+-- | Returns `Nothing` for any other shape, letting the caller fall
+-- | through to the discrete binding parser.
+parseContBinding :: String -> Maybe ContDest
+parseContBinding s =
+  case Array.filter (_ /= "") (String.split (String.Pattern " ") (String.trim s)) of
+    ["midi-cc-cont", device, chStr, ccStr] -> do
+      ch <- Int.fromString chStr
+      cc <- Int.fromString ccStr
+      Just (ContMidiCC { device, channel: ch, cc })
+    ["cv-cont", busStr] -> do
+      bus <- Int.fromString busStr
+      Just (ContCV { bus, transforms: [] })
+    _ -> Nothing
+
+-- | Convert a fractional-cycle Number into a Rational with microcycle
+-- | precision.  Used by the continuous-voice sampler so we can call
+-- | `samplePatternAt :: Rational -> Pattern a -> Maybe a` against the
+-- | scheduler's `currentCycle :: Number`.  Microcycle precision (one
+-- | part in a million per cycle) is plenty: at BPM 120 that's 1µs,
+-- | well below the ~50ms sample period.
+numberToCycleRat :: Number -> R.Rational
+numberToCycleRat c =
+  R.fromInt (Int.floor (c * 1000000.0)) / R.fromInt 1000000
+
+-- | Dispatch a single sampled continuous value to its MIDI CC or CV
+-- | destination.  No latency adjustment, no event-time book-keeping —
+-- | continuous voices fire at "now", every tick, and whoever they
+-- | reach interpolates / smooths.  For MIDI CC the raw value is
+-- | scaled 0..1 → 0..127 (oscillators land in 0..1; users `range`
+-- | them outside that to widen).  For CV the raw value passes through
+-- | the binding's `transforms` pipeline unchanged.
+dispatchContValue
+  :: MIDISchedulerState
+  -> ContDest
+  -> String
+  -> Number
+  -> Number
+  -> Effect Unit
+dispatchContValue state dest name rawValue nowUnixUs = case dest of
+  ContMidiCC m ->
+    case Map.lookup m.device state.midiDevices of
+      Nothing -> pure unit
+      Just dev -> do
+        let v7 = clamp7bit (rawValue * 127.0)
+        let adjustedUnixUs = nowUnixUs - dev.latencyMs * 1000.0
+        Log.debug $ "≈ [" <> name <> "] cc " <> show m.cc <> " = " <> show v7
+        scheduleCCAt state.bridgeClient dev.name m.channel m.cc v7 adjustedUnixUs
+  ContCV c ->
+    case state.oscClient of
+      Nothing -> pure unit
+      Just osc -> do
+        let value = applyTransforms c.transforms rawValue
+        Log.debug $ "≈ [" <> name <> "] cv bus " <> show c.bus <> " = " <> show value
+        OSC.sendCVAfter osc c.bus value 0.0
 
 -- | Parse a parameter token as a 7-bit integer in [0..127].  Used for
 -- | the `# vel ...` and (future) `# cc... ...` overrides where the
@@ -1208,6 +1388,21 @@ serializeState s =
         "{\"kind\":\"fh2-trigger\",\"voice\":" <> show f.voice <> "}"
     tracksArr = jsArrOf trackEntry s.tracks
 
+    contTrackEntry ct =
+      "{\"name\":" <> jsStr ct.name <> ",\"dest\":" <> contDestEntry ct.dest <> "}"
+    contDestEntry = case _ of
+      ContMidiCC m ->
+        "{\"kind\":\"midi-cc-cont\",\"device\":" <> jsStr m.device
+          <> ",\"channel\":" <> show m.channel
+          <> ",\"cc\":" <> show m.cc <> "}"
+      ContCV c ->
+        "{\"kind\":\"cv-cont\",\"bus\":" <> show c.bus <> "}"
+    contTracksArr = jsArrOf contTrackEntry s.continuousTracks
+    contBindingsArr = jsArrOf
+      (\(Tuple n d) ->
+        "{\"name\":" <> jsStr n <> ",\"dest\":" <> contDestEntry d <> "}")
+      (Map.toUnfoldable s.continuousBindings :: Array (Tuple String ContDest))
+
     fh2Entry (Tuple voice channel) =
       "{\"voice\":" <> show voice <> ",\"channel\":" <> show channel <> "}"
     fh2Arr = jsArrOf fh2Entry
@@ -1223,6 +1418,8 @@ serializeState s =
       <> ",\"midiDevices\":" <> midiDevicesArr
       <> ",\"bindingNames\":" <> bindingNamesArr
       <> ",\"tracks\":" <> tracksArr
+      <> ",\"continuousTracks\":" <> contTracksArr
+      <> ",\"continuousBindings\":" <> contBindingsArr
       <> ",\"fh2VoiceChannels\":" <> fh2Arr
       <> ",\"slots\":" <> slotsArr
       <> "}"
