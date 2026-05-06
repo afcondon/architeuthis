@@ -107,12 +107,20 @@ class AtomParseable a where
 -- | Parse a sample name (alphanumeric with `:.-_`)
 -- |
 -- | Examples: "bd", "bd:2", "808.wav", "my-sample_01"
+-- |
+-- | Chord syntax also lives at the String level so users can write
+-- | `pad "c4'major7"` and have it expand to a stack of canonical
+-- | note-name strings the runtime already understands.  The chord
+-- | parser is tried first, falling back to the plain sample-name form.
 instance AtomParseable String where
   atomParser = located stringAtom
-  patternParser = TPat_Atom <$> located stringAtom
+  patternParser = mapStateT PC.try stringChordParser
+              <|> (TPat_Atom <$> located stringAtom)
 
 -- | Core string atom parser
--- | Must start with alphanumeric, then can contain :.-_
+-- | Must start with alphanumeric, then can contain :.-_# (the # is
+-- | accepted so note names like "f#2" parse as a single atom; the
+-- | runtime's noteNameMidi map carries both `#` and `s` spellings).
 stringAtom :: TidalParser String
 stringAtom = do
   first <- liftP alphaNum  -- Must start with letter or digit
@@ -120,7 +128,136 @@ stringAtom = do
   pure $ SCU.fromCharArray (Array.cons first rest)
   where
     validChar = alphaNum <|> satisfy \c ->
-      c == ':' || c == '.' || c == '-' || c == '_'
+      c == ':' || c == '.' || c == '-' || c == '_' || c == '#'
+
+-- | Chord syntax for String patterns.  Parses `<root>'<chord>['<mods>]*`
+-- | and expands to a `TPat_Stack` of canonical note-name string atoms
+-- | the runtime's `noteNameMidi` map already understands.
+-- |
+-- | Examples:
+-- |   `c4'major`   → stack ["c4", "e4", "g4"]
+-- |   `c4'major7`  → stack ["c4", "e4", "g4", "b4"]
+-- |   `f#3'minor`  → stack ["fs3", "a3",  "cs4"]
+-- |   `'major`     → stack ["c4", "e4", "g4"]   -- root defaults to c4
+-- |
+-- | The root note uses runtime-convention C4 = MIDI 60 (matches the
+-- | noteNameMidi table), independent of the Tidal-side Note instance
+-- | which uses C5 = MIDI 60.
+stringChordParser :: TidalParser (TPat String)
+stringChordParser = do
+  Tuple span (Tuple rootPitch intervals) <- spannedClass do
+    rootPitch <- optionTC 60 pNoteRootMidi   -- default = c4 = 60
+    _ <- liftP $ char '\''
+    chordName <- liftP $ Array.some (alphaNum <|> satisfy \c -> c == '7' || c == '9')
+    let name = SCU.fromCharArray chordName
+    case lookupChord name of
+      Just ints -> do
+        mods <- liftP $ Array.many parseChordMods
+        pure $ Tuple rootPitch (applyModifiers (Array.concat mods) ints)
+      Nothing -> liftP $ P.fail $ "unknown chord: " <> name
+  let names = map (\interval -> stringAtomFromPitch span (rootPitch + interval)) intervals
+  case Array.length names of
+    0 -> liftP $ P.fail "empty chord"
+    1 -> case Array.head names of
+           Just n -> pure n
+           Nothing -> liftP $ P.fail "empty chord"
+    _ -> pure $ TPat_Stack span names
+  where
+    stringAtomFromPitch :: SourceSpan -> Int -> TPat String
+    stringAtomFromPitch s p = TPat_Atom (Located s (midiToNoteName p))
+
+    -- Parse note root using runtime convention: c4 = 60.
+    -- Accepts `s`/`f`/`n` (Tidal accidentals) and `#` (musical sharp).
+    pNoteRootMidi :: TidalParser Int
+    pNoteRootMidi = liftP $ PC.try do
+      base <- noteBaseParser
+      mods <- Array.many noteModParserExt
+      oct <- PC.option 4 (Int.round <$> number)
+      pure $ (oct + 1) * 12 + base + Array.foldl (+) 0 mods
+
+    -- Parse a chord-modifier group: 'i, 'ii, 'i2, 'o, 'd1, '5
+    parseChordMods :: ParserT String Identity (Array Modifier)
+    parseChordMods = do
+      _ <- char '\''
+      pInvertMany <|> pInvertN <|> pOpen <|> pDrop <|> pRange
+
+    pInvertMany :: ParserT String Identity (Array Modifier)
+    pInvertMany = PC.try do
+      is <- Array.some (char 'i')
+      PC.notFollowedBy digit
+      pure $ Array.replicate (Array.length is) Invert
+
+    pInvertN :: ParserT String Identity (Array Modifier)
+    pInvertN = PC.try do
+      _ <- char 'i'
+      n <- pPosInt
+      pure $ Array.replicate n Invert
+
+    pOpen :: ParserT String Identity (Array Modifier)
+    pOpen = do
+      os <- Array.some (char 'o')
+      pure $ Array.replicate (Array.length os) Open
+
+    pDrop :: ParserT String Identity (Array Modifier)
+    pDrop = do
+      _ <- char 'd'
+      n <- pPosInt
+      pure [Drop n]
+
+    pRange :: ParserT String Identity (Array Modifier)
+    pRange = do
+      n <- pPosInt
+      pure [Range n]
+
+    pPosInt :: ParserT String Identity Int
+    pPosInt = do
+      digits <- Array.some digit
+      case Int.fromString (SCU.fromCharArray digits) of
+        Just n -> pure n
+        Nothing -> P.fail "expected integer"
+
+    spannedClass :: forall a. TidalParser a -> TidalParser (Tuple SourceSpan a)
+    spannedClass p = do
+      s <- liftP currentPos
+      r <- p
+      e <- liftP currentPos
+      pure $ Tuple (mkSourceSpan s e) r
+
+    optionTC :: forall a. a -> TidalParser a -> TidalParser a
+    optionTC d p = p <|> pure d
+
+-- | Note modifier parser including `#` (sharp) and the Tidal-style
+-- | `s`/`f`/`n` accidentals.  Used by `stringChordParser`'s root parser.
+noteModParserExt :: ParserT String Identity Int
+noteModParserExt = do
+  c <- satisfy \x -> x == 's' || x == 'f' || x == 'n' || x == '#'
+  pure $ case c of
+    's' -> 1    -- sharp (Tidal)
+    '#' -> 1    -- sharp (musical)
+    'f' -> -1   -- flat
+    _   -> 0    -- natural
+
+-- | Convert a MIDI pitch to its canonical note-name string ("c4", "fs4",
+-- | etc.) — uses the `s`-suffix sharp spelling that `noteNameMidi`
+-- | indexes.  C0 = 12, so octave = pitch / 12 - 1.
+midiToNoteName :: Int -> String
+midiToNoteName pitch =
+  let oct = pitch `div` 12 - 1
+      step = pitch `mod` 12
+      letter = case step of
+        0  -> "c"
+        1  -> "cs"
+        2  -> "d"
+        3  -> "ds"
+        4  -> "e"
+        5  -> "f"
+        6  -> "fs"
+        7  -> "g"
+        8  -> "gs"
+        9  -> "a"
+        10 -> "as"
+        _  -> "b"
+  in letter <> show oct
 
 -------------------------------------------------------------------------------
 -- Number atoms

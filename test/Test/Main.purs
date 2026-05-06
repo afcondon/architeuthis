@@ -12,8 +12,11 @@ import Test.LawSpec (runLawTests)
 import Test.PatternSpec (runPatternTests)
 import Test.PredictiveSpec (runPredictiveTests)
 import Test.UtilSpec (runUtilTests)
+import Data.Array as Array
+import Data.Maybe (Maybe(..))
+import Data.String (joinWith)
 import Tidal.AST.Pretty (pretty)
-import Tidal.AST.Types (TPat)
+import Tidal.AST.Types (Located(..), TPat(..))
 import Tidal.Parse.Parser (parseTPat)
 
 main :: Effect Unit
@@ -121,6 +124,27 @@ main = do
   testParse "< bd >" "alternating single"
 
   log ""
+  log "--- Sharp accidentals (#) ---"
+  testParse "f#2" "single sharp note"
+  testParse "c#4 d#4 f#4" "sharp-note sequence"
+  testParse "f#2*4" "sharp note with fast modifier"
+  testParse "[c#4, e4, g#4]" "explicit chord stack with sharps"
+
+  log ""
+  log "--- Chord syntax ---"
+  testChord "c4'major"   ["c4", "e4", "g4"]                  "C major triad"
+  testChord "c4'minor"   ["c4", "ds4", "g4"]                 "C minor triad"
+  testChord "c4'major7"  ["c4", "e4", "g4", "b4"]            "C major 7"
+  testChord "c4'minor7"  ["c4", "ds4", "g4", "as4"]          "C minor 7"
+  testChord "f#3'minor"  ["fs3", "a3", "cs4"]                "F# minor (sharp root)"
+  testChord "'major"     ["c4", "e4", "g4"]                  "default-root major"
+  testChord "c4'major7'i"["e4", "g4", "b4", "c5"]            "C major 7 first inversion"
+  testParse "c4'major"   "chord parses (smoke)"
+  testParse "c4'major7 e4'minor7 g4'major7" "chord sequence"
+  testParse "c4'major*2" "chord with fast modifier"
+  testParse "<c4'major c4'minor>" "alternating chords"
+
+  log ""
   log "=== Parser tests completed ==="
 
   -- Run pattern evaluation tests
@@ -166,3 +190,46 @@ testRoundTrip input = do
         Left err -> log $ "  ✗ Round-trip \"" <> input <> "\" -> \"" <> printed <> "\" - reparse failed: " <> show err
         Right _ ->
           log $ "  ✓ Round-trip: \"" <> input <> "\" -> \"" <> printed <> "\""
+
+-- | Verify a chord-syntax input expands to the expected stack of note-name
+-- | atoms.  The parser's top-level `pTidal` wraps everything in a `TPat_Seq`,
+-- | so for a single-token chord input the AST is `Seq [Stack [atom, ...]]`.
+testChord :: String -> Array String -> String -> Effect Unit
+testChord input expected desc =
+  case parseTPat input :: Either _ (TPat String) of
+    Left err ->
+      log $ "  ✗ " <> desc <> ": \"" <> input <> "\" - parse failed: " <> show err
+    Right ast ->
+      case extractStackValues ast of
+        Just got
+          | got == expected ->
+              log $ "  ✓ " <> desc <> ": \"" <> input <> "\" → [" <> joinWith ", " got <> "]"
+          | otherwise ->
+              log $ "  ✗ " <> desc <> ": \"" <> input <> "\" → ["
+                <> joinWith ", " got <> "] (expected [" <> joinWith ", " expected <> "])"
+        Nothing ->
+          log $ "  ✗ " <> desc <> ": \"" <> input <> "\" — not a stack of atoms"
+
+-- | Pull the values out of a `Seq [Stack [atom, atom, ...]]` shape, which
+-- | is what a single chord token compiles to.  Returns Nothing if the AST
+-- | has any other shape.
+extractStackValues :: TPat String -> Maybe (Array String)
+extractStackValues = case _ of
+  TPat_Seq _ inner -> case Array.uncons inner of
+    Just { head, tail } | Array.null tail -> stackValues head
+    _ -> Nothing
+  other -> stackValues other
+  where
+    stackValues = case _ of
+      TPat_Stack _ atoms -> traverse atomValue atoms
+      TPat_Atom (Located _ v) -> Just [v]
+      _ -> Nothing
+    atomValue = case _ of
+      TPat_Atom (Located _ v) -> Just v
+      _ -> Nothing
+    traverse f = Array.foldr step (Just [])
+      where
+        step a macc = do
+          v  <- f a
+          xs <- macc
+          pure (Array.cons v xs)
