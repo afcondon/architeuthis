@@ -300,13 +300,22 @@ sectArc (Arc a) (Arc b) =
       e = min a.stop b.stop
   in if s < e then Just (Arc { start: s, stop: e }) else Nothing
 
--- | Get cycle arcs within a query arc
+-- | Cycle arcs that intersect a query arc.
+-- |
+-- | A cycle is the closed-open interval [n, n+1) for integer n. This
+-- | returns the FULL cycle arc for each cycle that overlaps the query,
+-- | NOT the cycle clipped to the query — `mkEvent` does the clipping
+-- | when it computes `part`. Returning clipped arcs here breaks `slow N`
+-- | (and any other operator that scales the query): the `whole` field
+-- | inherits the clipped arc, scaleEventTime then can't recover the
+-- | event's true [n*N, (n+1)*N] span, and the event ends up appearing
+-- | identical to the unscaled pattern at every scheduler cycle.
 cycleArcsInArc :: Arc -> Array Arc
 cycleArcsInArc (Arc { start, stop }) =
   let startCycle = sam start
       go acc s =
         if s >= stop then acc
-        else go (acc <> [Arc { start: max start s, stop: min stop (s + one) }]) (s + one)
+        else go (acc <> [Arc { start: s, stop: s + one }]) (s + one)
   in go [] startCycle
 
 -- | Start of cycle containing time

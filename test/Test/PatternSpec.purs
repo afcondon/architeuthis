@@ -326,6 +326,28 @@ runCombinatorTests = do
     1
     [{ sample: "sn", start: 1.0, stop: 2.0 }]
 
+  -- Diagnostic for the slow-of-stack bug investigation: dump whole AND part
+  -- for events from `slow N (stack [...])` at successive scheduler arcs.
+  -- Sequences (fastCat) yield events whose whole == part; stacks yield
+  -- events whose whole spans multiple scheduler cycles, exposing the
+  -- disagreement that the scheduler's gate must respect.
+  log ""
+  log "--- DIAGNOSTIC: slow (stack [...]) whole/part ---"
+  dumpEventsWithWhole "slow 4 (stack [c4, e4]) at [0, 1]"
+    (queryArc (slow (fromInt 4) (stack [pure "c4", pure "e4"])) (fromInt 0) (fromInt 1))
+  dumpEventsWithWhole "slow 4 (stack [c4, e4]) at [1, 2]"
+    (queryArc (slow (fromInt 4) (stack [pure "c4", pure "e4"])) (fromInt 1) (fromInt 2))
+  dumpEventsWithWhole "slow 4 (stack [c4, e4]) at [2, 3]"
+    (queryArc (slow (fromInt 4) (stack [pure "c4", pure "e4"])) (fromInt 2) (fromInt 3))
+  dumpEventsWithWhole "slow 4 (stack [c4, e4]) at [4, 5]"
+    (queryArc (slow (fromInt 4) (stack [pure "c4", pure "e4"])) (fromInt 4) (fromInt 5))
+  log ""
+  -- Same with fastCat for comparison — these should NOT exhibit the same shape.
+  dumpEventsWithWhole "slow 4 (fastCat [c4, e4]) at [0, 1]"
+    (queryArc (slow (fromInt 4) (fastCat [pure "c4", pure "e4"])) (fromInt 0) (fromInt 1))
+  dumpEventsWithWhole "slow 4 (fastCat [c4, e4]) at [1, 2]"
+    (queryArc (slow (fromInt 4) (fastCat [pure "c4", pure "e4"])) (fromInt 1) (fromInt 2))
+
   log ""
   log "--- rotL/rotR (time rotation) ---"
   -- rotL shifts pattern earlier in time (events wrap around)
@@ -1545,6 +1567,22 @@ eventStop :: Event String -> Rational
 eventStop = case _ of
   Digital { part: Arc { stop } } -> stop
   Analog { part: Arc { stop } } -> stop
+
+-- | Diagnostic dump that surfaces BOTH whole and part for each event.
+-- | The scheduler dispatches based on `whole.start` (an event's onset);
+-- | the existing `eventStart` helper reads `part.start` (where the event
+-- | overlaps the queried arc). The two coincide for sequences but not
+-- | for stacks under `slow N` — that disagreement is exactly the bug.
+dumpEventsWithWhole :: String -> Array (Event String) -> Effect Unit
+dumpEventsWithWhole label events = do
+  log $ "  " <> label <> " — " <> show (Array.length events) <> " events"
+  for_ events \e -> case e of
+    Digital { value, whole: Arc { start: ws, stop: wstop }, part: Arc { start: ps, stop: pstop } } ->
+      log $ "    " <> value
+        <> "  whole=[" <> formatTime ws <> ", " <> formatTime wstop <> "]"
+        <> "  part=["  <> formatTime ps <> ", " <> formatTime pstop <> "]"
+    Analog { value, part: Arc { start: ps, stop: pstop } } ->
+      log $ "    " <> value <> "  (analog) part=[" <> formatTime ps <> ", " <> formatTime pstop <> "]"
 
 abs :: Number -> Number
 abs n = if n < 0.0 then -n else n

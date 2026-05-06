@@ -1099,10 +1099,20 @@ noteNameMidi = Map.fromFoldable
   , Tuple "c8" 108
   ]
 
--- | Get cycle start time from event
+-- | Get the cycle time to fire this event AT.
+-- |
+-- | For Digital events use `whole.start` — the actual onset. Using
+-- | `part.start` re-fires events whose `whole` spans multiple scheduler
+-- | cycles (`slow N` over a stack pattern is the canonical case: every
+-- | chord member's `whole` already spans the inner cycle, so after `slow N`
+-- | it spans N scheduler cycles, and `part.start` would land at every
+-- | one of them).
+-- |
+-- | Analog events have no `whole` (they're continuous), so `part.start`
+-- | is the right reading there.
 eventStartCycle :: Event String -> R.Rational
 eventStartCycle = case _ of
-  Digital { part: Arc { start } } -> start
+  Digital { whole: Arc { start } } -> start
   Analog { part: Arc { start } } -> start
 
 -- | Get sample name from event

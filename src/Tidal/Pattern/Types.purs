@@ -513,14 +513,17 @@ sectArc (Arc a) (Arc b) =
 
 -- | Get the cycle arcs that overlap with a given arc
 -- |
--- | A cycle is the time interval [n, n+1) for integer n.
--- | This splits a query arc into per-cycle chunks.
+-- | A cycle is the closed-open interval [n, n+1) for integer n. This
+-- | returns the FULL cycle arc for each cycle that overlaps the query,
+-- | NOT the cycle clipped to the query — atoms set their `whole` from
+-- | this and rely on it spanning the real cycle so that scaleEventTime
+-- | (under `fast`/`slow`/etc.) can scale to the correct event span.
 cycleArcsInArc :: Arc -> Array Arc
 cycleArcsInArc (Arc { start, stop }) =
   let startCycle = sam start
       go acc s =
         if s >= stop then acc
-        else go (acc <> [Arc { start: max start s, stop: min stop (s + one) }]) (s + one)
+        else go (acc <> [Arc { start: s, stop: s + one }]) (s + one)
   in go [] startCycle
 
 -- | Get the start of the cycle containing this time
