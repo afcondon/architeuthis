@@ -224,9 +224,13 @@ pNumberE = do
             Just k -> k
             Nothing -> 0
           den = pow10 (Array.length digits)
-          absN = if signed < 0 then negate signed else signed
-          sgn = if signed < 0 then -1 else 1
-        pure ((sgn * (absN * den + fracInt)) % den))
+        -- Use the original `sign` (-1 or +1), not `signed`, because
+        -- `signed = sign * num` loses sign info when num is 0 — so
+        -- `-0.5` would parse as +0.5 if we derived the sign from
+        -- `signed < 0`.  This is what was breaking
+        -- `range -0.5 0.5 (slow 4 sine)`: lo and hi both became 0.5,
+        -- producing a constant 0.5 LFO output instead of a swing.
+        pure ((sign * (num * den + fracInt)) % den))
     )
   pure (ENum (case mTail of
     Just r -> r

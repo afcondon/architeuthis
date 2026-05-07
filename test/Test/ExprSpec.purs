@@ -226,6 +226,12 @@ runExprTests = do
   expectNumAt "range 30 80 sine @ 0"      "range 30 80 sine"    0.0    55.0
   expectNumAt "range -1 1 sine @ 0.25"    "range -1 1 sine"     0.25    1.0
   expectNumAt "range -1 1 sine @ 0.75"    "range -1 1 sine"     0.75  (-1.0)
+  -- Regression: `-0.5` was being parsed as +0.5 because the fractional-
+  -- number parser determined sign from `sign * num` (which is 0 when
+  -- num=0).  range -0.5 0.5 sine collapsed to constant 0.5 output.
+  expectNumAt "range -0.5 0.5 sine @ 0"    "range -0.5 0.5 sine"   0.0    0.0
+  expectNumAt "range -0.5 0.5 sine @ 0.25" "range -0.5 0.5 sine"   0.25   0.5
+  expectNumAt "range -0.5 0.5 sine @ 0.75" "range -0.5 0.5 sine"   0.75 (-0.5)
 
   log ""
   log "--- eval: slow / fast on numeric patterns ---"
