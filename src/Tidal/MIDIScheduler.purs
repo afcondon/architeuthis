@@ -42,6 +42,7 @@ import Erl.Process.Raw as Raw
 import Tidal.Eval.Interpret (tpatToPattern)
 import Tidal.Expr as Expr
 import Tidal.Binding as Binding
+import Tidal.Sink as Sink
 import Tidal.MIDI (MIDIConfig)
 import Tidal.MIDIBridge (BridgeClient, scheduleNoteAt, scheduleCCAt)
 import Tidal.MIDIBridge as MIDIBridge
@@ -271,6 +272,18 @@ type MIDISchedulerState =
   , oscClient :: Maybe OSC.OSCClient  -- For gate output (if enabled)
   , lastTrigger :: R.Rational  -- Avoid double-triggering (global for simplicity)
   , bindings :: Binding.BindingRegistry  -- Named-action registry (kick, plaits, …)
+  , sinkTypes :: Map String (Array Sink.SinkType)
+                                          -- Inferred typed signature for each
+                                          -- binding name (discrete + continuous
+                                          -- both end up here).  Populated at
+                                          -- AddBinding install; consulted at
+                                          -- PlayByName* to type-check the
+                                          -- incoming pattern against expected
+                                          -- element shape.  An array because a
+                                          -- discrete Binding can carry several
+                                          -- PrimActions (e.g. plaits = gate +
+                                          -- cv-voct); continuous bindings
+                                          -- always have a singleton.
   , slots :: Map String Number           -- Param/input slot env (modulation values)
   , midiDevices :: Map String { name :: String, latencyMs :: Number }
                                           -- alias → device-name + latency offset.
@@ -313,6 +326,27 @@ defaultDrumMap = Map.fromFoldable
 sampleToNote :: Map String Int -> String -> Int
 sampleToNote noteMap sample =
   fromMaybe 60 (Map.lookup sample noteMap)  -- Default to middle C
+
+-- | Convert a `ContDest` into a `SinkType` for the typed registry.
+-- | Pure, no I/O — the SinkType captures the same destination info in
+-- | a form Sink.checkPattern / Sink.renderSinkType understand.
+contDestToSinkType :: ContDest -> Sink.SinkType
+contDestToSinkType = case _ of
+  ContMidiCC m -> Sink.SinkContMidiCC
+    { device: m.device, channel: m.channel, cc: m.cc }
+  ContCV c -> Sink.SinkContCV { bus: c.bus }
+
+-- | Inferred sink types for the names installed by `defaultRegistry`.
+-- | Every default binding (drum aliases, plaits) gets its types here so
+-- | the registry has full coverage from boot, not just for user-installed
+-- | bindings.
+defaultSinkTypes :: Map String (Array Sink.SinkType)
+defaultSinkTypes =
+  Map.fromFoldable
+    $ map
+        (\(Tuple name binding) ->
+          Tuple name (Sink.bindingSinkTypes binding))
+        (Map.toUnfoldable Binding.defaultRegistry :: Array (Tuple String Binding.Binding))
 
 -- | Parse a TrackInfo into a GateTrack (legacy multi-track update path).
 parseTrack :: TrackInfo -> Maybe ParsedTrack
@@ -363,6 +397,7 @@ startMIDIScheduler config patternStr = do
       , oscClient
       , lastTrigger: R.fromInt (-1)
       , bindings: Binding.defaultRegistry
+      , sinkTypes: defaultSinkTypes
       , slots: Map.empty
       , midiDevices: Map.empty
       , fh2VoiceChannels: Map.empty
@@ -795,25 +830,34 @@ midiSchedulerLoop stateRef = do
       case parseContBinding actionSpec of
         Just dest -> do
           let newCont = Map.insert name dest state.continuousBindings
-          liftEffect $ Ref.write (state { continuousBindings = newCont }) stateRef
-          liftEffect $ log $ "bind " <> name <> ": " <> actionSpec <> " (continuous)"
+          let newSinks = Map.insert name [contDestToSinkType dest] state.sinkTypes
+          liftEffect $ Ref.write (state { continuousBindings = newCont
+                                        , sinkTypes = newSinks }) stateRef
+          liftEffect $ log $ "bind " <> name <> " : "
+            <> Sink.renderSinkType (contDestToSinkType dest)
         Nothing ->
           case Binding.parseCompoundAction actionSpec of
             Left err ->
               liftEffect $ log $ "bind " <> name <> ": ✗ " <> err
             Right binding -> do
               let newRegistry = Map.insert name binding state.bindings
-              liftEffect $ Ref.write (state { bindings = newRegistry }) stateRef
-              liftEffect $ log $ "bind " <> name <> ": " <> actionSpec
+              let sinks = Sink.bindingSinkTypes binding
+              let newSinks = Map.insert name sinks state.sinkTypes
+              liftEffect $ Ref.write (state { bindings = newRegistry
+                                            , sinkTypes = newSinks }) stateRef
+              liftEffect $ log $ "bind " <> name <> " : "
+                <> Str.joinWith " ⊕ " (map Sink.renderSinkType sinks)
       midiSchedulerLoop stateRef
 
     RemoveBinding name -> do
       state <- liftEffect $ Ref.read stateRef
       let newRegistry = Map.delete name state.bindings
       let newCont = Map.delete name state.continuousBindings
+      let newSinks = Map.delete name state.sinkTypes
       let newCTs = Array.filter (\ct -> ct.name /= name) state.continuousTracks
       liftEffect $ Ref.write (state { bindings = newRegistry
                                     , continuousBindings = newCont
+                                    , sinkTypes = newSinks
                                     , continuousTracks = newCTs
                                     }) stateRef
       liftEffect $ log $ "unbind " <> name
@@ -821,6 +865,9 @@ midiSchedulerLoop stateRef = do
 
     PlayByName name patStr fullText paramSpecs -> do
       state <- liftEffect $ Ref.read stateRef
+      case checkPatternForName state name (classifyPatString patStr) of
+        Left msg -> liftEffect $ log $ "✗ " <> msg
+        Right _ -> pure unit
       case Map.lookup name state.bindings of
         Just binding ->
           case parse patStr of
@@ -891,48 +938,48 @@ midiSchedulerLoop stateRef = do
       midiSchedulerLoop stateRef
 
     PlayByNameExpr name exprSrc fullText -> do
-      -- Carrier for the colon-prefix `<name> :<expr>` form when the name
-      -- might be a continuous voice.  Three-way dispatch:
-      --   1. Continuous binding → eval source as VNumPattern, install
-      --      ContinuousTrack (replacing any prior CT with same name).
-      --   2. Discrete binding → eval source as VPattern, install
-      --      BoundTrack (mirrors the PlayByNameP path).
-      --   3. Unknown name → log and skip.
+      -- Carrier for the colon-prefix `<name> :<expr>` form.  Three
+      -- steps: evaluate the expression; type-check the result against
+      -- the registered sink; route to either a ContinuousTrack
+      -- (continuous binding) or a BoundTrack (discrete binding).  All
+      -- errors logged with the unaliased sink signature so the user
+      -- can see what was expected.
       state <- liftEffect $ Ref.read stateRef
-      case Map.lookup name state.continuousBindings of
-        Just dest ->
-          case Expr.parseExpr exprSrc >>= Expr.evalExpr of
-            Right (Expr.VNumPattern p) -> do
-              let newCT = { pattern: p, name, dest }
-              let isOther ct = ct.name /= name
-              let newCTs = Array.filter isOther state.continuousTracks <> [newCT]
-              liftEffect $ Ref.write (state { continuousTracks = newCTs }) stateRef
-              liftEffect $ log $ "≈ " <> name <> ": " <> fullText
-            Right _ ->
-              liftEffect $ log $ "✗ " <> name <> ": :expr did not evaluate to a numeric pattern (continuous voice expects sine, range, add, etc.)"
-            Left err ->
-              liftEffect $ log $ "✗ " <> name <> ": eval error: " <> err
-        Nothing ->
-          case Map.lookup name state.bindings of
-            Just binding ->
-              case Expr.eval exprSrc of
-                Right pat -> do
-                  let newTrack = BoundTrack
-                        { pattern: pat
-                        , name
-                        , binding
-                        , params: Map.empty
-                        }
-                  let isOther = case _ of
-                        BoundTrack b -> b.name /= name
-                        _            -> true
-                  let newTracks = Array.filter isOther state.tracks <> [newTrack]
-                  liftEffect $ Ref.write (state { tracks = newTracks }) stateRef
-                  liftEffect $ log $ name <> ": " <> fullText
-                Left err ->
-                  liftEffect $ log $ "✗ " <> name <> ": eval error: " <> err
+      case Expr.parseExpr exprSrc >>= Expr.evalExpr of
+        Left err ->
+          liftEffect $ log $ "✗ " <> name <> ": eval error: " <> err
+        Right result ->
+          case patternTypeOfEval result of
             Nothing ->
-              liftEffect $ log $ "(no binding '" <> name <> "', :expr ignored)"
+              liftEffect $ log $ "✗ " <> name <> ": :expr did not evaluate to a pattern"
+            Just patType ->
+              case checkPatternForName state name patType of
+                Left msg ->
+                  liftEffect $ log $ "✗ " <> msg
+                Right _ -> case Map.lookup name state.continuousBindings, result of
+                  Just dest, Expr.VNumPattern p -> do
+                    let newCT = { pattern: p, name, dest }
+                    let isOther ct = ct.name /= name
+                    let newCTs = Array.filter isOther state.continuousTracks <> [newCT]
+                    liftEffect $ Ref.write (state { continuousTracks = newCTs }) stateRef
+                    liftEffect $ log $ "≈ " <> name <> ": " <> fullText
+                  _, _ ->
+                    case Map.lookup name state.bindings, Expr.asPattern result of
+                      Just binding, Right pat -> do
+                        let newTrack = BoundTrack
+                              { pattern: pat
+                              , name
+                              , binding
+                              , params: Map.empty
+                              }
+                        let isOther = case _ of
+                              BoundTrack b -> b.name /= name
+                              _            -> true
+                        let newTracks = Array.filter isOther state.tracks <> [newTrack]
+                        liftEffect $ Ref.write (state { tracks = newTracks }) stateRef
+                        liftEffect $ log $ name <> ": " <> fullText
+                      _, _ ->
+                        liftEffect $ log $ "(no binding '" <> name <> "', :expr ignored)"
       midiSchedulerLoop stateRef
 
     PlayMultiByName entries fullText -> do
@@ -1125,6 +1172,51 @@ samplePatternAt cycleAt pat =
     Just (Digital ev) -> Just ev.value
     Just (Analog ev) -> Just ev.value
     Nothing -> Nothing
+
+-- | Check whether a pattern is type-compatible with the registered
+-- | sink(s) for `name`.  A binding can have multiple actions (e.g.
+-- | `plaits = gate 6 + cv 15 voct`); the pattern must satisfy ALL of
+-- | them.  Errors return `Left <message>` with the failing sink's
+-- | unaliased signature included so the user knows what was expected.
+checkPatternForName
+  :: MIDISchedulerState
+  -> String
+  -> Sink.PatternType
+  -> Either String Unit
+checkPatternForName state name patType =
+  case Map.lookup name state.sinkTypes of
+    Nothing -> Right unit  -- unknown name; let the existing dispatch handle it
+    Just sinks ->
+      let
+        results = map (\s -> Sink.checkPattern s patType) sinks
+        firstErr = Array.findMap (case _ of
+          Left msg -> Just msg
+          Right _ -> Nothing) results
+      in case firstErr of
+        Nothing -> Right unit
+        Just msg -> Left $ "voice '" <> name <> "': " <> msg
+
+-- | Classify a `Pattern String` (mini-notation) by re-parsing the
+-- | source text.  We do this rather than introspecting the live
+-- | Pattern because Pattern is opaque (a function); the source text
+-- | is preserved at the WS-handler level.
+classifyPatString :: String -> Sink.PatternType
+classifyPatString src = case parse src of
+  Right ast -> Sink.PatString (Sink.classifyTPat ast)
+  Left _ -> Sink.PatString Sink.ContentMixed  -- parse-failure can't be classified
+
+-- | Coarse-grained `PatternType` for an `Expr.EvalResult`.  Only
+-- | distinguishes Number vs String at this layer; can't classify
+-- | string-token content because the original TPat isn't preserved
+-- | through Expr-layer transformations.  For bare-pattern dispatch
+-- | (`PlayByName`) the source string is available and
+-- | `classifyPatString` does the finer classification; here we
+-- | accept ContentMixed as a permissive default.
+patternTypeOfEval :: Expr.EvalResult -> Maybe Sink.PatternType
+patternTypeOfEval = case _ of
+  Expr.VPattern _ -> Just (Sink.PatString Sink.ContentMixed)
+  Expr.VNumPattern _ -> Just Sink.PatNumber
+  _ -> Nothing
 
 -- | Try to parse a binding spec as a continuous-voice declaration.
 -- | Recognised shapes:
@@ -1374,6 +1466,16 @@ serializeState s =
     bindingNamesArr = jsArrOf jsStr
       (Array.fromFoldable (Map.keys s.bindings))
 
+    -- Voices: each name with its sink type signature (full unaliased
+    -- form) so the eventual Calypso Voices pane can render them.
+    voiceEntry (Tuple name sinks) =
+      "{\"name\":" <> jsStr name
+        <> ",\"signature\":" <> jsStr (Str.joinWith " ⊕ " (map Sink.renderSinkType sinks))
+        <> ",\"sinks\":" <> jsArrOf Sink.renderSinkTypeJSON sinks
+        <> "}"
+    voicesArr = jsArrOf voiceEntry
+      (Map.toUnfoldable s.sinkTypes :: Array (Tuple String (Array Sink.SinkType)))
+
     trackEntry track = case track of
       GateTrack g ->
         "{\"kind\":\"gate\",\"channel\":" <> show g.channel
@@ -1417,6 +1519,7 @@ serializeState s =
     "{\"config\":" <> configObj
       <> ",\"midiDevices\":" <> midiDevicesArr
       <> ",\"bindingNames\":" <> bindingNamesArr
+      <> ",\"voices\":" <> voicesArr
       <> ",\"tracks\":" <> tracksArr
       <> ",\"continuousTracks\":" <> contTracksArr
       <> ",\"continuousBindings\":" <> contBindingsArr

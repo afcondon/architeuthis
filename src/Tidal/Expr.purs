@@ -35,6 +35,7 @@ module Tidal.Expr
     -- * Evaluation
   , EvalResult(..)
   , evalExpr
+  , asPattern
   , eval
   , evalMulti
   ) where

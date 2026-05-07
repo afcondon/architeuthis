@@ -11,6 +11,7 @@ import Test.ExprSpec (runExprTests)
 import Test.LawSpec (runLawTests)
 import Test.PatternSpec (runPatternTests)
 import Test.PredictiveSpec (runPredictiveTests)
+import Test.SinkSpec (runSinkTests)
 import Test.UtilSpec (runUtilTests)
 import Data.Array as Array
 import Data.Maybe (Maybe(..))
@@ -167,6 +168,9 @@ main = do
 
   -- Run Tidal.Expr (host-language) tests
   runExprTests
+
+  -- Run Tidal.Sink (typed voices) tests
+  runSinkTests
 
   log ""
   log "=== All tests completed ==="
