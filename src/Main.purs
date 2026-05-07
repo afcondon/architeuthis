@@ -5,6 +5,7 @@ import Effect (Effect)
 import Effect.Console (log)
 import Erl.Kernel.Erlang (sleep)
 import Data.Time.Duration (Milliseconds(..))
+import Tidal.Application (startApplication)
 import Tidal.MIDI as MIDI
 import Tidal.MIDIScheduler (startMIDIScheduler, MIDISchedulerConfig, GateConfig, defaultDrumMap, defaultGateConfig)
 import Tidal.LinkAnchor as LinkAnchor
@@ -16,6 +17,14 @@ main = do
   log "==================="
   log ""
 
+  log "=== OTP supervision tree ==="
+  -- Brings up purerl_tidal_sup with its children
+  -- (tidal_voice_sup, tidal_dispatcher, tidal_clock). The clock starts
+  -- ticking immediately; voice_sup is empty until `bind` adds voices.
+  -- See docs/per-voice-refactor-plan.md.
+  startApplication
+
+  log ""
   log "=== Link anchor listener ==="
   -- Always start; if no link-spike is running, queries return Nothing
   -- and any consumer falls back to its free-running clock.
