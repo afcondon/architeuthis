@@ -56,6 +56,9 @@ erl: ps
 	@erlc -disable-feature maybe_expr -o ebin src/purerl_tidal_app.erl
 	@erlc -disable-feature maybe_expr -o ebin src/purerl_tidal_sup.erl
 	@cp src/purerl_tidal.app.src ebin/purerl_tidal.app
+	@# Voice gen_server + supervisor (per-voice supervision tree).
+	@erlc -disable-feature maybe_expr -o ebin src/tidal_voice.erl
+	@erlc -disable-feature maybe_expr -o ebin src/tidal_voice_sup.erl
 	@echo "==> Build complete. BEAM files in ebin/"
 
 # Run tests
