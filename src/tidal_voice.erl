@@ -1,17 +1,21 @@
 %% @doc Voice gen_server — one process per bound name.
 %%
-%% Holds a `Tidal.Voice.State` term and exposes the voice-message API as
-%% gen_server calls/casts.
+%% Holds a `Tidal.Voice.State` term and exposes the voice-message API
+%% as gen_server calls/casts.
 %%
-%% PR1.2 introduces this module as scaffolding only. State-mutation
-%% messages work; `compute_until` is a no-op until PR1.4 wires the
-%% pattern-query + dispatch loop migrating from MIDIScheduler. See
-%% `docs/per-voice-refactor-plan.md`.
+%% The gen_server's State is `{Name, PsState}` — we keep Name at the
+%% Erlang level for direct access (used when casting events to the
+%% dispatcher) and pass PsState into PureScript helpers for all
+%% mutations and queries. PsState is opaque to Erlang — never inspect
+%% or pattern-match on it.
 %%
-%% Process registration: each voice registers as `tidal_voice_<name>`.
-%% Bound names come from the user (`bind bass ...`); atom-creation cost
-%% is bounded by the binding count, not request volume — atom-table
-%% pressure isn't a concern at the rig's scale.
+%% On `compute_until` the voice calls into Tidal.Voice.computeUntil
+%% (pure function returning {newState, events}) and casts each event
+%% to tidal_dispatcher. Mute is honored inside computeUntil — events
+%% are simply omitted from the result list when muted, so phase still
+%% advances but nothing leaves the voice.
+%%
+%% See `docs/per-voice-refactor-plan.md`.
 -module(tidal_voice).
 -behaviour(gen_server).
 
@@ -53,14 +57,14 @@ reset_phase(Name) ->
 get_state(Name) ->
     gen_server:call(registered_name(Name), get_state).
 
-compute_until(Name, T) ->
-    gen_server:cast(registered_name(Name), {compute_until, T}).
+%% Window is a map: #{currentCycle, lookAheadCycle, cycleDurationMs,
+%% nowUnixUs}. Sent by tidal_clock on each tick.
+compute_until(Name, Window) ->
+    gen_server:cast(registered_name(Name), {compute_until, Window}).
 
 stop(Name) ->
     gen_server:stop(registered_name(Name)).
 
-%% Build the registered atom for a voice name. Exported because
-%% tidal_voice_sup needs the same mapping.
 registered_name(Name) when is_binary(Name) ->
     list_to_atom("tidal_voice_" ++ binary_to_list(Name));
 registered_name(Name) when is_list(Name) ->
@@ -73,25 +77,34 @@ registered_name(Name) when is_atom(Name) ->
 %% =========================================================================
 
 init({Name, Binding}) ->
-    State = 'tidal_voice@ps':initialState(Name, Binding),
-    {ok, State}.
+    PsState = 'tidal_voice@ps':initialState(Name, Binding),
+    {ok, {Name, PsState}}.
 
-handle_call({set_pattern, P}, _From, State) ->
-    {reply, ok, 'tidal_voice@ps':setPattern(P, State)};
-handle_call(clear_pattern, _From, State) ->
-    {reply, ok, 'tidal_voice@ps':clearPattern(State)};
-handle_call(get_state, _From, State) ->
-    {reply, 'tidal_voice@ps':snapshot(State), State}.
+handle_call({set_pattern, P}, _From, {Name, PsState}) ->
+    {reply, ok, {Name, 'tidal_voice@ps':setPattern(P, PsState)}};
+handle_call(clear_pattern, _From, {Name, PsState}) ->
+    {reply, ok, {Name, 'tidal_voice@ps':clearPattern(PsState)}};
+handle_call(get_state, _From, {Name, PsState}) ->
+    {reply, 'tidal_voice@ps':snapshot(PsState), {Name, PsState}}.
 
-handle_cast({set_muted, M}, State) ->
-    {noreply, 'tidal_voice@ps':setMuted(M, State)};
-handle_cast(reset_phase, State) ->
-    {noreply, 'tidal_voice@ps':resetPhase(State)};
-%% compute_until is a no-op at PR1.2. The pattern query + event dispatch
-%% loop migrates from MIDIScheduler in PR1.4. The cast is accepted now so
-%% the clock can broadcast unconditionally once it exists in PR1.3.
-handle_cast({compute_until, _T}, State) ->
-    {noreply, State}.
+handle_cast({set_muted, M}, {Name, PsState}) ->
+    {noreply, {Name, 'tidal_voice@ps':setMuted(M, PsState)}};
+handle_cast(reset_phase, {Name, PsState}) ->
+    {noreply, {Name, 'tidal_voice@ps':resetPhase(PsState)}};
+handle_cast({compute_until, Window}, {Name, PsState}) ->
+    Result = 'tidal_voice@ps':computeUntil(Window, PsState),
+    Events = maps:get(events, Result),
+    NewPsState = maps:get(newState, Result),
+    %% PureScript `Array a` compiles to Erlang's `array` module — not a
+    %% plain list. Iterate side-effectingly via array:foldl/3 (the fold
+    %% accumulator is unused; this is just a "for each element").
+    array:foldl(fun(_Idx, E, _) ->
+                    tidal_dispatcher:dispatch_event(Name,
+                                                    maps:get(token, E),
+                                                    maps:get(wallTimeUs, E))
+                end,
+                ok, Events),
+    {noreply, {Name, NewPsState}}.
 
 terminate(_Reason, _State) ->
     ok.

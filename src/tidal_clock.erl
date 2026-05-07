@@ -75,8 +75,12 @@ running(state_timeout, tick, State) ->
     ElapsedMs = maps:get(elapsedMs, Clock),
     CycleDur = maps:get(cycleDurationMs, Clock),
     LookAhead = maps:get(lookAheadMs, Info),
-    EndCycle = (ElapsedMs + LookAhead) / CycleDur,
-    broadcast_compute_until(EndCycle),
+    NowUs = erlang:system_time(microsecond),
+    Window = #{currentCycle => ElapsedMs / CycleDur,
+               lookAheadCycle => (ElapsedMs + LookAhead) / CycleDur,
+               cycleDurationMs => CycleDur,
+               nowUnixUs => float(NowUs)},
+    broadcast_compute_window(Window),
     Tick = maps:get(tickIntervalMs, Info),
     {keep_state_and_data, [{state_timeout, Tick, tick}]};
 running({call, From}, pause, State) ->
@@ -121,15 +125,18 @@ terminate(_Reason, _StateName, _State) ->
 %% Internal
 %% =========================================================================
 
-%% Broadcast `{compute_until, EndCycle}` to every voice in tidal_voice_sup.
-%% Safe when voice_sup isn't started yet (returns ok immediately) or has
-%% no children (the list comprehension is over []).
-broadcast_compute_until(EndCycle) ->
+%% Broadcast `{compute_until, Window}` to every voice in tidal_voice_sup.
+%% Window is a map with currentCycle, lookAheadCycle, cycleDurationMs,
+%% nowUnixUs — sufficient for each voice to convert its pattern's
+%% cycle-events to absolute Unix microsecond wall times. Safe when
+%% voice_sup isn't started yet (returns ok immediately) or has no
+%% children (the list comprehension is over []).
+broadcast_compute_window(Window) ->
     case whereis(tidal_voice_sup) of
         undefined ->
             ok;
         _Pid ->
             Voices = tidal_voice_sup:which_voices(),
-            [gen_server:cast(V, {compute_until, EndCycle}) || V <- Voices],
+            [gen_server:cast(V, {compute_until, Window}) || V <- Voices],
             ok
     end.
