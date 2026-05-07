@@ -270,6 +270,51 @@ runExprTests = do
       Left err -> Left err)
 
   log ""
+  log "--- eval: log/exp ramp oscillators ---"
+  -- expSaw = pos² so cycle 0.5 → 0.25, cycle 0.25 → 0.0625
+  expectNumAt "expSaw at 0.5"     "expSaw"   0.5    0.25
+  expectNumAt "expSaw at 0.25"    "expSaw"   0.25   0.0625
+  expectNumAt "expSaw at 1.0"     "expSaw"   1.0    0.0   -- wraps to start
+  -- iexpSaw = (1-pos)² so cycle 0.5 → 0.25, cycle 0.25 → 0.5625
+  expectNumAt "iexpSaw at 0.5"    "iexpSaw"  0.5    0.25
+  expectNumAt "iexpSaw at 0.25"   "iexpSaw"  0.25   0.5625
+  -- logSaw = √pos so cycle 0.25 → 0.5, cycle 0.5 → 0.7071
+  expectNumAt "logSaw at 0.25"    "logSaw"   0.25   0.5
+  expectNumAt "logSaw at 0.5"     "logSaw"   0.5    0.7071
+  -- ilogSaw = 1 - √pos so cycle 0.25 → 0.5, cycle 0.5 → 0.2929
+  expectNumAt "ilogSaw at 0.25"   "ilogSaw"  0.25   0.5
+  expectNumAt "ilogSaw at 0.5"    "ilogSaw"  0.5    0.2929
+
+  log ""
+  log "--- eval: <a b c> alternation ---"
+  -- <sine saw> alternates per cycle: cycle 0 = sine (0.5 at midpoint),
+  -- cycle 1 = saw (0.5 at midpoint).  Both happen to be 0.5 at their
+  -- own cycle midpoint — distinguish via cycle 0.25 / 1.25.
+  expectNumAt "alt sine|saw at 0.25 (sine slot)"   "<sine saw>"  0.25  1.0   -- sine peak
+  expectNumAt "alt sine|saw at 1.25 (saw slot)"    "<sine saw>"  1.25  0.25  -- saw 0.25 in
+  expectNumAt "alt saw|sine at 0.25 (saw slot)"    "<saw sine>"  0.25  0.25  -- saw at 0.25
+  expectNumAt "alt saw|sine at 1.25 (sine slot)"   "<saw sine>"  1.25  1.0   -- sine peak
+  -- Three-slot alternation cycles every 3 cycles.
+  expectNumAt "<sine tri square> at 0.25 (sine)"  "<sine tri square>"  0.25  1.0
+  expectNumAt "<sine tri square> at 1.25 (tri)"   "<sine tri square>"  1.25  0.5
+  expectNumAt "<sine tri square> at 2.75 (square)" "<sine tri square>" 2.75  1.0
+  -- Nested expression in slot via parens.
+  expectNumAt "<sine (slow 2 saw)> at 0.25"  "<sine (slow 2 saw)>"  0.25  1.0
+  -- Combining with `fast` outside the alternation: fast 2 doubles the
+  -- alternation rate, so each slot now takes 0.5 cycles instead of 1.
+  expectNumAt "fast 2 <sine saw> at 0.125 (sine slot)"
+    "fast 2 <sine saw>"  0.125  1.0
+  expectNumAt "fast 2 <sine saw> at 0.625 (saw slot)"
+    "fast 2 <sine saw>"  0.625  0.25
+  -- Empty alternation errors.
+  expectEvalLeft "empty alternation rejected"
+    (case parseExpr "<>" of
+      Right e -> case evalExpr e of
+        Right _ -> Right (mini "x")  -- shouldn't reach
+        Left err -> Left err
+      Left err -> Left err)
+
+  log ""
 
 -- ---------------------------------------------------------------------------
 -- Assertion helpers

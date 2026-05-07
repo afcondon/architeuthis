@@ -68,10 +68,14 @@ import Tidal.Pattern.Core
   , compress
   , cosine
   , every
+  , expSaw
   , fast
+  , iexpSaw
+  , ilogSaw
   , isaw
   , iter
   , linger
+  , logSaw
   , off
   , palindrome
   , rand
@@ -82,6 +86,7 @@ import Tidal.Pattern.Core
   , saw
   , sine
   , slow
+  , slowCat
   , square
   , stutter
   , tri
@@ -141,9 +146,25 @@ exprTop = defer \_ -> do
 -- An "atom" is something that could appear as a head or as an argument.
 atom :: Parser Expr
 atom = defer \_ -> do
-  e <- pStringLit <|> pListLit <|> pParens <|> pNumberE <|> pTagOrVar
+  e <- pStringLit <|> pListLit <|> pAlt <|> pParens <|> pNumberE <|> pTagOrVar
   skipWS
   pure e
+
+-- | Angle-bracket alternation: `<a b c>` desugars to `alt [a, b, c]`,
+-- | which evaluates to `slowCat [pat_a, pat_b, pat_c]` — each slot
+-- | takes one cycle, the alternation cycles through them.
+-- |
+-- | Each slot is a single atom; use parens for multi-token expressions:
+-- | `<sine (slow 2 tri) saw>` has three slots.  Polymorphic over
+-- | Pattern String / Pattern Number: the first slot's evaluated kind
+-- | decides which one applies to all.
+pAlt :: Parser Expr
+pAlt = defer \_ -> do
+  _ <- char '<'
+  skipWS
+  items <- many atom
+  _ <- char '>'
+  pure (EApp (EVar "alt") items)
 
 -- Parenthesised expression — grouping for nested function application.
 -- `palindrome (fast 4 "bd sn")` parses as `palindrome` applied to one
@@ -357,6 +378,12 @@ resolveVar n = case n of
   "isaw"   -> Right (VNumPattern isaw)
   "tri"    -> Right (VNumPattern tri)
   "square" -> Right (VNumPattern square)
+  -- Curved ramps: pos²/√pos and their 1→0 inverses.  Pair with the
+  -- linear `saw`/`isaw` for modular-style log/exp shapes.
+  "expSaw"  -> Right (VNumPattern expSaw)
+  "iexpSaw" -> Right (VNumPattern iexpSaw)
+  "logSaw"  -> Right (VNumPattern logSaw)
+  "ilogSaw" -> Right (VNumPattern ilogSaw)
   "rand"   -> Right (VNumPattern rand)
   _ -> Left ("unknown identifier: " <> n)
 
@@ -396,6 +423,10 @@ applyExprByName n args = case n of
   "mul" -> numArithOp "mul" (*) args
   "sub" -> numArithOp "sub" (-) args
   "neg" -> applyNeg args
+  -- Angle-bracket alternation: `<a b c>` desugars to `alt [a, b, c]`.
+  -- Polymorphic over String / Number patterns; first slot's kind
+  -- decides the result kind, all other slots must match.
+  "alt" -> applyAlt args
   _ -> Left ("unknown function: " <> n)
 
 -- `slow N pat` / `fast N pat`.  1-arg partial application returns a
@@ -491,6 +522,46 @@ applyNeg args = case args of
     p <- asNumPattern "neg" a
     Right (VNumPattern (negate <$> p))
   _ -> Left ("neg: expected 1 argument, got " <> show (Array.length args))
+
+-- | `<a b c>` alternation — desugared by the parser into `alt a b c`.
+-- | The first arg's evaluated kind decides whether the result is a
+-- | string or number pattern; remaining args must match.  All cases
+-- | use `slowCat`, so each slot takes one cycle and the alternation
+-- | repeats every N cycles where N is the slot count.
+applyAlt :: Array EvalResult -> Either String EvalResult
+applyAlt args = case Array.uncons args of
+  Nothing -> Left "alt: empty alternation"
+  Just { head } -> case head of
+    VNumPattern _ -> do
+      ps <- traverseArgsAs (asNumPattern "alt") args
+      Right (VNumPattern (slowCat ps))
+    VPattern _ -> do
+      ps <- traverseArgsAs (asPattern' "alt") args
+      Right (VPattern (slowCat ps))
+    other -> Left ("alt: first slot must be a pattern, got " <> showResult other)
+
+-- | Pull a `Pattern String` out of an `EvalResult`.  Errors with the
+-- | function name in the message for context.  Distinct from
+-- | `asPattern` (which is the existing helper without the fname tag)
+-- | because the existing one is already in scope and used by the
+-- | string-typed dispatchers; this variant keeps the polymorphic
+-- | `applyAlt` error message uniform with `asNumPattern`.
+asPattern' :: String -> EvalResult -> Either String (Pattern String)
+asPattern' fname r = case r of
+  VPattern p -> Right p
+  _ -> Left (fname <> ": expected string pattern, got " <> showResult r)
+
+-- | `traverse f` over EvalResult arrays, accumulating Either errors.
+traverseArgsAs
+  :: forall a
+   . (EvalResult -> Either String a)
+  -> Array EvalResult
+  -> Either String (Array a)
+traverseArgsAs f = Array.foldM step []
+  where
+    step acc r = do
+      v <- f r
+      Right (Array.snoc acc v)
 
 -- | Coerce an `EvalResult` to a `Pattern Number`.  Promotes scalars
 -- | (`VInt`, `VRat`) to constant *Analog* patterns; passes

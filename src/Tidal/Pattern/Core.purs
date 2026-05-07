@@ -53,6 +53,10 @@ module Tidal.Pattern.Core
   , isaw
   , tri
   , square
+  , expSaw
+  , iexpSaw
+  , logSaw
+  , ilogSaw
   , rand
   , irand
     -- * Filtering and selection
@@ -80,7 +84,7 @@ import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Ord (comparing)
 import Data.Rational (Rational, fromInt, toNumber)
-import Math (cos, floor, pi, sin)
+import Math (cos, floor, pi, sin, sqrt)
 import Tidal.Core.Types (Time)
 import Tidal.Pattern.Types
   ( Arc(..)
@@ -887,6 +891,57 @@ square = pattern \(State st) ->
     midpoint = toNumber $ (start + stop) / fromInt 2
     pos = midpoint - floor midpoint
     value = if pos < 0.5 then 0.0 else 1.0
+  in
+    [ Analog { context: emptyContext, part: st.arc, value } ]
+
+-- | Exponential ramp: rises 0 → 1 with a slow start and fast finish
+-- | (`pos²`).  Modular-style "exp" curve.  Pairs with `saw` (linear)
+-- | and `logSaw` (concave-down).
+expSaw :: Pattern Number
+expSaw = pattern \(State st) ->
+  let
+    Arc { start, stop } = st.arc
+    midpoint = toNumber $ (start + stop) / fromInt 2
+    pos = midpoint - floor midpoint
+    value = pos * pos
+  in
+    [ Analog { context: emptyContext, part: st.arc, value } ]
+
+-- | Inverse exponential: falls 1 → 0 with a fast start and slow tail
+-- | (`(1-pos)²`).  Useful as a percussion-style decay envelope at LFO
+-- | rates — `range 0.2 1.0 (slow 4 iexpSaw)` is a slow filter pluck.
+iexpSaw :: Pattern Number
+iexpSaw = pattern \(State st) ->
+  let
+    Arc { start, stop } = st.arc
+    midpoint = toNumber $ (start + stop) / fromInt 2
+    pos = midpoint - floor midpoint
+    inv = 1.0 - pos
+    value = inv * inv
+  in
+    [ Analog { context: emptyContext, part: st.arc, value } ]
+
+-- | Logarithmic ramp: rises 0 → 1 with a fast start and slow approach
+-- | (`sqrt(pos)`).  Modular-style "log" curve — concave-down.
+logSaw :: Pattern Number
+logSaw = pattern \(State st) ->
+  let
+    Arc { start, stop } = st.arc
+    midpoint = toNumber $ (start + stop) / fromInt 2
+    pos = midpoint - floor midpoint
+    value = sqrt pos
+  in
+    [ Analog { context: emptyContext, part: st.arc, value } ]
+
+-- | Inverse logarithmic: falls 1 → 0 with a slow start and fast finish
+-- | (`1 - sqrt(pos)`).  Mirror of `logSaw`.
+ilogSaw :: Pattern Number
+ilogSaw = pattern \(State st) ->
+  let
+    Arc { start, stop } = st.arc
+    midpoint = toNumber $ (start + stop) / fromInt 2
+    pos = midpoint - floor midpoint
+    value = 1.0 - sqrt pos
   in
     [ Analog { context: emptyContext, part: st.arc, value } ]
 
