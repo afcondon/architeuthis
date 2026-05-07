@@ -59,6 +59,9 @@ erl: ps
 	@# Voice gen_server + supervisor (per-voice supervision tree).
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_voice.erl
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_voice_sup.erl
+	@# Clock (gen_statem) and Dispatcher (gen_server).
+	@erlc -disable-feature maybe_expr -o ebin src/tidal_clock.erl
+	@erlc -disable-feature maybe_expr -o ebin src/tidal_dispatcher.erl
 	@echo "==> Build complete. BEAM files in ebin/"
 
 # Run tests
