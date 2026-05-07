@@ -14,7 +14,7 @@ import Data.Array as Array
 import Data.Either (Either(..), isLeft)
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
-import Data.Rational (fromInt)
+import Data.Rational (fromInt, (%))
 import Data.Tuple (Tuple(..))
 import Effect (Effect)
 import Effect.Console (log)
@@ -31,7 +31,6 @@ import Tidal.Pattern.Branched
   , mult
   )
 import Data.Int as Int
-import Data.Rational ((%))
 import Tidal.Pattern.Core (every, fast, palindrome, queryArc, rev, slow)
 import Tidal.Pattern.Types (Event(..), Pattern)
 
@@ -268,6 +267,16 @@ runExprTests = do
         Right (VNumPattern _) -> Right (mini "x")
         _ -> Left "expected error"
       Left err -> Left err)
+
+  log ""
+  log "--- eval: speed (alias for fast / inverse-of-slow) ---"
+  -- speed n pat ≡ fast n pat.  At sample positions inside cycle 0,
+  -- `speed 4 sine` matches `fast 4 sine` matches `slow 4 sine` evaluated
+  -- at 4× the phase.  Cross-check against fast at one well-known point.
+  expectNumAt "speed 4 sine @ 0.0625 (≡ sine peak compressed 4x)"
+    "speed 4 sine"  0.0625  1.0
+  expectNumAt "speed (1/2) sine @ 0.5 (peak of slowed sine)"
+    "speed (1/2) sine"  0.5  1.0
 
   log ""
   log "--- eval: log/exp ramp oscillators ---"

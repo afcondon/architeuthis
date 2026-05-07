@@ -401,6 +401,11 @@ applyExprByName n args = case n of
   "brak" -> oneArg "brak" args >>= asPattern <#> (brak >>> VPattern)
   "slow" -> binOpPoly "slow" slow slow args
   "fast" -> binOpPoly "fast" fast fast args
+  -- `speed N pat`: alternative naming where N > 1 speeds up and N < 1
+  -- slows down.  Equivalent to `fast` (since `slow n = fast (1/n)`),
+  -- but reads more naturally if you think in playback-speed terms
+  -- ("speed 0.5" = half speed) rather than fast/slow direction-words.
+  "speed" -> binOpPoly "speed" fast fast args
   "linger" -> binOp "linger" linger args
   "trunc" -> binOp "trunc" trunc args
   "rotL" -> binOp "rotL" rotL args
