@@ -52,6 +52,10 @@ erl: ps
 	@# Standalone Erlang utility modules (no PureScript counterpart, not foreign).
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_log.erl
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_link_anchor.erl
+	@# OTP application + top-level supervisor.
+	@erlc -disable-feature maybe_expr -o ebin src/purerl_tidal_app.erl
+	@erlc -disable-feature maybe_expr -o ebin src/purerl_tidal_sup.erl
+	@cp src/purerl_tidal.app.src ebin/purerl_tidal.app
 	@echo "==> Build complete. BEAM files in ebin/"
 
 # Run tests
