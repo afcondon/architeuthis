@@ -1,27 +1,33 @@
-%% @doc Dispatcher — gen_server owning OSC output for voice events.
+%% @doc Dispatcher — gen_server owning OSC + MIDI bridge sockets and
+%% routing voice events to the appropriate destination.
 %%
-%% Voices push events here as `{event, BindingName, Token, WallTimeUs}`
-%% casts. The dispatcher looks up the binding's destination(s), formats
-%% the OSC payload(s), and sends to link-spike / cv-router.
+%% Voices push events here as `dispatch_event/3` casts:
+%%   {event, BindingName, Token, WallTimeUs}
 %%
-%% PR1.3: scaffolding only. The state holds a counter; events are
-%% accepted and logged via `tidal_log`. The bridge_client / osc_client
-%% handles, the binding registry, and the per-PrimAction format/send
-%% code all migrate from MIDIScheduler in PR1.4 — that's where
-%% MIDIScheduler is dismantled. See `docs/per-voice-refactor-plan.md`.
+%% The dispatcher looks up `BindingName` in its binding cache, walks
+%% each PrimAction (Gate / CV / ESX / ES5Gate / MidiNote / MidiCC),
+%% and formats + sends the appropriate OSC / MIDI. Logic lives in
+%% `Tidal.Dispatcher` (PureScript); this module is the Erlang shell
+%% holding the gen_server callbacks and the OSC/bridge client handles.
 %%
-%% Why a dedicated dispatcher process: it owns the OSC sockets. Erlang
-%% UDP ports are linked to their owning process and close when that
-%% process exits — so socket lifetime tracks dispatcher lifetime, which
-%% is supervised. (Same reason the existing socket-open code lives
-%% inside MIDIScheduler's spawn closure.) Concentrating OSC sends in
-%% one process also gives the option later to add per-destination
-%% pacing / throttling without touching voices.
+%% Sockets are opened in init/1 — they're linked to this process and
+%% close when it exits, so socket lifetime tracks dispatcher lifetime
+%% (which is supervised by purerl_tidal_sup).
+%%
+%% PR1.4c implementation note: still scaffolding for the real boot
+%% path. The bindings cache is empty until PR1.4d wires the WS handler
+%% to call `set_binding` on `bind` verbs; until then, voices that push
+%% events here will hit the unknown-binding silent no-op path.
+%%
+%% See `docs/per-voice-refactor-plan.md`.
 -module(tidal_dispatcher).
 -behaviour(gen_server).
 
 -export([start_link/0,
          dispatch_event/3,
+         set_binding/2,
+         remove_binding/1,
+         register_midi_device/3,
          get_info/0,
          stop/0]).
 
@@ -34,9 +40,23 @@
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
-%% Voices cast events here. PR1.3: just counts; PR1.4 routes.
+%% Voices cast events here.
 dispatch_event(BindingName, Token, WallTimeUs) ->
     gen_server:cast(?MODULE, {event, BindingName, Token, WallTimeUs}).
+
+%% Cache a binding for a voice name. Called by the WS handler when a
+%% `bind` verb is processed (PR1.4d).
+set_binding(Name, Binding) ->
+    gen_server:call(?MODULE, {set_binding, Name, Binding}).
+
+remove_binding(Name) ->
+    gen_server:call(?MODULE, {remove_binding, Name}).
+
+%% Register a MIDI device alias. Mirrors the existing
+%% `midi-device <alias> <real-name> [lat <ms>]` verb.
+register_midi_device(Alias, DeviceName, LatencyMs) ->
+    gen_server:call(?MODULE,
+                    {register_midi_device, Alias, DeviceName, LatencyMs}).
 
 get_info() ->
     gen_server:call(?MODULE, get_info).
@@ -49,16 +69,55 @@ stop() ->
 %% =========================================================================
 
 init([]) ->
-    {ok, 'tidal_dispatcher@ps':initialState()}.
+    %% Configurable via the purerl_tidal application env. Defaults
+    %% match Main.purs's existing GateConfig.
+    GateEnabled  = application:get_env(purerl_tidal, gateEnabled, true),
+    GateHost     = application:get_env(purerl_tidal, gateHost, "127.0.0.1"),
+    GatePort     = application:get_env(purerl_tidal, gatePort, 57120),
+    GateDuration = application:get_env(purerl_tidal, gateDuration, 50.0),
+    CvLeadMs     = application:get_env(purerl_tidal, cvLeadMs, 5.0),
 
-handle_call(get_info, _From, State) ->
-    {reply, 'tidal_dispatcher@ps':snapshot(State), State}.
+    %% Bridge client — always open. Talks to link-spike on UDP 57122.
+    BridgeClient = ('tidal_mIDIBridge@foreign':startClient())(),
 
-handle_cast({event, BindingName, Token, WallTimeUs}, State) ->
-    %% PR1.3: log the event for verification, increment counter.
-    %% PR1.4 replaces this with the real route+format+send pipeline.
-    tidal_log:debug("dispatcher: ~s/~s @ ~p~n",
-                    [BindingName, Token, WallTimeUs]),
-    {noreply, 'tidal_dispatcher@ps':recordEvent(State)}.
+    %% OSC client — opened only if gate output is enabled. Maybe-typed
+    %% on the PureScript side, encoded as {just, Client} | {nothing}.
+    OscClient = case GateEnabled of
+        true ->
+            Config = #{host => list_to_binary(GateHost),
+                       port => GatePort},
+            Client = ('tidal_oSC@foreign':startClient(Config))(),
+            {just, Client};
+        false ->
+            {nothing}
+    end,
+
+    InitArgs = #{bridgeClient => BridgeClient,
+                 oscClient    => OscClient,
+                 gateDuration => float(GateDuration),
+                 cvLeadMs     => float(CvLeadMs)},
+    PsState = 'tidal_dispatcher@ps':initialState(InitArgs),
+    {ok, PsState}.
+
+handle_call({set_binding, Name, Binding}, _From, PsState) ->
+    NewState = 'tidal_dispatcher@ps':setBinding(Name, Binding, PsState),
+    {reply, ok, NewState};
+handle_call({remove_binding, Name}, _From, PsState) ->
+    NewState = 'tidal_dispatcher@ps':removeBinding(Name, PsState),
+    {reply, ok, NewState};
+handle_call({register_midi_device, Alias, Name, Lat}, _From, PsState) ->
+    Device = #{name => Name, latencyMs => float(Lat)},
+    NewState = 'tidal_dispatcher@ps':registerMidiDevice(Alias, Device, PsState),
+    {reply, ok, NewState};
+handle_call(get_info, _From, PsState) ->
+    {reply, 'tidal_dispatcher@ps':snapshot(PsState), PsState}.
+
+handle_cast({event, BindingName, Token, WallTimeUs}, PsState) ->
+    EventMap = #{name       => BindingName,
+                 token      => Token,
+                 wallTimeUs => float(WallTimeUs)},
+    %% dispatchEvent is Effect-returning — execute the thunk.
+    NewState = ('tidal_dispatcher@ps':dispatchEvent(EventMap, PsState))(),
+    {noreply, NewState}.
 
 terminate(_Reason, _State) -> ok.

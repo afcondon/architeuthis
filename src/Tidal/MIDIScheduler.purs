@@ -13,6 +13,12 @@ module Tidal.MIDIScheduler
   , defaultSampleCVMap
   , voctValue
   , noteEntry
+  -- Re-exported for `Tidal.Dispatcher` during the per-voice migration.
+  -- Move these to a shared `Tidal.Dispatch.Helpers` module in PR1.4e.
+  , noteNameMidi
+  , interpretCV
+  , clamp7bit
+  , param7bit
   ) where
 
 import Prelude
