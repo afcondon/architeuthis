@@ -40,6 +40,7 @@ module Tidal.Expr
   , evalMulti
   , parseEvalPattern
   , parseEvalNumPattern
+  , parseMiniPattern
   ) where
 
 import Prelude
@@ -63,7 +64,7 @@ import Text.Parsing.Parser.Combinators as PC
 import Text.Parsing.Parser.String (char, satisfy)
 import Text.Parsing.Parser.Token (alphaNum, digit, letter)
 import Tidal.Eval.Interpret (tpatToPattern)
-import Tidal.Parse.Parser (parseTPat)
+import Tidal.Parse.Parser (parse, parseTPat)
 import Tidal.Pattern.Branched (Voice(..))
 import Tidal.Pattern.Branched as Branched
 import Tidal.Pattern.Core
@@ -802,6 +803,14 @@ parseEvalPattern src = parseExpr src >>= evalExpr >>= asPattern
 parseEvalNumPattern :: String -> Either String (Pattern Number)
 parseEvalNumPattern src =
   parseExpr src >>= evalExpr >>= asNumPattern "parseEvalNumPattern"
+
+-- | Parse a raw mini-notation string (no expression layer) and
+-- | convert to a `Pattern String`. Used by the WS handler's
+-- | `fh2-trigger` verb where the body is bare mini-notation.
+parseMiniPattern :: String -> Either String (Pattern String)
+parseMiniPattern src = case parse src of
+  Right tpat -> Right (tpatToPattern tpat)
+  Left err -> Left (show err)
 
 -- A list of functions is treated as left-to-right composition:
 -- `[rev, (slow 2)]` means "apply rev, then slow 2" — i.e. the

@@ -199,12 +199,6 @@ data ParsedTrack
   -- | after the Tidal parser produces each numeric value: e.g. `[Offset
   -- | (-0.5)]` shifts an unsigned [0..1] LFO into bipolar [-0.5..0.5].
   | ESXTrack  { pattern :: Pattern String, slot :: Int, transforms :: Array Transform }
-  -- | FH-2 trigger track. Each pattern token fires a MIDI note on the FH-2
-  -- | for the given voice. The voice's MIDI channel is looked up from
-  -- | `state.fh2VoiceChannels` at dispatch time (registered via
-  -- | `fh2-envelope`). Note name in the token (e.g. `c4`) overrides the
-  -- | default trigger note; bare tokens (e.g. `bd`) fall back to MIDI 60.
-  | Fh2TriggerTrack { pattern :: Pattern String, voice :: Int }
 
 -- | A continuous-sampling voice.  Held in `MIDISchedulerState.continuousTracks`
 -- | rather than `tracks` because the pattern type differs (`Pattern Number`
@@ -434,7 +428,6 @@ midiSchedulerLoop stateRef = do
                 GateTrack g -> g.pattern
                 CVTrack c -> c.pattern
                 ESXTrack e -> e.pattern
-                Fh2TriggerTrack f -> f.pattern
           let events = queryArc pattern fromCycle toCycle
           for_ events \event -> do
             let eventCycle = eventStartCycle event
@@ -512,34 +505,6 @@ midiSchedulerLoop stateRef = do
                       Nothing -> pure unit
                     Nothing -> pure unit
 
-                Fh2TriggerTrack f ->
-                  -- Look up the voice's MIDI channel. If unregistered (user
-                  -- forgot `fh2-envelope`), log once and skip.
-                  when (token /= "~") do
-                    case Map.lookup f.voice state.fh2VoiceChannels of
-                      Nothing ->
-                        liftEffect $ Log.debug $ "  x fh2-trigger voice " <> show f.voice <> ": no fh2-envelope registration; skipping"
-                      Just channel -> do
-                        -- Pattern token can override the trigger note (so
-                        -- `fh2-trigger 0 "c4 e4 g4"` plays a melody and the
-                        -- FH-2's mcv pitch CV tracks). Plain trigger tokens
-                        -- (`bd`, `1`, `x`) fall back to MIDI 60 = C4.
-                        let note = case Map.lookup token noteNameMidi of
-                              Just n -> n
-                              Nothing -> 60
-                        -- Use the same fh2 latency record if registered,
-                        -- otherwise zero. Lets the user calibrate the FH-2
-                        -- via `midi-device fh2 FH-2 lat <ms>` without
-                        -- changing the verb shape.
-                        let dev = fromMaybe { name: "FH-2", latencyMs: 0.0 }
-                                    (Map.lookup "fh2" state.midiDevices)
-                        let adjustedDelayMs = max 0.0 (delayClamped - dev.latencyMs)
-                        let adjustedUnixUs = nowUnixUs + adjustedDelayMs * 1000.0
-                        -- Note duration is 200ms — short enough for any envelope
-                        -- shape; FH-2 envelopes restart on each note-on so the
-                        -- envelope plays in full regardless of duration.
-                        liftEffect $ Log.debug $ "♪ fh2-trigger v" <> show f.voice <> " → " <> dev.name <> " ch" <> show channel <> " note " <> show note <> " in " <> show (Int.floor adjustedDelayMs) <> "ms"
-                        liftEffect $ scheduleNoteAt state.bridgeClient dev.name channel note 100 200 adjustedUnixUs
 
       liftEffect $ Ref.modify_ (_ { nextCycle = toCycle }) stateRef
 
@@ -652,7 +617,6 @@ midiSchedulerLoop stateRef = do
         GateTrack g -> liftEffect $ Log.debug $ "- gate ch " <> show g.channel
         CVTrack c -> liftEffect $ Log.debug $ "- cv bus " <> show c.bus
         ESXTrack e -> liftEffect $ Log.debug $ "- esx slot " <> show e.slot
-        Fh2TriggerTrack f -> liftEffect $ Log.debug $ "- fh2-trigger v" <> show f.voice
       midiSchedulerLoop stateRef
 
     AddBinding name actionSpec -> do
@@ -788,19 +752,11 @@ midiSchedulerLoop stateRef = do
       liftEffect $ log $ "fh2-envelope: voice " <> show voice <> " → ch " <> show channel
       midiSchedulerLoop stateRef
 
-    UpdateFh2TriggerTrack voice patStr -> do
-      state <- liftEffect $ Ref.read stateRef
-      case parse patStr of
-        Right ast -> do
-          let newTrack = Fh2TriggerTrack { pattern: tpatToPattern ast, voice }
-              isOther = case _ of
-                Fh2TriggerTrack f -> f.voice /= voice
-                _                 -> true
-              newTracks = Array.filter isOther state.tracks <> [newTrack]
-          liftEffect $ Ref.write (state { tracks = newTracks }) stateRef
-          liftEffect $ log $ "fh2-trigger v" <> show voice <> ": " <> patStr
-        Left _ ->
-          liftEffect $ log $ "fh2-trigger v" <> show voice <> " parse error: " <> patStr
+    UpdateFh2TriggerTrack _voice _patStr -> do
+      -- Dead handler — fh2-trigger now installs voices on the new
+      -- tree directly via the WS handler (PR1.6). Kept on the Msg
+      -- sum for type completeness; removed when the Msg type
+      -- shrinks (post-PR1.7 cleanup).
       midiSchedulerLoop stateRef
 
     Fh2Shape voice a d s r -> do
@@ -1014,8 +970,6 @@ serializeState s =
         "{\"kind\":\"cv\",\"bus\":" <> show c.bus <> "}"
       ESXTrack e ->
         "{\"kind\":\"esx\",\"slot\":" <> show e.slot <> "}"
-      Fh2TriggerTrack f ->
-        "{\"kind\":\"fh2-trigger\",\"voice\":" <> show f.voice <> "}"
     tracksArr = jsArrOf trackEntry s.tracks
 
     contTrackEntry ct =

@@ -42,6 +42,7 @@ module Tidal.Dispatcher
   , setContinuousBinding
   , lookupContinuousBinding
   , registerMidiDevice
+  , setFh2VoiceChannel
   , dispatchEvent
   , dispatchContEvent
   , Snapshot
@@ -88,6 +89,7 @@ newtype State = State
   , bindings :: Map String Binding
   , continuousBindings :: Map String ContDest
   , midiDevices :: Map String MidiDevice
+  , fh2VoiceChannels :: Map Int Int
   , config :: Config
   , eventCount :: Int
   }
@@ -105,6 +107,7 @@ initialState init = State
   , bindings: Map.empty
   , continuousBindings: Map.empty
   , midiDevices: Map.empty
+  , fh2VoiceChannels: Map.empty
   , config: { gateDuration: init.gateDuration, cvLeadMs: init.cvLeadMs }
   , eventCount: 0
   }
@@ -165,6 +168,18 @@ lookupContinuousBinding name (State s) = Map.lookup name s.continuousBindings
 registerMidiDevice :: String -> MidiDevice -> State -> State
 registerMidiDevice alias device (State s) =
   State (s { midiDevices = Map.insert alias device s.midiDevices })
+
+-- | Map an FH-2 voice index to a MIDI channel. Populated by the
+-- | `fh2-envelope` verb; consulted at Fh2Trigger dispatch time.
+-- |
+-- | Distinct map (not riding on `bindings`) because FH-2 voices
+-- | aren't bind-spec voices — the user-facing verb is
+-- | `fh2-envelope <voice> <output> <channel>` and the channel
+-- | mapping outlives any individual `fh2-trigger` voice in
+-- | tidal_voice_sup.
+setFh2VoiceChannel :: Int -> Int -> State -> State
+setFh2VoiceChannel voice channel (State s) =
+  State (s { fh2VoiceChannels = Map.insert voice channel s.fh2VoiceChannels })
 
 -- ---------------------------------------------------------------------------
 -- Dispatch
@@ -294,6 +309,33 @@ dispatchPrimAction (State s) name token wallUs delayMs _delayInt params = case _
             let adjustedUnixUs = wallUs - dev.latencyMs * 1000.0
             Log.debug $ "◇ [" <> name <> "] midi " <> dev.name <> " ch" <> show m.channel <> " cc" <> show m.cc <> " = " <> show value7bit
             scheduleCCAt s.bridgeClient dev.name m.channel m.cc value7bit adjustedUnixUs
+
+  Fh2Trigger f ->
+    -- FH-2 trigger: resolve the voice's MIDI channel via
+    -- `fh2VoiceChannels` (populated by the `fh2-envelope` verb).
+    -- Token note names override defaultNote; bare tokens use it.
+    -- Always uses the `fh2` device alias; if the user hasn't
+    -- registered it, fall back to a sensible default
+    -- (`midi-device fh2 FH-2 lat <ms>` overrides this).
+    when (token /= "~") do
+      case Map.lookup f.voice s.fh2VoiceChannels of
+        Nothing ->
+          Log.debug $ "  x [" <> name <> "] fh2-trigger v" <> show f.voice
+            <> ": no fh2-envelope registration; skipping"
+        Just channel -> do
+          let note = case Map.lookup token noteNameMidi of
+                Just n -> n
+                Nothing -> f.defaultNote
+          let dev = case Map.lookup "fh2" s.midiDevices of
+                Just d -> d
+                Nothing -> { name: "FH-2", latencyMs: 0.0 }
+          let adjustedUnixUs = wallUs - dev.latencyMs * 1000.0
+          -- 200ms note duration: short enough for any envelope shape;
+          -- the FH-2 restarts envelopes on note-on so duration only
+          -- matters as a release-cancel boundary.
+          Log.debug $ "♪ [" <> name <> "] fh2-trigger v" <> show f.voice
+            <> " → " <> dev.name <> " ch" <> show channel <> " note " <> show note
+          scheduleNoteAt s.bridgeClient dev.name channel note 100 200 adjustedUnixUs
 
 -- | Route one continuous-voice event. Looks up the voice's name in
 -- | `continuousBindings`, applies the recorded `ContDest`, and emits

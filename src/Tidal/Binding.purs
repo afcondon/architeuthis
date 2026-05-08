@@ -103,6 +103,18 @@ data PrimAction
   --   use what works for its destination.
   | MidiCC { device :: String, channel :: Int, cc :: Int }
   -- ^ Sends a MIDI CC. Numeric tokens 0..1 scale to 0..127.
+  | Fh2Trigger { voice :: Int, defaultNote :: Int }
+  -- ^ Fires an FH-2 envelope trigger. The MIDI channel is resolved at
+  --   dispatch time from the dispatcher's `fh2VoiceChannels` map
+  --   (populated by the `fh2-envelope` verb), so the same FH-2
+  --   destination can be reconfigured live without rebinding voices.
+  --   Note name in the token (e.g. `c4`) overrides defaultNote;
+  --   bare tokens (`bd`, `1`, `x`) fall back to defaultNote.
+  --   Always uses the `fh2` device alias.
+  --
+  --   *Server-only*: not constructable via `bind` (the user-facing
+  --   verb is `fh2-trigger <voice> <pattern>`). Wire-format clients
+  --   like tidal-protocol's Binding.purs don't need to mirror it.
 
 derive instance eqPrimAction :: Eq PrimAction
 

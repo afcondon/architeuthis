@@ -578,12 +578,17 @@ handle_pattern_message(Text, SchedulerPid, State) ->
                              " (SysEx push in flight)">>},
             {reply, Reply, State};
         {fh2_envelope, Voice, Output, Channel} ->
-            %% Update scheduler state immediately (so fh2-trigger can resolve
-            %% voice→channel right away) AND fire the SysEx push to the FH-2
-            %% in the background so the WS handler returns instantly. The
-            %% push takes ~5–10s (spago boot + read live config + write back);
-            %% any subsequent fh2-trigger note that lands during the push
-            %% just hits the still-old envelope routing for a moment.
+            %% Dual-write: dispatcher gets the voice→channel mapping
+            %% so Fh2Trigger PrimAction dispatch can resolve it; the
+            %% legacy MIDIScheduler path also receives the event
+            %% because fh2-shape (still on the scheduler side) reads
+            %% from MIDIScheduler.fh2VoiceChannels. PR1.8 collapses
+            %% this when fh2-shape moves to the dispatcher too.
+            %%
+            %% The FH-2 SysEx push runs in the background (5–10s);
+            %% any fh2-trigger note that lands during the push
+            %% just hits the still-old routing for a moment.
+            tidal_dispatcher:set_fh2_voice_channel(Voice, Channel),
             SchedulerPid ! {fh2Envelope, Voice, Output, Channel},
             spawn(fun() -> fh2_set_envelope(Voice, Output, Channel) end),
             Reply = {text, <<"OK: fh2-envelope voice ",
@@ -593,15 +598,50 @@ handle_pattern_message(Text, SchedulerPid, State) ->
                              " (SysEx push in flight)">>},
             {reply, Reply, State};
         {fh2_trigger, Voice, Pattern} ->
-            case safe_parse(Pattern) of
-                {ok, _} ->
-                    SchedulerPid ! {updateFh2TriggerTrack, Voice, Pattern},
-                    Reply = {text, <<"OK: fh2-trigger v",
-                                     (integer_to_binary(Voice))/binary,
-                                     " ", Pattern/binary>>},
-                    {reply, Reply, State};
-                {parse_err, ErrBin} ->
-                    Reply = {text, <<"ERROR: fh2-trigger parse: ", ErrBin/binary>>},
+            %% After PR1.6: install a Discrete voice in the new tree
+            %% with name `fh2-v<N>` and a single Fh2Trigger PrimAction.
+            %% defaultNote = 60 (C4) matches MIDIScheduler's previous
+            %% fallback for non-note-name tokens. Channel is resolved
+            %% at dispatch time from the dispatcher's
+            %% fh2VoiceChannels map (populated via fh2-envelope above).
+            case ('tidal_expr@ps':parseMiniPattern())(Pattern) of
+                {right, Pat} ->
+                    VoiceName = <<"fh2-v",
+                                  (integer_to_binary(Voice))/binary>>,
+                    Binding = array:from_list(
+                        [{fh2Trigger, #{voice => Voice,
+                                        defaultNote => 60}}]),
+                    %% Dispatcher needs the binding for dispatch-time
+                    %% lookup; voice_sup needs it for the voice's
+                    %% State. Set dispatcher first (synchronous call)
+                    %% so the voice can never emit an event before
+                    %% the dispatcher knows about the name.
+                    tidal_dispatcher:set_binding(VoiceName, Binding),
+                    case tidal_voice_sup:set_voice_pat(
+                           VoiceName, Binding, Pat) of
+                        ok ->
+                            Reply = {text,
+                                     <<"OK: fh2-trigger v",
+                                       (integer_to_binary(Voice))/binary,
+                                       " ", Pattern/binary>>},
+                            {reply, Reply, State};
+                        {error, Err} ->
+                            ErrBin = list_to_binary(
+                                       io_lib:format("~p", [Err])),
+                            {reply,
+                             {text, <<"ERROR: fh2-trigger: ",
+                                      ErrBin/binary>>},
+                             State}
+                    end;
+                {left, ErrBin0} ->
+                    ErrBin = case ErrBin0 of
+                        B when is_binary(B) -> B;
+                        Other -> list_to_binary(
+                                   io_lib:format("~p", [Other]))
+                    end,
+                    Reply = {text,
+                             <<"ERROR: fh2-trigger parse: ",
+                               ErrBin/binary>>},
                     {reply, Reply, State}
             end;
         {fh2_shape, Voice, A, D, S, R} ->

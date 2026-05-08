@@ -33,6 +33,7 @@
          lookup_binding/1,
          lookup_continuous_binding/1,
          register_midi_device/3,
+         set_fh2_voice_channel/2,
          get_info/0,
          stop/0]).
 
@@ -107,6 +108,14 @@ register_midi_device(Alias, DeviceName, LatencyMs) ->
     gen_server:call(?MODULE,
                     {register_midi_device, Alias, DeviceName, LatencyMs}).
 
+%% Map an FH-2 voice index to a MIDI channel. Called by the WS
+%% handler's `fh2-envelope` verb so subsequent Fh2Trigger PrimAction
+%% dispatches can resolve the channel. Idempotent — re-registration
+%% replaces the channel mapping for that voice.
+set_fh2_voice_channel(Voice, Channel) ->
+    gen_server:call(?MODULE,
+                    {set_fh2_voice_channel, Voice, Channel}).
+
 get_info() ->
     gen_server:call(?MODULE, get_info).
 
@@ -179,6 +188,10 @@ handle_call({lookup_continuous_binding, Name}, _From, PsState) ->
 handle_call({register_midi_device, Alias, Name, Lat}, _From, PsState) ->
     Device = #{name => Name, latencyMs => float(Lat)},
     NewState = 'tidal_dispatcher@ps':registerMidiDevice(Alias, Device, PsState),
+    {reply, ok, NewState};
+handle_call({set_fh2_voice_channel, Voice, Channel}, _From, PsState) ->
+    NewState = 'tidal_dispatcher@ps':setFh2VoiceChannel(
+                 Voice, Channel, PsState),
     {reply, ok, NewState};
 handle_call(get_info, _From, PsState) ->
     {reply, 'tidal_dispatcher@ps':snapshot(PsState), PsState}.
