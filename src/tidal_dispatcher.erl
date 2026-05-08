@@ -26,6 +26,7 @@
 -export([start_link/0,
          dispatch_event/3,
          set_binding/2,
+         set_binding_from_spec/2,
          remove_binding/1,
          register_midi_device/3,
          get_info/0,
@@ -48,6 +49,15 @@ dispatch_event(BindingName, Token, WallTimeUs) ->
 %% `bind` verb is processed (PR1.4d).
 set_binding(Name, Binding) ->
     gen_server:call(?MODULE, {set_binding, Name, Binding}).
+
+%% Parse a `bind <name> <action-spec>` body and install the resulting
+%% Binding. Called by the WS handler at PR1.4d-i so the dispatcher
+%% gets the parsed binding without the WS handler having to call into
+%% PureScript itself. Returns `ok` on success, `{error, Reason}` on
+%% parse failure (the caller logs and continues — the dual-write means
+%% MIDIScheduler is the user-visible error path during transition).
+set_binding_from_spec(Name, ActionSpec) ->
+    gen_server:call(?MODULE, {set_binding_from_spec, Name, ActionSpec}).
 
 remove_binding(Name) ->
     gen_server:call(?MODULE, {remove_binding, Name}).
@@ -102,6 +112,20 @@ init([]) ->
 handle_call({set_binding, Name, Binding}, _From, PsState) ->
     NewState = 'tidal_dispatcher@ps':setBinding(Name, Binding, PsState),
     {reply, ok, NewState};
+handle_call({set_binding_from_spec, Name, ActionSpec}, _From, PsState) ->
+    case 'tidal_dispatcher@ps':setBindingFromSpec(Name, ActionSpec, PsState) of
+        {right, NewState} ->
+            {reply, ok, NewState};
+        {left, Err} ->
+            %% Parse error — likely a continuous-binding spec
+            %% (`midi-cc-cont` / `cv-cont`) that the dispatcher's
+            %% discrete-only parser rejects. MIDIScheduler still
+            %% handles those during the transition. Log at debug.
+            tidal_log:debug(
+                "dispatcher: setBindingFromSpec ~s ignored: ~s~n",
+                [Name, Err]),
+            {reply, {error, Err}, PsState}
+    end;
 handle_call({remove_binding, Name}, _From, PsState) ->
     NewState = 'tidal_dispatcher@ps':removeBinding(Name, PsState),
     {reply, ok, NewState};

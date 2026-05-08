@@ -526,11 +526,18 @@ handle_pattern_message(Text, SchedulerPid, State) ->
                     {reply, Reply, State}
             end;
         {bind, Name, ActionSpec} ->
+            %% Dual-write: MIDIScheduler keeps its registry alive so the
+            %% BoundTrack walk's compositional `#` joins still resolve;
+            %% the dispatcher gets the same binding so PR1.4d-ii's voice
+            %% events can be dispatched from the new tree. Removed in
+            %% PR1.4e once MIDIScheduler stops hosting BoundTracks.
             SchedulerPid ! {addBinding, Name, ActionSpec},
+            tidal_dispatcher:set_binding_from_spec(Name, ActionSpec),
             Reply = {text, <<"OK: bind ", Name/binary, " ", ActionSpec/binary>>},
             {reply, Reply, State};
         {unbind, Name} ->
             SchedulerPid ! {removeBinding, Name},
+            tidal_dispatcher:remove_binding(Name),
             Reply = {text, <<"OK: unbind ", Name/binary>>},
             {reply, Reply, State};
         {hush} ->
@@ -546,6 +553,7 @@ handle_pattern_message(Text, SchedulerPid, State) ->
             handle_load_setup(Name, SchedulerPid, State);
         {midi_device, Alias, DeviceName, Latency} ->
             SchedulerPid ! {registerMidiDevice, Alias, DeviceName, Latency},
+            tidal_dispatcher:register_midi_device(Alias, DeviceName, Latency),
             LatBin = list_to_binary(io_lib:format("~p", [Latency])),
             Reply = {text, <<"OK: midi-device ", Alias/binary,
                              " = ", DeviceName/binary,
@@ -1118,11 +1126,18 @@ dispatch_setup_line(Line, SchedulerPid) ->
 dispatch_setup_action(Action, SchedulerPid) ->
     case Action of
         {midi_device, Alias, DeviceName, Latency} ->
-            SchedulerPid ! {registerMidiDevice, Alias, DeviceName, Latency}, ok;
+            SchedulerPid ! {registerMidiDevice, Alias, DeviceName, Latency},
+            tidal_dispatcher:register_midi_device(Alias, DeviceName, Latency),
+            ok;
         {bind, Name, ActionSpec} ->
-            SchedulerPid ! {addBinding, Name, ActionSpec}, ok;
+            %% Dual-write — see comment in handle_pattern_message.
+            SchedulerPid ! {addBinding, Name, ActionSpec},
+            tidal_dispatcher:set_binding_from_spec(Name, ActionSpec),
+            ok;
         {unbind, Name} ->
-            SchedulerPid ! {removeBinding, Name}, ok;
+            SchedulerPid ! {removeBinding, Name},
+            tidal_dispatcher:remove_binding(Name),
+            ok;
         {hush} ->
             SchedulerPid ! {hush}, ok;
         {load, Name} ->

@@ -36,6 +36,7 @@ module Tidal.Dispatcher
   , MidiDevice
   , initialState
   , setBinding
+  , setBindingFromSpec
   , removeBinding
   , registerMidiDevice
   , dispatchEvent
@@ -45,6 +46,7 @@ module Tidal.Dispatcher
 
 import Prelude
 
+import Data.Either (Either(..))
 import Data.Foldable (for_)
 import Data.Int as Int
 import Data.Map (Map)
@@ -105,6 +107,21 @@ initialState init = State
 setBinding :: String -> Binding -> State -> State
 setBinding name binding (State s) =
   State (s { bindings = Map.insert name binding s.bindings })
+
+-- | Parse a `bind <name> <action-spec>` body and install the resulting
+-- | Binding. Returns Left with the parser's error message if the spec
+-- | doesn't parse as a discrete binding.
+-- |
+-- | Continuous-binding specs (`midi-cc-cont …`, `cv-cont …`) currently
+-- | return Left because the dispatcher has no `continuousBindings`
+-- | field yet — they'll get a proper home in PR1.5. The Erlang shell
+-- | swallows the error during the PR1.4d-i dual-write transition;
+-- | MIDIScheduler still handles continuous bindings as before.
+setBindingFromSpec :: String -> String -> State -> Either String State
+setBindingFromSpec name spec st =
+  case Binding.parseCompoundAction spec of
+    Left err -> Left err
+    Right binding -> Right (setBinding name binding st)
 
 removeBinding :: String -> State -> State
 removeBinding name (State s) =

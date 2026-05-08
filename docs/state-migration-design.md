@@ -176,14 +176,25 @@ install a voice on its own — it just registers a name. A subsequent
 `<name> <pat>` (PlayByName) installs the voice.
 
 Today (post-PR1.4c): `bind` goes only to MIDIScheduler.
-Post-migration: `bind` goes only to dispatcher.
+Post-migration (after PR1.4e): `bind` goes only to dispatcher.
 
-**No dual-write needed**: `bind` is registry-only. The earlier
-"dual-write to preserve `#` joins" plan was based on guessing that
-the registry was needed by a separate process for `#` joins. Now we
-know `#` joins read the registry from inside dispatcher dispatch —
-which is where the registry already lives in PR1.4c. The dispatcher
-is the single source of truth.
+**Transition state needs dual-write.** Between PR1.4d-i (this
+commit) and PR1.4e (cleanup), MIDIScheduler still hosts BoundTracks
+in its `tracks` array, and those BoundTracks read `state.bindings`
+at dispatch time for compositional `#` joins (MIDIScheduler.purs
+line 657). If PR1.4d-i sent `bind` only to the dispatcher, user-
+level bindings would disappear from MIDIScheduler's registry —
+only the default registry would remain — and compositional `#`
+joins for user-defined bindings would silently fail.
+
+The dual-write is bounded: the WS handler is the only writer of
+the registry, so divergence requires someone adding a new write
+path (which we can avoid by code review). Dual-write is removed in
+PR1.4e once MIDIScheduler stops hosting BoundTracks.
+
+The earlier "no dual-write needed" framing was glib about the
+transition. The post-migration *end state* doesn't need dual-write,
+but the migration *transition* does.
 
 ### 2.3 The `#` joins implementation
 
@@ -370,15 +381,18 @@ Detailed reasoning in §2.7.
 
 Two commits:
 
-**PR1.4d-i** — `bind` verb routes to dispatcher. Voice registration
-shape stabilizes.
-- WS handler's `addBinding` message → dispatcher:set_binding (was:
-  MIDIScheduler).
-- WS handler's `removeBinding` → dispatcher:remove_binding.
-- WS handler's `registerMidiDevice` → dispatcher:register_midi_device.
-- MIDIScheduler's `AddBinding` / `RemoveBinding` / `RegisterMidiDevice`
-  handlers stay (still wired by MIDIScheduler.spawn) but receive no
-  messages — dead code as of this commit. Removed in 1.4e.
+**PR1.4d-i** — `bind` verb dual-writes to dispatcher.
+- WS handler's `addBinding` continues to send to MIDIScheduler AND
+  also calls `tidal_dispatcher:set_binding_from_spec/2` (new API
+  that parses the spec via `Tidal.Binding.parseCompoundAction` then
+  updates dispatcher state).
+- Same dual-write for `removeBinding` and `registerMidiDevice`.
+- Continuous bindings (`midi-cc-cont` / `cv-cont`) silently no-op on
+  the dispatcher side because the dispatcher doesn't have a
+  `continuousBindings` field yet (added in PR1.5). MIDIScheduler
+  still handles them as today.
+- Behavior unchanged. The dispatcher's registry is populated as a
+  parallel structure for PR1.4d-ii to consume.
 
 **PR1.4d-ii** — `playByName` / `PlayByNameP` / `PlayByNameExpr`
 route to voices.
