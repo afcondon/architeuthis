@@ -372,18 +372,13 @@ handle_pattern_message(Text, SchedulerPid, State) ->
                              " (SysEx push in flight)">>},
             {reply, Reply, State};
         {fh2_envelope, Voice, Output, Channel} ->
-            %% Dual-write: dispatcher gets the voice→channel mapping
-            %% so Fh2Trigger PrimAction dispatch can resolve it; the
-            %% legacy MIDIScheduler path also receives the event
-            %% because fh2-shape (still on the scheduler side) reads
-            %% from MIDIScheduler.fh2VoiceChannels. PR1.8 collapses
-            %% this when fh2-shape moves to the dispatcher too.
-            %%
+            %% Dispatcher owns the voice→channel mapping (PR1.6 +
+            %% PR1.7b). setFh2VoiceChannel auto-registers the `fh2`
+            %% MIDI device alias if the user hasn't done it manually.
             %% The FH-2 SysEx push runs in the background (5–10s);
-            %% any fh2-trigger note that lands during the push
-            %% just hits the still-old routing for a moment.
+            %% any fh2-trigger note that lands during the push just
+            %% hits the still-old routing for a moment.
             tidal_dispatcher:set_fh2_voice_channel(Voice, Channel),
-            SchedulerPid ! {fh2Envelope, Voice, Output, Channel},
             spawn(fun() -> fh2_set_envelope(Voice, Output, Channel) end),
             Reply = {text, <<"OK: fh2-envelope voice ",
                              (integer_to_binary(Voice))/binary,
@@ -439,7 +434,7 @@ handle_pattern_message(Text, SchedulerPid, State) ->
                     {reply, Reply, State}
             end;
         {fh2_shape, Voice, A, D, S, R} ->
-            SchedulerPid ! {fh2Shape, Voice, A, D, S, R},
+            tidal_dispatcher:dispatch_fh2_shape(Voice, A, D, S, R),
             Reply = {text, <<"OK: fh2-shape v",
                              (integer_to_binary(Voice))/binary,
                              " A=", (integer_to_binary(A))/binary,
@@ -877,7 +872,7 @@ dispatch_setup_action(Action, SchedulerPid) ->
             fh2_set_gate(Voice, Output, Channel),
             ok;
         {fh2_envelope, Voice, Output, Channel} ->
-            SchedulerPid ! {fh2Envelope, Voice, Output, Channel},
+            tidal_dispatcher:set_fh2_voice_channel(Voice, Channel),
             fh2_set_envelope(Voice, Output, Channel),
             ok;
         Other ->

@@ -45,7 +45,7 @@ import Tidal.Pattern.Types (Pattern)
 import Tidal.Dispatch.Helpers (voctValue, clamp7bit)
 import Tidal.Sink as Sink
 import Tidal.MIDI (MIDIConfig)
-import Tidal.MIDIBridge (BridgeClient, scheduleCCAt)
+import Tidal.MIDIBridge (BridgeClient)
 import Tidal.MIDIBridge as MIDIBridge
 import Tidal.LinkAnchor as LinkAnchor
 import Tidal.OSC as OSC
@@ -487,53 +487,16 @@ midiSchedulerLoop stateRef = do
       liftEffect $ log $ "midi-device " <> alias <> " = " <> deviceName <> " (lat " <> show latencyMs <> "ms)"
       midiSchedulerLoop stateRef
 
-    Fh2Envelope voice _output channel -> do
-      -- Record voice → channel mapping so fh2-trigger can resolve the
-      -- destination. Auto-register an `fh2` MIDI device alias if absent
-      -- (latency 0 by default; user can override via `midi-device fh2 ...
-      -- lat N`). The actual SysEx push to configure the FH-2's MCV is
-      -- handled by Handler.erl as a fire-and-forget shell-out to
-      -- fh2-config — keeps PureScript free of process-spawning.
-      state <- liftEffect $ Ref.read stateRef
-      let newVoices = Map.insert voice channel state.fh2VoiceChannels
-          newDevices = case Map.lookup "fh2" state.midiDevices of
-            Just _ -> state.midiDevices
-            Nothing -> Map.insert "fh2" { name: "FH-2", latencyMs: 0.0 } state.midiDevices
-      liftEffect $ Ref.write
-        (state { fh2VoiceChannels = newVoices, midiDevices = newDevices })
-        stateRef
-      liftEffect $ log $ "fh2-envelope: voice " <> show voice <> " → ch " <> show channel
+    Fh2Envelope _voice _output _channel -> do
+      -- Dead handler — the dispatcher owns fh2VoiceChannels as of
+      -- PR1.7b; the WS handler calls tidal_dispatcher:set_fh2_voice_
+      -- channel directly. Msg variant kept until post-PR1.7d cleanup.
       midiSchedulerLoop stateRef
 
-    Fh2Shape voice a d s r -> do
-      -- Live ADSR: send 4 CCs on the voice's MIDI channel. CC numbers are
-      -- offset per-MCV so each voice has its own ADSR controls:
-      --   MCV 0 -> 70/71/72/73, MCV 1 -> 74/75/76/77, MCV 2 -> 78..81, etc.
-      -- The user sets up the mapping once in the FH-2 Configurator's
-      -- Envelopes form; thereafter fh2-shape drives them from Tidal.
-      state <- liftEffect $ Ref.read stateRef
-      case Map.lookup voice state.fh2VoiceChannels of
-        Nothing ->
-          liftEffect $ Log.debug $ "fh2-shape v" <> show voice <> ": no fh2-envelope registration; skipping"
-        Just channel -> do
-          let dev = fromMaybe { name: "FH-2", latencyMs: 0.0 }
-                      (Map.lookup "fh2" state.midiDevices)
-              clamp v = if v < 0 then 0 else if v > 127 then 127 else v
-              ccA = 70 + 4 * voice
-              ccD = ccA + 1
-              ccS = ccA + 2
-              ccR = ccA + 3
-          -- Fire all four CCs immediately. nowUnixUs is the same instant
-          -- for all four — link-spike will dispatch them on the same
-          -- audio frame.
-          nowUnixUs <- liftEffect LinkAnchor.nowUnixUs
-          liftEffect $ log $ "fh2-shape v" <> show voice <> " ch" <> show channel
-            <> " CCs " <> show ccA <> "-" <> show ccR
-            <> ": A=" <> show a <> " D=" <> show d <> " S=" <> show s <> " R=" <> show r
-          liftEffect $ scheduleCCAt state.bridgeClient dev.name channel ccA (clamp a) nowUnixUs
-          liftEffect $ scheduleCCAt state.bridgeClient dev.name channel ccD (clamp d) nowUnixUs
-          liftEffect $ scheduleCCAt state.bridgeClient dev.name channel ccS (clamp s) nowUnixUs
-          liftEffect $ scheduleCCAt state.bridgeClient dev.name channel ccR (clamp r) nowUnixUs
+    Fh2Shape _voice _a _d _s _r -> do
+      -- Dead handler — the dispatcher owns Fh2Shape as of PR1.7b
+      -- (tidal_dispatcher:dispatch_fh2_shape). Msg variant kept until
+      -- post-PR1.7d cleanup.
       midiSchedulerLoop stateRef
 
     SetBpm bpm -> do

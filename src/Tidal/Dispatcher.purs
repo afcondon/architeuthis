@@ -45,6 +45,7 @@ module Tidal.Dispatcher
   , setFh2VoiceChannel
   , dispatchEvent
   , dispatchContEvent
+  , dispatchFh2Shape
   , Snapshot
   , snapshot
   ) where
@@ -170,7 +171,14 @@ registerMidiDevice alias device (State s) =
   State (s { midiDevices = Map.insert alias device s.midiDevices })
 
 -- | Map an FH-2 voice index to a MIDI channel. Populated by the
--- | `fh2-envelope` verb; consulted at Fh2Trigger dispatch time.
+-- | `fh2-envelope` verb; consulted at Fh2Trigger / Fh2Shape dispatch
+-- | time.
+-- |
+-- | Auto-registers the `fh2` MIDI device alias when absent so
+-- | Fh2Trigger / Fh2Shape can resolve a destination on the very
+-- | first `fh2-envelope` even if the user hasn't typed
+-- | `midi-device fh2 …` yet. Preserves the user's alias when one
+-- | already exists (so a custom `lat` survives re-envelope).
 -- |
 -- | Distinct map (not riding on `bindings`) because FH-2 voices
 -- | aren't bind-spec voices — the user-facing verb is
@@ -179,7 +187,14 @@ registerMidiDevice alias device (State s) =
 -- | tidal_voice_sup.
 setFh2VoiceChannel :: Int -> Int -> State -> State
 setFh2VoiceChannel voice channel (State s) =
-  State (s { fh2VoiceChannels = Map.insert voice channel s.fh2VoiceChannels })
+  let
+    newDevices = case Map.lookup "fh2" s.midiDevices of
+      Just _ -> s.midiDevices
+      Nothing -> Map.insert "fh2" { name: "FH-2", latencyMs: 0.0 } s.midiDevices
+  in
+    State (s { fh2VoiceChannels = Map.insert voice channel s.fh2VoiceChannels
+             , midiDevices = newDevices
+             })
 
 -- ---------------------------------------------------------------------------
 -- Dispatch
@@ -371,6 +386,48 @@ dispatchContEvent { name, value, wallTimeUs } (State s) = do
           Log.debug $ "≈ [" <> name <> "] cv bus " <> show c.bus <> " = " <> show outValue
           sendCVAfter osc c.bus outValue 0.0
   pure (State (s { eventCount = s.eventCount + 1 }))
+
+-- | Live ADSR push for an FH-2 voice. Sends 4 MIDI CCs (per-MCV
+-- | offset 70..73 / 74..77 / …) on the voice's MIDI channel. Not
+-- | pattern-driven — fires "at now" when the user sends the verb,
+-- | so the user can reshape envelopes live without touching the
+-- | FH-2 Configurator. Mirror of MIDIScheduler.Fh2Shape (no latency
+-- | compensation: this is a one-shot config push, not a sample-
+-- | accurate pattern emission).
+-- |
+-- | Looks up the voice's MIDI channel in `fh2VoiceChannels`
+-- | (populated by `fh2-envelope`). Skips with a debug log if the
+-- | voice isn't registered. Falls back to a default `fh2` device
+-- | record if the alias is absent (auto-registered by
+-- | `setFh2VoiceChannel` since PR1.7b, so this is just defense
+-- | against weird state).
+dispatchFh2Shape
+  :: { voice :: Int, a :: Int, d :: Int, sustain :: Int, r :: Int }
+  -> State
+  -> Effect State
+dispatchFh2Shape { voice, a, d, sustain, r } (State s) = do
+  case Map.lookup voice s.fh2VoiceChannels of
+    Nothing ->
+      Log.debug $ "fh2-shape v" <> show voice
+        <> ": no fh2-envelope registration; skipping"
+    Just channel -> do
+      let dev = case Map.lookup "fh2" s.midiDevices of
+            Just d_ -> d_
+            Nothing -> { name: "FH-2", latencyMs: 0.0 }
+          ccA = 70 + 4 * voice
+          ccD = ccA + 1
+          ccS = ccA + 2
+          ccR = ccA + 3
+      nowUs <- nowUnixMicros
+      Log.debug $ "fh2-shape v" <> show voice <> " ch" <> show channel
+        <> " CCs " <> show ccA <> "-" <> show ccR
+        <> ": A=" <> show a <> " D=" <> show d
+        <> " S=" <> show sustain <> " R=" <> show r
+      scheduleCCAt s.bridgeClient dev.name channel ccA (clamp7bit (Int.toNumber a)) nowUs
+      scheduleCCAt s.bridgeClient dev.name channel ccD (clamp7bit (Int.toNumber d)) nowUs
+      scheduleCCAt s.bridgeClient dev.name channel ccS (clamp7bit (Int.toNumber sustain)) nowUs
+      scheduleCCAt s.bridgeClient dev.name channel ccR (clamp7bit (Int.toNumber r)) nowUs
+  pure (State s)
 
 -- | Is this `#` parameter name consumed by a slot override on any of
 -- | the binding's actions? If yes, the per-PrimAction dispatch already

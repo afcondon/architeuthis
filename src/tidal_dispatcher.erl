@@ -34,6 +34,7 @@
          lookup_continuous_binding/1,
          register_midi_device/3,
          set_fh2_voice_channel/2,
+         dispatch_fh2_shape/5,
          get_info/0,
          stop/0]).
 
@@ -115,6 +116,14 @@ register_midi_device(Alias, DeviceName, LatencyMs) ->
 set_fh2_voice_channel(Voice, Channel) ->
     gen_server:call(?MODULE,
                     {set_fh2_voice_channel, Voice, Channel}).
+
+%% Live ADSR push for an FH-2 voice. Sends 4 MIDI CCs (per-MCV
+%% offset 70..73 / 74..77 / …) on the voice's MIDI channel. Cast,
+%% not call — fire-and-forget; the dispatcher's PS handler emits
+%% scheduleCCAt directly.
+dispatch_fh2_shape(Voice, A, D, S, R) ->
+    gen_server:cast(?MODULE,
+                    {fh2_shape, Voice, A, D, S, R}).
 
 get_info() ->
     gen_server:call(?MODULE, get_info).
@@ -209,6 +218,13 @@ handle_cast({cont_event, BindingName, Value, WallTimeUs}, PsState) ->
                  value      => float(Value),
                  wallTimeUs => float(WallTimeUs)},
     NewState = ('tidal_dispatcher@ps':dispatchContEvent(EventMap, PsState))(),
+    {noreply, NewState};
+handle_cast({fh2_shape, Voice, A, D, S, R}, PsState) ->
+    %% Field name `sustain` rather than `s` because PureScript's
+    %% record-pattern desugar would clash with the State pattern's
+    %% own `s` binding inside dispatchFh2Shape.
+    Args = #{voice => Voice, a => A, d => D, sustain => S, r => R},
+    NewState = ('tidal_dispatcher@ps':dispatchFh2Shape(Args, PsState))(),
     {noreply, NewState}.
 
 terminate(_Reason, _State) -> ok.
