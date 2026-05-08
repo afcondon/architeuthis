@@ -42,7 +42,7 @@ import Tidal.Eval.Interpret (tpatToPattern)
 import Tidal.Expr as Expr
 import Tidal.Binding (ContDest(..), parseContBinding)
 import Tidal.Binding as Binding
-import Tidal.Dispatch.Helpers (noteNameMidi, voctValue, clamp7bit, samplePatternAt)
+import Tidal.Dispatch.Helpers (noteNameMidi, voctValue, clamp7bit)
 import Tidal.Sink as Sink
 import Tidal.MIDI (MIDIConfig)
 import Tidal.MIDIBridge (BridgeClient, scheduleNoteAt, scheduleCCAt)
@@ -543,17 +543,10 @@ midiSchedulerLoop stateRef = do
 
       liftEffect $ Ref.modify_ (_ { nextCycle = toCycle }) stateRef
 
-      -- Continuous (LFO-style) voices: sampled once per tick regardless
-      -- of whether any discrete events fired this window.  The window
-      -- machinery above is irrelevant for these — they don't have a
-      -- discrete "next event" to look ahead toward; they're a function
-      -- of current cycle time, end of story.
-      let cycleAt = numberToCycleRat currentCycle
-      for_ state.continuousTracks \ct ->
-        case samplePatternAt cycleAt ct.pattern of
-          Nothing -> pure unit
-          Just rawValue ->
-            liftEffect $ dispatchContValue state ct.dest ct.name rawValue nowUnixUs
+      -- Continuous voices live entirely on the new voice tree as of
+      -- PR1.5-b. MIDIScheduler keeps the `continuousBindings` /
+      -- `continuousTracks` fields for snapshot shape stability until
+      -- PR1.8, but no tick-side dispatch happens here anymore.
 
       pid <- liftEffect Raw.self
       liftEffect $ sendAfter state.config.scheduleInterval pid Tick
@@ -731,12 +724,13 @@ midiSchedulerLoop stateRef = do
       -- type itself shrinks (post-PR1.4e cleanup).
       midiSchedulerLoop stateRef
 
-    PlayByNameExpr name exprSrc fullText -> do
-      -- After PR1.4d-ii-c the WS handler routes the discrete-binding
-      -- case to the new voice tree directly. This handler only sees
-      -- the colon-expr form when the name is continuous-bound (or
-      -- unbound, in which case we log "no binding"). Continuous voices
-      -- migrate to the new tree in PR1.5; until then they live here.
+    PlayByNameExpr name exprSrc _fullText -> do
+      -- After PR1.5-b the WS handler routes both discrete and
+      -- continuous-bound names through the new voice tree. The
+      -- handler still receives this message for the diagnostic path:
+      -- the new tree's parse failed, the name is unbound, or the
+      -- expression's type doesn't match the binding. Surface the
+      -- relevant log line; no track install happens here.
       state <- liftEffect $ Ref.read stateRef
       case Expr.parseExpr exprSrc >>= Expr.evalExpr of
         Left err ->
@@ -749,15 +743,8 @@ midiSchedulerLoop stateRef = do
               case checkPatternForName state name patType of
                 Left msg ->
                   liftEffect $ log $ "✗ " <> msg
-                Right _ -> case Map.lookup name state.continuousBindings, result of
-                  Just dest, Expr.VNumPattern p -> do
-                    let newCT = { pattern: p, name, dest }
-                    let isOther ct = ct.name /= name
-                    let newCTs = Array.filter isOther state.continuousTracks <> [newCT]
-                    liftEffect $ Ref.write (state { continuousTracks = newCTs }) stateRef
-                    liftEffect $ log $ "≈ " <> name <> ": " <> fullText
-                  _, _ ->
-                    liftEffect $ log $ "(no binding '" <> name <> "', :expr ignored)"
+                Right _ ->
+                  liftEffect $ log $ "(no binding '" <> name <> "', :expr ignored)"
       midiSchedulerLoop stateRef
 
     PlayMultiByName _entries _fullText -> do
@@ -908,47 +895,6 @@ patternTypeOfEval = case _ of
   Expr.VPattern _ -> Just (Sink.PatString Sink.ContentMixed)
   Expr.VNumPattern _ -> Just Sink.PatNumber
   _ -> Nothing
-
--- | Convert a fractional-cycle Number into a Rational with microcycle
--- | precision.  Used by the continuous-voice sampler so we can call
--- | `samplePatternAt :: Rational -> Pattern a -> Maybe a` against the
--- | scheduler's `currentCycle :: Number`.  Microcycle precision (one
--- | part in a million per cycle) is plenty: at BPM 120 that's 1µs,
--- | well below the ~50ms sample period.
-numberToCycleRat :: Number -> R.Rational
-numberToCycleRat c =
-  R.fromInt (Int.floor (c * 1000000.0)) / R.fromInt 1000000
-
--- | Dispatch a single sampled continuous value to its MIDI CC or CV
--- | destination.  No latency adjustment, no event-time book-keeping —
--- | continuous voices fire at "now", every tick, and whoever they
--- | reach interpolates / smooths.  For MIDI CC the raw value is
--- | scaled 0..1 → 0..127 (oscillators land in 0..1; users `range`
--- | them outside that to widen).  For CV the raw value passes through
--- | the binding's `transforms` pipeline unchanged.
-dispatchContValue
-  :: MIDISchedulerState
-  -> ContDest
-  -> String
-  -> Number
-  -> Number
-  -> Effect Unit
-dispatchContValue state dest name rawValue nowUnixUs = case dest of
-  ContMidiCC m ->
-    case Map.lookup m.device state.midiDevices of
-      Nothing -> pure unit
-      Just dev -> do
-        let v7 = clamp7bit (rawValue * 127.0)
-        let adjustedUnixUs = nowUnixUs - dev.latencyMs * 1000.0
-        Log.debug $ "≈ [" <> name <> "] cc " <> show m.cc <> " = " <> show v7
-        scheduleCCAt state.bridgeClient dev.name m.channel m.cc v7 adjustedUnixUs
-  ContCV c ->
-    case state.oscClient of
-      Nothing -> pure unit
-      Just osc -> do
-        let value = applyTransforms c.transforms rawValue
-        Log.debug $ "≈ [" <> name <> "] cv bus " <> show c.bus <> " = " <> show value
-        OSC.sendCVAfter osc c.bus value 0.0
 
 -- | Convert a wire-level TransformSpec into a typed Transform for use
 -- | by `applyTransforms`. The two types are parallel today; if the
