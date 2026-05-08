@@ -51,13 +51,13 @@ runSinkTests = do
     (Gate { channel: 0, latencyMs: 0 })
     (SinkGate { channel: 0, latencyMs: 0 })
   expectInfer "CV literal"
-    (CV 12 LiteralValue)
+    (CV 12 LiteralValue [])
     (SinkCVLiteral { bus: 12 })
   expectInfer "CV voct"
-    (CV 15 NoteNameVoct)
+    (CV 15 NoteNameVoct [])
     (SinkCVVoct { bus: 15 })
   expectInfer "ESX"
-    (ESX { slot: 3, latencyMs: 0 })
+    (ESX { slot: 3, latencyMs: 0, transforms: [] })
     (SinkESX { slot: 3, latencyMs: 0 })
   expectInfer "ES5Gate"
     (ES5Gate { bit: 4, latencyMs: 0 })

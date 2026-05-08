@@ -38,22 +38,18 @@ import Effect.Ref (Ref)
 import Effect.Ref as Ref
 import Erl.Process (Process, ProcessM, spawn, receive)
 import Erl.Process.Raw as Raw
-import Tidal.Eval.Interpret (tpatToPattern)
 import Tidal.Expr as Expr
 import Tidal.Binding (ContDest(..), parseContBinding)
 import Tidal.Binding as Binding
-import Tidal.Dispatch.Helpers (noteNameMidi, voctValue, clamp7bit)
+import Tidal.Pattern.Types (Pattern)
+import Tidal.Dispatch.Helpers (voctValue, clamp7bit)
 import Tidal.Sink as Sink
 import Tidal.MIDI (MIDIConfig)
-import Tidal.MIDIBridge (BridgeClient, scheduleNoteAt, scheduleCCAt)
+import Tidal.MIDIBridge (BridgeClient, scheduleCCAt)
 import Tidal.MIDIBridge as MIDIBridge
 import Tidal.LinkAnchor as LinkAnchor
 import Tidal.OSC as OSC
-import Tidal.Transform (Transform(..), applyTransforms)
-import Tidal.Parse.Parser (parse)
-import Tidal.Pattern.Core (queryArc)
-import Tidal.Pattern.Types (Event(..), Pattern, Arc(..))
-import Tidal.Scheduler (sendAfter, currentTimeMs, TrackInfo, Msg(..), TransformSpec(..))
+import Tidal.Scheduler (sendAfter, currentTimeMs, Msg(..))
 import Tidal.StateBus as StateBus
 
 -- | Gate output configuration (for Expert Sleepers ES-9 via cv-router)
@@ -178,28 +174,6 @@ type MIDISchedulerConfig =
   , gate :: GateConfig      -- Gate output config (optional)
   }
 
--- | A parsed track. Two flavors:
--- |   GateTrack — sample-name pattern fires gates (and optional pre-set CVs
--- |     via sampleCVMap) at a given gate channel.
--- |     `fanout = true`  → legacy semantics: sample name selects gate channel
--- |       via sampleGateMap (e.g. `bd → 0, sn → 1`). Used by `UpdatePattern` /
--- |       `UpdateTracks` so old single-pattern strings keep working.
--- |     `fanout = false` → prefix semantics: the channel field is taken
--- |       literally regardless of sample name. Used by `UpdateGateTrack` so
--- |       `gate 7 bd*4` fires on gate 7, not whatever `bd` maps to.
--- |   CVTrack — numeric pattern emits sustained /cv updates on a bus. Tokens
--- |     are parsed lazily from String to Number; non-numeric tokens
--- |     (including "~" for rest) skip the emit.
-data ParsedTrack
-  = GateTrack { pattern :: Pattern String, channel :: Int, fanout :: Boolean }
-  | CVTrack   { pattern :: Pattern String, bus :: Int, transforms :: Array Transform }
-  -- | ESX-8CV track on cv-router's Silent Way encoder. `slot` is 0..7,
-  -- | one per ESX-8CV physical output. Tokens are numeric (-1.0..1.0).
-  -- | `transforms` is a left-to-right pipe of value transforms applied
-  -- | after the Tidal parser produces each numeric value: e.g. `[Offset
-  -- | (-0.5)]` shifts an unsigned [0..1] LFO into bipolar [-0.5..0.5].
-  | ESXTrack  { pattern :: Pattern String, slot :: Int, transforms :: Array Transform }
-
 -- | A continuous-sampling voice.  Held in `MIDISchedulerState.continuousTracks`
 -- | rather than `tracks` because the pattern type differs (`Pattern Number`
 -- | vs the discrete `Pattern String` used by every other track variant).
@@ -216,7 +190,6 @@ type MIDISchedulerState =
   { config :: MIDISchedulerConfig
   , startTime :: Milliseconds
   , nextCycle :: R.Rational
-  , tracks :: Array ParsedTrack  -- Multiple tracks, each with own channel
   , continuousTracks :: Array ContinuousTrackData
                                           -- LFO-style voices sampled once
                                           -- per scheduler tick.  Held
@@ -311,13 +284,6 @@ defaultSinkTypes =
           Tuple name (Sink.bindingSinkTypes binding))
         (Map.toUnfoldable Binding.defaultRegistry :: Array (Tuple String Binding.Binding))
 
--- | Parse a TrackInfo into a GateTrack (legacy multi-track update path).
-parseTrack :: TrackInfo -> Maybe ParsedTrack
-parseTrack { pattern: patStr, channel } =
-  case parse patStr of
-    Right ast -> Just (GateTrack { pattern: tpatToPattern ast, channel, fanout: true })
-    Left _ -> Nothing
-
 -- | Start MIDI scheduler
 -- |
 -- | NOTE: The bridgeClient and oscClient sockets MUST be opened inside
@@ -329,7 +295,7 @@ parseTrack { pattern: patStr, channel } =
 -- | manifested as `gen_udp:send FAILED: closed` after the sleep
 -- | duration.
 startMIDIScheduler :: MIDISchedulerConfig -> String -> Effect (Process Msg)
-startMIDIScheduler config patternStr = do
+startMIDIScheduler config _initialPatternStr = do
   spawn do
     bridgeClient <- liftEffect MIDIBridge.startClient
 
@@ -342,18 +308,12 @@ startMIDIScheduler config patternStr = do
 
     startTime <- liftEffect currentTimeMs
 
-    -- Initialize with a single gate track using default channel
-    let initialTrack = case parse patternStr of
-          Right ast -> [GateTrack { pattern: tpatToPattern ast, channel: config.midi.channel, fanout: true }]
-          Left _ -> []
-
     liftEffect StateBus.init
 
     stateRef <- liftEffect $ Ref.new
       { config
       , startTime
       , nextCycle: zero
-      , tracks: initialTrack
       , continuousTracks: []
       , continuousBindings: Map.empty
       , bridgeClient
@@ -366,9 +326,7 @@ startMIDIScheduler config patternStr = do
       }
 
     liftEffect $ log $ "MIDI Scheduler started"
-    liftEffect $ log $ "Device: " <> config.midi.device
     liftEffect $ log $ "BPM: " <> show config.bpm
-    liftEffect $ log $ "Pattern: " <> patternStr
     when config.gate.enabled do
       liftEffect $ log $ "Gate output: enabled (OSC " <> config.gate.oscHost <> ":" <> show config.gate.oscPort <> ")"
 
@@ -415,96 +373,11 @@ midiSchedulerLoop stateRef = do
       let fromCycle = R.fromInt (Int.floor fromCycleNum)
       let toCycle = R.fromInt (Int.floor toCycleNum + 1)
 
-      when (fromCycle < toCycle) do
-        -- Iterate over all tracks. GateTrack and CVTrack are dispatched
-        -- separately: GateTrack fires sample-name → MIDI + gate (with
-        -- optional V/oct pre-set); CVTrack parses tokens as Number and
-        -- emits sustained /cv updates on its bus. Independent cycle
-        -- lengths between tracks are fine — Tidal's queryArc is
-        -- pattern-relative, so different patterns drift in/out of phase
-        -- naturally.
-        for_ state.tracks \track -> do
-          let pattern = case track of
-                GateTrack g -> g.pattern
-                CVTrack c -> c.pattern
-                ESXTrack e -> e.pattern
-          let events = queryArc pattern fromCycle toCycle
-          for_ events \event -> do
-            let eventCycle = eventStartCycle event
-            let token = eventSample event
-
-            when (eventCycle >= fromCycle && eventCycle < toCycle) do
-              let eventCycleNum = R.toNumber eventCycle
-              let eventTimeMs = eventCycleNum * cycleDurationMs
-              let delayMs = eventTimeMs - elapsedMs
-              let delayInt = max 0 (Int.floor delayMs)
-              let delayClamped = max 0.0 delayMs
-              -- Absolute Unix-microsecond fire time for link-spike's
-              -- CoreMIDI dispatcher.
-              let unixUsAt = nowUnixUs + delayClamped * 1000.0
-
-              case track of
-                GateTrack g ->
-                  when (eventCycle > state.lastTrigger) do
-                    let note = sampleToNote state.config.noteMap token
-                    when (note > 0) do
-                      liftEffect $ Log.debug $ "♪ " <> token <> " → ch" <> show g.channel <> " note " <> show note <> " in " <> show delayInt <> "ms"
-                      liftEffect $ scheduleNoteAt state.bridgeClient state.config.midi.device g.channel note state.config.midi.defaultVelocity state.config.noteDuration unixUsAt
-                      when state.config.gate.enabled do
-                        case state.oscClient of
-                          Just osc -> do
-                            let gateChannel =
-                                  if g.fanout
-                                    -- Legacy: sample-name fanout via sampleGateMap;
-                                    -- fall back to MIDI-channel-to-gate translation.
-                                    then case Map.lookup token state.config.gate.sampleGateMap of
-                                      Just gc -> gc
-                                      Nothing -> g.channel - 10 + state.config.gate.channelOffset
-                                    -- Prefix path: take channel literally.
-                                    else g.channel
-                            when (gateChannel >= 0 && gateChannel < 8) do
-                              -- Pre-set CV (V/oct etc.) before the gate trigger
-                              case Map.lookup token state.config.gate.sampleCVMap of
-                                Just { bus, value } -> do
-                                  let cvDelay = max 0.0 (delayClamped - state.config.gate.cvLeadMs)
-                                  liftEffect $ Log.debug $ "🎛 " <> token <> " → CV bus " <> show bus <> " = " <> show value <> " in " <> show (Int.floor cvDelay) <> "ms"
-                                  liftEffect $ OSC.sendCVAfter osc bus value cvDelay
-                                Nothing -> pure unit
-                              liftEffect $ Log.debug $ "⚡ " <> token <> " → gate " <> show gateChannel <> " in " <> show delayInt <> "ms (dur " <> show state.config.gate.gateDuration <> "ms)"
-                              liftEffect $ OSC.sendGateTrigAfter osc gateChannel state.config.gate.gateDuration delayClamped
-                          Nothing -> pure unit
-                    liftEffect $ Ref.modify_ (_ { lastTrigger = eventCycle }) stateRef
-
-                CVTrack c ->
-                  -- CVTrack tokens are either numeric (literal voltages) or
-                  -- note names (translated to V/oct via noteNameMidi). `~` and
-                  -- unknown tokens skip the emit so the bus stays at its last
-                  -- value (S&H). `transforms` (e.g. [Offset -0.5]) apply
-                  -- post-parse, post-translation.
-                  let mRaw = case Number.fromString token of
-                        Just n -> Just n
-                        Nothing -> voctValue <$> Map.lookup token noteNameMidi
-                  in case mRaw of
-                    Just raw -> case state.oscClient of
-                      Just osc -> do
-                        let value = applyTransforms c.transforms raw
-                        liftEffect $ Log.debug $ "〰 cv bus " <> show c.bus <> " = " <> show value <> " in " <> show delayInt <> "ms"
-                        liftEffect $ OSC.sendCVAfter osc c.bus value delayClamped
-                      Nothing -> pure unit
-                    Nothing -> pure unit
-
-                ESXTrack e ->
-                  -- ESX-8CV slot — same numeric-pattern semantics as CVTrack
-                  -- but reaches cv-router's Silent Way encoder via /esx.
-                  case Number.fromString token of
-                    Just raw -> case state.oscClient of
-                      Just osc -> do
-                        let value = applyTransforms e.transforms raw
-                        liftEffect $ Log.debug $ "⌇ esx slot " <> show e.slot <> " = " <> show value <> " in " <> show delayInt <> "ms"
-                        liftEffect $ OSC.sendESXAfter osc e.slot value delayClamped
-                      Nothing -> pure unit
-                    Nothing -> pure unit
-
+      -- Legacy GateTrack/CVTrack/ESXTrack dispatch lived here pre-PR1.7a.
+      -- The track verbs now install bound voices in tidal_voice_sup
+      -- under reserved names; `state.tracks` is gone. The window
+      -- arithmetic above still feeds the publishState snapshot via
+      -- `nextCycle`.
 
       liftEffect $ Ref.modify_ (_ { nextCycle = toCycle }) stateRef
 
@@ -517,106 +390,38 @@ midiSchedulerLoop stateRef = do
       liftEffect $ sendAfter state.config.scheduleInterval pid Tick
       midiSchedulerLoop stateRef
 
-    UpdatePattern patStr -> do
-      -- Legacy: single gate pattern. Replaces ALL existing tracks (gate + CV)
-      -- with one gate track using the first existing gate-track's channel
-      -- or the default. Use UpdateGateTrack/UpdateCVTrack for the live-coding
-      -- shape (per-track replacement).
-      state <- liftEffect $ Ref.read stateRef
-      let firstGateChannel = Array.findMap (case _ of
-            GateTrack g -> Just g.channel
-            _ -> Nothing) state.tracks
-      let channel = fromMaybe state.config.midi.channel firstGateChannel
-      let newTracks = case parse patStr of
-            Right ast -> [GateTrack { pattern: tpatToPattern ast, channel, fanout: true }]
-            Left _ -> state.tracks
-      liftEffect $ Ref.write (state { tracks = newTracks }) stateRef
-      liftEffect $ log $ "Pattern updated: " <> patStr
+    UpdatePattern _patStr -> do
+      -- Dead handler — legacy single-pattern message format gone in
+      -- PR1.7a. Msg variant kept for type completeness; no Erlang
+      -- call site builds it.
       midiSchedulerLoop stateRef
 
-    UpdatePatternWithChannel patStr newChannel -> do
-      -- Single gate pattern, replaces all existing tracks.
-      state <- liftEffect $ Ref.read stateRef
-      let newTracks = case parse patStr of
-            Right ast -> [GateTrack { pattern: tpatToPattern ast, channel: newChannel, fanout: true }]
-            Left _ -> state.tracks
-      liftEffect $ Ref.write (state { tracks = newTracks }) stateRef
-      liftEffect $ log $ "Pattern updated: " <> patStr <> " (channel " <> show newChannel <> ")"
+    UpdatePatternWithChannel _patStr _newChannel -> do
+      -- Dead handler — legacy single-pattern format gone in PR1.7a.
       midiSchedulerLoop stateRef
 
-    UpdateGateTrack ch patStr -> do
-      -- Replace just the gate track at this channel; leave others untouched.
-      state <- liftEffect $ Ref.read stateRef
-      case parse patStr of
-        Right ast -> do
-          let newTrack = GateTrack { pattern: tpatToPattern ast, channel: ch, fanout: false }
-          let isOther = case _ of
-                GateTrack g -> g.channel /= ch
-                _           -> true
-          let newTracks = Array.filter isOther state.tracks <> [newTrack]
-          liftEffect $ Ref.write (state { tracks = newTracks }) stateRef
-          liftEffect $ log $ "gate ch " <> show ch <> ": " <> patStr
-        Left _ ->
-          liftEffect $ log $ "gate parse error: " <> patStr
+    UpdateGateTrack _ch _patStr -> do
+      -- Dead handler — `gate <ch>` verb installs a bound voice on
+      -- the new tree as of PR1.7a.
       midiSchedulerLoop stateRef
 
-    UpdateGateTrackP ch pat -> do
-      -- Pre-parsed gate track from the host-language evaluator.
-      -- Same as UpdateGateTrack but skips the mini-notation parse step.
-      state <- liftEffect $ Ref.read stateRef
-      let newTrack = GateTrack { pattern: pat, channel: ch, fanout: false }
-      let isOther = case _ of
-            GateTrack g -> g.channel /= ch
-            _           -> true
-      let newTracks = Array.filter isOther state.tracks <> [newTrack]
-      liftEffect $ Ref.write (state { tracks = newTracks }) stateRef
-      liftEffect $ log $ "gate ch " <> show ch <> ": <expr>"
+    UpdateGateTrackP _ch _pat -> do
+      -- Dead handler — `gate <ch> :<expr>` installs a bound voice
+      -- on the new tree as of PR1.7a.
       midiSchedulerLoop stateRef
 
-    UpdateCVTrack bus patStr specs -> do
-      -- Replace just the CV track at this bus; leave others untouched.
-      state <- liftEffect $ Ref.read stateRef
-      case parse patStr of
-        Right ast -> do
-          let transforms = map specToTransform specs
-          let newTrack = CVTrack { pattern: tpatToPattern ast, bus, transforms }
-          let isOther = case _ of
-                CVTrack c -> c.bus /= bus
-                _         -> true
-          let newTracks = Array.filter isOther state.tracks <> [newTrack]
-          liftEffect $ Ref.write (state { tracks = newTracks }) stateRef
-          liftEffect $ log $ "cv bus " <> show bus <> ": " <> patStr <> showTransforms transforms
-        Left _ ->
-          liftEffect $ log $ "cv parse error: " <> patStr
+    UpdateCVTrack _bus _patStr _specs -> do
+      -- Dead handler — `cv <bus> <pat>` verb installs a bound voice
+      -- on the new tree as of PR1.7a.
       midiSchedulerLoop stateRef
 
-    UpdateESXTrack slot patStr specs -> do
-      -- Replace just the ESX-8CV track at this slot; leave others untouched.
-      state <- liftEffect $ Ref.read stateRef
-      case parse patStr of
-        Right ast -> do
-          let transforms = map specToTransform specs
-          let newTrack = ESXTrack { pattern: tpatToPattern ast, slot, transforms }
-          let isOther = case _ of
-                ESXTrack e -> e.slot /= slot
-                _          -> true
-          let newTracks = Array.filter isOther state.tracks <> [newTrack]
-          liftEffect $ Ref.write (state { tracks = newTracks }) stateRef
-          liftEffect $ log $ "esx slot " <> show slot <> ": " <> patStr <> showTransforms transforms
-        Left _ ->
-          liftEffect $ log $ "esx parse error: " <> patStr
+    UpdateESXTrack _slot _patStr _specs -> do
+      -- Dead handler — `esx <slot> <pat>` verb installs a bound
+      -- voice on the new tree as of PR1.7a.
       midiSchedulerLoop stateRef
 
-    UpdateTracks trackInfos -> do
-      -- Multiple tracks, each with own channel — interpreted as gate tracks.
-      state <- liftEffect $ Ref.read stateRef
-      let newTracks = Array.mapMaybe parseTrack trackInfos
-      liftEffect $ Ref.write (state { tracks = newTracks }) stateRef
-      liftEffect $ log $ "Tracks updated: " <> show (Array.length newTracks) <> " tracks"
-      for_ newTracks \t -> case t of
-        GateTrack g -> liftEffect $ Log.debug $ "- gate ch " <> show g.channel
-        CVTrack c -> liftEffect $ Log.debug $ "- cv bus " <> show c.bus
-        ESXTrack e -> liftEffect $ Log.debug $ "- esx slot " <> show e.slot
+    UpdateTracks _trackInfos -> do
+      -- Dead handler — JSON multi-track format gone in PR1.7a.
       midiSchedulerLoop stateRef
 
     AddBinding name actionSpec -> do
@@ -663,23 +468,9 @@ midiSchedulerLoop stateRef = do
       liftEffect $ log $ "unbind " <> name
       midiSchedulerLoop stateRef
 
-    PlayByName name _patStr fullText _paramSpecs -> do
-      -- Legacy whole-text fallback path. After PR1.4d-ii-b the WS
-      -- handler only routes here when the name has NO discrete
-      -- binding (otherwise the play installs on the new voice tree
-      -- instead). The fallback installs a single GateTrack from the
-      -- full message text — preserves `bd sn hh cp`-without-bind.
-      state <- liftEffect $ Ref.read stateRef
-      liftEffect $ log $ "(no binding '" <> name <> "', falling back to legacy pattern)"
-      let firstGateChannel = Array.findMap (case _ of
-            GateTrack g -> Just g.channel
-            _ -> Nothing) state.tracks
-      let channel = fromMaybe state.config.midi.channel firstGateChannel
-      let newTracks = case parse fullText of
-            Right ast -> [GateTrack { pattern: tpatToPattern ast, channel, fanout: true }]
-            Left _ -> state.tracks
-      liftEffect $ Ref.write (state { tracks = newTracks }) stateRef
-      liftEffect $ log $ "Pattern updated (legacy): " <> fullText
+    PlayByName _name _patStr _fullText _paramSpecs -> do
+      -- Dead handler — unbound-name fallback gone in PR1.7a (the WS
+      -- handler now returns an error for unbound names).
       midiSchedulerLoop stateRef
 
     PlayByNameP _name _pat _fullText -> do
@@ -719,11 +510,12 @@ midiSchedulerLoop stateRef = do
       midiSchedulerLoop stateRef
 
     Hush -> do
-      -- Tidal-compat: silence everything. Drop all running tracks
-      -- (discrete and continuous) but preserve the binding registry so
-      -- the user can immediately play a name again without rebinding.
+      -- Tidal-compat: clear MIDIScheduler-side residual state.
+      -- The new voice tree is hushed by the WS handler's parallel
+      -- voice_sup:hush_all/0 call; this branch only resets
+      -- continuousTracks (always empty after PR1.5-c, but harmless).
       state <- liftEffect $ Ref.read stateRef
-      liftEffect $ Ref.write (state { tracks = [], continuousTracks = [] }) stateRef
+      liftEffect $ Ref.write (state { continuousTracks = [] }) stateRef
       liftEffect $ log "hush"
       midiSchedulerLoop stateRef
 
@@ -852,50 +644,6 @@ patternTypeOfEval = case _ of
   Expr.VNumPattern _ -> Just Sink.PatNumber
   _ -> Nothing
 
--- | Convert a wire-level TransformSpec into a typed Transform for use
--- | by `applyTransforms`. The two types are parallel today; if the
--- | wire spec gains constructors that need richer semantics (e.g. a
--- | spec that references a slot), this is where the translation lives.
-specToTransform :: TransformSpec -> Transform
-specToTransform = case _ of
-  SpecOffset n  -> Offset n
-  SpecInvert    -> Invert
-  SpecScale a b -> Scale a b
-
--- | Render a transform pipeline for log output, e.g. "  | offset -0.5".
-showTransforms :: Array Transform -> String
-showTransforms ts =
-  if Array.null ts
-    then ""
-    else " | " <> Array.intercalate " | " (map showTransform ts)
-  where
-  showTransform = case _ of
-    Offset n  -> "offset " <> show n
-    Invert    -> "invert"
-    Scale a b -> "scale " <> show a <> " " <> show b
-
--- | Get the cycle time to fire this event AT.
--- |
--- | For Digital events use `whole.start` — the actual onset. Using
--- | `part.start` re-fires events whose `whole` spans multiple scheduler
--- | cycles (`slow N` over a stack pattern is the canonical case: every
--- | chord member's `whole` already spans the inner cycle, so after `slow N`
--- | it spans N scheduler cycles, and `part.start` would land at every
--- | one of them).
--- |
--- | Analog events have no `whole` (they're continuous), so `part.start`
--- | is the right reading there.
-eventStartCycle :: Event String -> R.Rational
-eventStartCycle = case _ of
-  Digital { whole: Arc { start } } -> start
-  Analog { part: Arc { start } } -> start
-
--- | Get sample name from event
-eventSample :: Event String -> String
-eventSample = case _ of
-  Digital { value } -> value
-  Analog { value } -> value
-
 -- ---------------------------------------------------------------------------
 -- State publication for the `state` debug verb
 -- ---------------------------------------------------------------------------
@@ -962,15 +710,10 @@ serializeState s =
     voicesArr = jsArrOf voiceEntry
       (Map.toUnfoldable s.sinkTypes :: Array (Tuple String (Array Sink.SinkType)))
 
-    trackEntry track = case track of
-      GateTrack g ->
-        "{\"kind\":\"gate\",\"channel\":" <> show g.channel
-          <> ",\"fanout\":" <> jsBool g.fanout <> "}"
-      CVTrack c ->
-        "{\"kind\":\"cv\",\"bus\":" <> show c.bus <> "}"
-      ESXTrack e ->
-        "{\"kind\":\"esx\",\"slot\":" <> show e.slot <> "}"
-    tracksArr = jsArrOf trackEntry s.tracks
+    -- Legacy `tracks` array always empty after PR1.7a (track verbs
+    -- moved to bound voices). Keeping the JSON field for snapshot
+    -- shape stability until PR1.7c.
+    tracksArr = "[]"
 
     contTrackEntry ct =
       "{\"name\":" <> jsStr ct.name <> ",\"dest\":" <> contDestEntry ct.dest <> "}"

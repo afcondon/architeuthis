@@ -176,10 +176,11 @@ derive instance eqSinkType :: Eq SinkType
 inferPrimSinkType :: PrimAction -> SinkType
 inferPrimSinkType = case _ of
   Gate r -> SinkGate r
-  CV bus LiteralValue -> SinkCVLiteral { bus }
-  CV bus NoteNameVoct -> SinkCVVoct { bus }
-  CV bus (SampleNameMap _) -> SinkCVSampleMap { bus }
-  ESX r -> SinkESX r
+  CV bus LiteralValue _ -> SinkCVLiteral { bus }
+  CV bus NoteNameVoct _ -> SinkCVVoct { bus }
+  CV bus (SampleNameMap _) _ -> SinkCVSampleMap { bus }
+  CV bus LiteralOrNote _ -> SinkCVLiteral { bus }  -- permissive legacy mode
+  ESX r -> SinkESX { slot: r.slot, latencyMs: r.latencyMs }
   ES5Gate r -> SinkES5Gate r
   MidiNote r -> SinkMidiNote r
   MidiCC r -> SinkMidiCC r

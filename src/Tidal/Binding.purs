@@ -72,6 +72,11 @@ data CVMapping
   = LiteralValue
   | NoteNameVoct
   | SampleNameMap (Map String Number)
+  | LiteralOrNote
+  -- ^ Permissive: try Number first, fall back to V/oct lookup.
+  --   Used by the legacy `cv <bus>` verb's synthetic bindings, which
+  --   accept both numeric tokens and note names per-token. Server-
+  --   only — `parseMapping` doesn't recognise it from a bind-spec.
 
 derive instance eqCVMapping :: Eq CVMapping
 
@@ -86,8 +91,14 @@ derive instance eqCVMapping :: Eq CVMapping
 -- | binding registry shape, no churn for existing actions.
 data PrimAction
   = Gate     { channel :: Int, latencyMs :: Int }     -- → cv-router /tidal/gate
-  | CV       Int CVMapping                            -- bus 0..15 → cv-router /cv
-  | ESX      { slot :: Int,    latencyMs :: Int }     -- ESX-8CV slot 0..7 → /esx
+  | CV       Int CVMapping (Array Transform)          -- bus 0..15 → cv-router /cv
+  -- ^ The trailing `Array Transform` is the per-binding transform
+  --   pipeline (offset / invert / scale). Empty for `bind`-spec
+  --   bindings (the bind-spec parser doesn't accept transforms);
+  --   non-empty when synthesised from the legacy `cv <bus> <pat> |
+  --   <transforms>` verb.
+  | ESX      { slot :: Int, latencyMs :: Int, transforms :: Array Transform }
+                                                      -- ESX-8CV slot 0..7 → /esx
   | ES5Gate  { bit :: Int,     latencyMs :: Int }     -- ES-5 panel gate 0..7 → /esx5gate
   -- MIDI primitives — device-aware. The `device` field is an alias
   -- registered via `midi-device <alias> <real-name>`; lets the same
@@ -166,7 +177,7 @@ gate0 ch = Gate { channel: ch, latencyMs: 0 }
 -- | note-name-→-Plaits behaviour previously hardcoded in
 -- | `defaultSampleGateMap` / `defaultSampleCVMap`.
 plaitsBinding :: Tuple String Binding
-plaitsBinding = Tuple "plaits" [gate0 6, CV 15 NoteNameVoct]
+plaitsBinding = Tuple "plaits" [gate0 6, CV 15 NoteNameVoct []]
 
 -- | Default registry. Drum aliases + Plaits. Loaded into the scheduler
 -- | state at startup. Users can add/replace via the `bind` WS verb.
@@ -219,12 +230,12 @@ parseAction s =
 
     ["cv", busStr] ->
       case Int.fromString busStr of
-        Just bus -> Right (CV bus LiteralValue)
+        Just bus -> Right (CV bus LiteralValue [])
         Nothing -> Left ("cv: expected integer bus, got '" <> busStr <> "'")
 
     ["cv", busStr, modeStr] ->
       case Int.fromString busStr, parseMapping modeStr of
-        Just bus, Just mode -> Right (CV bus mode)
+        Just bus, Just mode -> Right (CV bus mode [])
         Nothing, _ -> Left ("cv: expected integer bus, got '" <> busStr <> "'")
         _, Nothing -> Left ("cv: expected mapping mode (literal|voct), got '" <> modeStr <> "'")
 
@@ -270,7 +281,7 @@ mkGate chStr latStr =
 mkESX :: String -> String -> Either String PrimAction
 mkESX slotStr latStr =
   case Int.fromString slotStr, Int.fromString latStr of
-    Just slot, Just lat -> Right (ESX { slot, latencyMs: lat })
+    Just slot, Just lat -> Right (ESX { slot, latencyMs: lat, transforms: [] })
     Nothing, _ -> Left ("esx: expected integer slot, got '" <> slotStr <> "'")
     _, Nothing -> Left ("esx: expected integer lat, got '" <> latStr <> "'")
 
