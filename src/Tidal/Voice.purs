@@ -2,21 +2,38 @@
 -- | gen_server.
 -- |
 -- | The voice's two responsibilities:
--- |   1. Hold its current Pattern, Binding, phase, and mute state.
+-- |   1. Hold its current Pattern, kind-specific dispatch info, phase,
+-- |      and mute state.
 -- |   2. On `compute_until` cast (driven by the clock), query the
--- |      Pattern for events in the requested window and produce a
--- |      list of `EventToDispatch` records — token + absolute Unix
--- |      microsecond wall-time. The Erlang gen_server iterates these
--- |      and casts each to `tidal_dispatcher`.
+-- |      Pattern for events in the requested window and produce a list
+-- |      of `EventToDispatch` values — each one a tagged tuple the
+-- |      Erlang gen_server iterates over and casts to the dispatcher.
+-- |
+-- | A voice is one of two kinds:
+-- |
+-- |   * **Discrete** — `Pattern String`, dispatched through a
+-- |     `Tidal.Binding.Binding` (gate / cv / midi-note / midi-cc /
+-- |     esx / es5gate). `#`-joined param patterns supply slot
+-- |     overrides and compositional fanout.
+-- |   * **Continuous** — `Pattern Number` (an LFO, oscillator, or
+-- |     numeric-pattern expression), dispatched to a `ContDest`
+-- |     (MIDI CC or CV bus). One sample per tick at the clock's
+-- |     `currentCycle`; no look-ahead needed.
+-- |
+-- | The kind is opaque to Erlang: the gen_server passes the State
+-- | through PureScript helpers and only inspects events at the
+-- | dispatch boundary, where `EventToDispatch`'s tag tells it which
+-- | dispatcher API to invoke.
 -- |
 -- | Side-effecting work (the cast loop) lives in Erlang; PureScript
--- | only does pure pattern math. The State newtype is opaque to
--- | Erlang and round-trips through gen_server's State parameter.
+-- | only does pure pattern math.
 module Tidal.Voice
   ( State
   , initialState
+  , initialContinuousState
   , setPattern
   , setPatternWithParams
+  , setContinuousPattern
   , installFromSpec
   , clearPattern
   , setMuted
@@ -24,7 +41,7 @@ module Tidal.Voice
   , Snapshot
   , snapshot
   , Window
-  , EventToDispatch
+  , EventToDispatch(..)
   , ComputeResult
   , computeUntil
   ) where
@@ -40,12 +57,30 @@ import Data.Maybe (Maybe(..))
 import Data.Rational (Rational, fromInt)
 import Data.Rational as R
 import Data.Tuple (Tuple(..))
-import Tidal.Binding (Binding)
+import Tidal.Binding (Binding, ContDest)
 import Tidal.Dispatch.Helpers (samplePatternAt)
 import Tidal.Eval.Interpret (tpatToPattern)
 import Tidal.Parse.Parser (parse)
 import Tidal.Pattern.Core (queryArc)
 import Tidal.Pattern.Types (Arc(..), Event(..), Pattern)
+
+-- ---------------------------------------------------------------------------
+-- VoiceKind — discrete vs continuous voice payload (private).
+-- ---------------------------------------------------------------------------
+
+-- | A voice's kind-specific payload. Internal — not exported. Erlang
+-- | sees `State` as opaque; discrimination happens at the
+-- | `EventToDispatch` boundary instead.
+data VoiceKind
+  = Discrete
+      { pattern :: Maybe (Pattern String)
+      , params :: Map String (Pattern String)
+      , binding :: Binding
+      }
+  | Continuous
+      { pattern :: Maybe (Pattern Number)
+      , dest :: ContDest
+      }
 
 -- ---------------------------------------------------------------------------
 -- State
@@ -55,80 +90,101 @@ import Tidal.Pattern.Types (Arc(..), Event(..), Pattern)
 -- |
 -- |   * `name` — the bound name (`bass`, `lead`); the gen_server
 -- |     registers as `tidal_voice_<name>`.
--- |   * `pattern` — current Pattern; `Nothing` between bind and first
--- |     pattern push.
--- |   * `binding` — dispatch-spec for events. Set at construction;
--- |     mutated only via re-bind.
+-- |   * `kind` — the kind-specific payload (Discrete vs Continuous).
 -- |   * `phase` — cycle position. Carries over `setPattern` by default;
 -- |     reset by `resetPhase`.
 -- |   * `lastEmittedUntil` — cycle-time up to which events have been
--- |     dispatched; the next compute window starts here.
+-- |     dispatched; the next compute window starts here. Used by the
+-- |     Discrete branch to dedup across ticks; the Continuous branch
+-- |     ignores it (one emission per tick regardless).
 -- |   * `muted` — when true the pattern still queries (phase advances)
 -- |     but events are dropped at the dispatch boundary. Distinct from
 -- |     stop and from clock-level pause.
 newtype State = State
   { name :: String
-  , pattern :: Maybe (Pattern String)
-  , params :: Map String (Pattern String)
-  , binding :: Binding
+  , kind :: VoiceKind
   , phase :: Rational
   , lastEmittedUntil :: Rational
   , muted :: Boolean
   }
 
+-- | Make a Discrete voice with no pattern yet, holding its Binding.
 initialState :: String -> Binding -> State
 initialState name binding = State
   { name
-  , pattern: Nothing
-  , params: Map.empty
-  , binding
+  , kind: Discrete { pattern: Nothing, params: Map.empty, binding }
   , phase: fromInt 0
   , lastEmittedUntil: fromInt 0
   , muted: false
   }
 
-setPattern :: Pattern String -> State -> State
-setPattern p (State s) = State (s { pattern = Just p, params = Map.empty })
+-- | Make a Continuous voice with no pattern yet, holding its ContDest.
+initialContinuousState :: String -> ContDest -> State
+initialContinuousState name dest = State
+  { name
+  , kind: Continuous { pattern: Nothing, dest }
+  , phase: fromInt 0
+  , lastEmittedUntil: fromInt 0
+  , muted: false
+  }
 
--- | Replace the pattern AND the parameter-pattern map atomically.
--- | Used by the WS handler when installing a `<name> <pat> # <key> <pat>...`
--- | message: each `# <key> <pat>` segment becomes a (key, Pattern String)
--- | entry in the params map. The voice samples each at event-time and
--- | the dispatcher applies slot overrides + compositional fanout.
+-- | Replace the pattern on a Discrete voice. Silent no-op on a
+-- | Continuous voice — the WS handler is responsible for routing
+-- | by kind, so reaching this with a Continuous voice indicates a
+-- | bug; we'd rather drop than crash mid-tick.
+setPattern :: Pattern String -> State -> State
+setPattern p (State s) = case s.kind of
+  Discrete d -> State (s { kind = Discrete (d { pattern = Just p, params = Map.empty }) })
+  Continuous _ -> State s
+
+-- | Replace the pattern AND the parameter-pattern map atomically on a
+-- | Discrete voice. Silent no-op on Continuous.
 setPatternWithParams
   :: Pattern String
   -> Map String (Pattern String)
   -> State
   -> State
-setPatternWithParams p ps (State s) =
-  State (s { pattern = Just p, params = ps })
+setPatternWithParams p ps (State s) = case s.kind of
+  Discrete d -> State (s { kind = Discrete (d { pattern = Just p, params = ps }) })
+  Continuous _ -> State s
+
+-- | Replace the pattern on a Continuous voice. Silent no-op on Discrete.
+setContinuousPattern :: Pattern Number -> State -> State
+setContinuousPattern p (State s) = case s.kind of
+  Continuous c -> State (s { kind = Continuous (c { pattern = Just p }) })
+  Discrete _ -> State s
 
 -- | Parse a `<name> <pat>` body + its `# <key> <pat>` segments and
--- | install both atomically. Param specs that fail to parse are
--- | dropped (mirroring MIDIScheduler.PlayByName's behaviour); the
--- | structure pattern's parse error returns Left and leaves state
--- | untouched.
+-- | install both atomically on a Discrete voice. Param specs that
+-- | fail to parse are dropped (mirroring MIDIScheduler.PlayByName's
+-- | behaviour); the structure pattern's parse error returns Left and
+-- | leaves state untouched. Silent no-op (returns Right) on Continuous.
 installFromSpec
   :: String
   -> Array { name :: String, pat :: String }
   -> State
   -> Either String State
-installFromSpec patStr paramSpecs st = case parse patStr of
-  Left err -> Left (show err)
-  Right ast ->
-    let
-      pattern = tpatToPattern ast
-      paramsMap = Map.fromFoldable
-        $ Array.mapMaybe
-            (\ps -> case parse ps.pat of
-              Right p -> Just (Tuple ps.name (tpatToPattern p))
-              Left _ -> Nothing)
-            paramSpecs
-    in Right (setPatternWithParams pattern paramsMap st)
+installFromSpec patStr paramSpecs st@(State s) = case s.kind of
+  Continuous _ -> Right st
+  Discrete _ -> case parse patStr of
+    Left err -> Left (show err)
+    Right ast ->
+      let
+        pattern = tpatToPattern ast
+        paramsMap = Map.fromFoldable
+          $ Array.mapMaybe
+              (\ps -> case parse ps.pat of
+                Right p -> Just (Tuple ps.name (tpatToPattern p))
+                Left _ -> Nothing)
+              paramSpecs
+      in Right (setPatternWithParams pattern paramsMap st)
 
+-- | Clear the pattern of a voice regardless of kind. Used by
+-- | `unbind` and by Tidal-compat `hush_all`.
 clearPattern :: State -> State
-clearPattern (State s) =
-  State (s { pattern = Nothing, params = Map.empty })
+clearPattern (State s) = case s.kind of
+  Discrete d -> State (s { kind = Discrete (d { pattern = Nothing, params = Map.empty }) })
+  Continuous c -> State (s { kind = Continuous (c { pattern = Nothing }) })
 
 setMuted :: Boolean -> State -> State
 setMuted m (State s) = State (s { muted = m })
@@ -147,20 +203,32 @@ resetPhase (State s) = State
 -- | flags whether one is set.
 type Snapshot =
   { name :: String
+  , kind :: String
   , hasPattern :: Boolean
   , paramCount :: Int
   , muted :: Boolean
   }
 
 snapshot :: State -> Snapshot
-snapshot (State s) =
-  { name: s.name
-  , hasPattern: case s.pattern of
-      Just _ -> true
-      Nothing -> false
-  , paramCount: Map.size s.params
-  , muted: s.muted
-  }
+snapshot (State s) = case s.kind of
+  Discrete d ->
+    { name: s.name
+    , kind: "discrete"
+    , hasPattern: case d.pattern of
+        Just _ -> true
+        Nothing -> false
+    , paramCount: Map.size d.params
+    , muted: s.muted
+    }
+  Continuous c ->
+    { name: s.name
+    , kind: "continuous"
+    , hasPattern: case c.pattern of
+        Just _ -> true
+        Nothing -> false
+    , paramCount: 0
+    , muted: s.muted
+    }
 
 -- ---------------------------------------------------------------------------
 -- Compute window — the per-tick query the clock broadcasts to voices.
@@ -179,18 +247,28 @@ type Window =
 
 -- | One event the voice wants the dispatcher to send.
 -- |
--- | `params` carries the pre-sampled values for each `#`-joined
--- | parameter pattern at this event's cycle position. The dispatcher
--- | uses them for two purposes: slot overrides on the matching
--- | PrimAction (e.g. `# vel "100 60"` overrides MidiNote.velocity),
--- | and compositional fanout when the param name matches another
--- | registered binding (fires that binding's actions with the value).
--- | Empty map = a plain `<name> <pat>` event with no `#` joins.
-type EventToDispatch =
-  { token :: String
-  , wallTimeUs :: Number
-  , params :: Map String String
-  }
+-- | Two flavors, one per voice kind:
+-- |
+-- |   * `DiscreteEvent` — token + sampled `#`-join params; the
+-- |     dispatcher walks the Binding's PrimAction list.
+-- |   * `ContinuousEvent` — a single sampled value; the dispatcher
+-- |     emits one CC / CV update against the voice's recorded
+-- |     `ContDest`.
+-- |
+-- | The Erlang voice's compute_until handler pattern-matches on the
+-- | tag tuple to pick the right `tidal_dispatcher` API:
+-- |   `{discreteEvent, M}` → `tidal_dispatcher:dispatch_event/4`.
+-- |   `{continuousEvent, M}` → `tidal_dispatcher:dispatch_cont_event/3`.
+data EventToDispatch
+  = DiscreteEvent
+      { token :: String
+      , wallTimeUs :: Number
+      , params :: Map String String
+      }
+  | ContinuousEvent
+      { value :: Number
+      , wallTimeUs :: Number
+      }
 
 -- | Result of `computeUntil`: new voice state plus the events to
 -- | dispatch this tick. The Erlang gen_server iterates `events` and
@@ -200,14 +278,33 @@ type ComputeResult =
   , events :: Array EventToDispatch
   }
 
--- | Query the voice's pattern for events in the (lastEmittedUntil,
--- | window.lookAheadCycle] range; convert each to an absolute Unix
--- | microsecond wall-time. Phase always advances (lastEmittedUntil
--- | is bumped); event emission depends on `muted`.
+-- | Query the voice's pattern and produce the events to dispatch this
+-- | tick. Behavior splits by kind:
+-- |
+-- |   * **Discrete**: query (lastEmittedUntil .. lookAheadCycle], emit
+-- |     one event per Pattern event with absolute Unix-µs wall time.
+-- |   * **Continuous**: sample at currentCycle; emit zero or one event
+-- |     at `nowUnixUs`. lastEmittedUntil is unused here (each tick
+-- |     re-samples; no dedup needed).
+-- |
+-- | Phase always advances regardless; mute drops emissions but doesn't
+-- | gate the query.
 -- |
 -- | Pure function — no side effects. The cast loop happens in Erlang.
 computeUntil :: Window -> State -> ComputeResult
-computeUntil w (State s) = case s.pattern of
+computeUntil w (State s) = case s.kind of
+  Discrete d -> computeDiscrete w (State s) d
+  Continuous c -> computeContinuous w (State s) c
+
+computeDiscrete
+  :: Window
+  -> State
+  -> { pattern :: Maybe (Pattern String)
+     , params :: Map String (Pattern String)
+     , binding :: Binding
+     }
+  -> ComputeResult
+computeDiscrete w (State s) d = case d.pattern of
   Nothing -> { newState: State s, events: [] }
   Just pat ->
     let
@@ -220,28 +317,16 @@ computeUntil w (State s) = case s.pattern of
         { newState: State s, events: [] }
       else
         let
-          -- Query the whole integer cycle range and emit all events
-          -- in it. Dedup across ticks comes from `lastEmittedUntil`
-          -- advancing by the same integer toCycle: subsequent ticks
-          -- short-circuit until currentCycle reaches the next
-          -- integer boundary, at which point we query the next cycle.
-          --
-          -- Earlier versions of this function added a sub-cycle
-          -- `inWindow` filter restricting events to [fromCycleNum,
-          -- toCycleNum). That dropped any event whose start cycle
-          -- fell between toCycleNum and the integer toCycle — events
-          -- at non-zero positions within a cycle were silently lost.
-          -- Pattern `c2 c2 c2 c3` only ever emitted the c2 at position
-          -- 0; positions 0.25 / 0.5 / 0.75 never fired. See PR1.4e+1.
-          --
-          -- Matches MIDIScheduler.purs (line 482's per-track loop):
-          -- whole-integer-cycle emission, look-ahead handled by the
-          -- absolute wallTimeUs each event carries.
+          -- Whole-integer-cycle emission. Dedup across ticks comes
+          -- from `lastEmittedUntil` advancing by the same integer
+          -- toCycle; subsequent ticks short-circuit until the next
+          -- integer boundary. (Earlier sub-cycle filters dropped
+          -- events at non-zero positions — see PR1.4e+1 fix.)
           queryEvents = queryArc pat fromCycle toCycle
           -- Sample each param pattern at this event's cycle position.
-          -- Param patterns whose query produces no event at this point
-          -- (e.g. a rest token) are simply absent from the params map;
-          -- the dispatcher treats absence as "use binding default".
+          -- Params with no event at this point (e.g. a rest token) are
+          -- absent from the map; the dispatcher treats absence as
+          -- "use binding default".
           sampleParamsAt cyc =
             Map.fromFoldable
               $ Array.mapMaybe
@@ -249,7 +334,7 @@ computeUntil w (State s) = case s.pattern of
                     case samplePatternAt cyc paramPat of
                       Just v -> Just (Tuple paramName v)
                       Nothing -> Nothing)
-                  (Map.toUnfoldable s.params :: Array (Tuple String (Pattern String)))
+                  (Map.toUnfoldable d.params :: Array (Tuple String (Pattern String)))
           toDispatch e =
             let
               eventCycle = eventStartCycle e
@@ -258,14 +343,41 @@ computeUntil w (State s) = case s.pattern of
               delayClamped = max 0.0 delayMs
               wallTimeUs = w.nowUnixUs + delayClamped * 1000.0
             in
-              { token: eventSample e
-              , wallTimeUs
-              , params: sampleParamsAt eventCycle
-              }
+              DiscreteEvent
+                { token: eventSample e
+                , wallTimeUs
+                , params: sampleParamsAt eventCycle
+                }
           evs = if s.muted then [] else map toDispatch queryEvents
           newSt = State (s { lastEmittedUntil = toCycle })
         in
           { newState: newSt, events: evs }
+
+computeContinuous
+  :: Window
+  -> State
+  -> { pattern :: Maybe (Pattern Number), dest :: ContDest }
+  -> ComputeResult
+computeContinuous w (State s) c = case c.pattern of
+  Nothing -> { newState: State s, events: [] }
+  Just pat ->
+    let
+      cyc = numberToCycleRat w.currentCycle
+      mValue = samplePatternAt cyc pat
+      evs = case mValue of
+        Just v
+          | not s.muted ->
+              [ ContinuousEvent { value: v, wallTimeUs: w.nowUnixUs } ]
+        _ -> []
+    in
+      { newState: State s, events: evs }
+
+-- | Convert a fractional-cycle Number to a Rational at microcycle
+-- | precision (one part per million per cycle). Plenty for the
+-- | continuous-voice sampler — at BPM 120 that's 1µs precision,
+-- | well below the ~50ms tick period.
+numberToCycleRat :: Number -> Rational
+numberToCycleRat c = fromInt (Int.floor (c * 1000000.0)) / fromInt 1000000
 
 -- ---------------------------------------------------------------------------
 -- Event helpers (private — not yet promoted to Pattern.Types).

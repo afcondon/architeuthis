@@ -39,8 +39,11 @@ module Tidal.Dispatcher
   , setBindingFromSpec
   , removeBinding
   , lookupBinding
+  , setContinuousBinding
+  , lookupContinuousBinding
   , registerMidiDevice
   , dispatchEvent
+  , dispatchContEvent
   , Snapshot
   , snapshot
   ) where
@@ -57,12 +60,13 @@ import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Number as Number
 import Effect (Effect)
-import Tidal.Binding (Binding, PrimAction(..))
+import Tidal.Binding (Binding, ContDest(..), PrimAction(..))
 import Tidal.Binding as Binding
 import Tidal.Log as Log
 import Tidal.MIDIBridge (BridgeClient, scheduleCCAt, scheduleNoteAt)
 import Tidal.Dispatch.Helpers (clamp7bit, interpretCV, noteNameMidi, param7bit)
 import Tidal.OSC (OSCClient, sendCVAfter, sendES5GateTrigAfter, sendESXAfter, sendGateTrigAfter)
+import Tidal.Transform (applyTransforms)
 
 -- ---------------------------------------------------------------------------
 -- Types
@@ -82,6 +86,7 @@ newtype State = State
   { bridgeClient :: BridgeClient
   , oscClient :: Maybe OSCClient
   , bindings :: Map String Binding
+  , continuousBindings :: Map String ContDest
   , midiDevices :: Map String MidiDevice
   , config :: Config
   , eventCount :: Int
@@ -98,6 +103,7 @@ initialState init = State
   { bridgeClient: init.bridgeClient
   , oscClient: init.oscClient
   , bindings: Map.empty
+  , continuousBindings: Map.empty
   , midiDevices: Map.empty
   , config: { gateDuration: init.gateDuration, cvLeadMs: init.cvLeadMs }
   , eventCount: 0
@@ -111,31 +117,50 @@ setBinding :: String -> Binding -> State -> State
 setBinding name binding (State s) =
   State (s { bindings = Map.insert name binding s.bindings })
 
+-- | Install a continuous-voice binding. Used by `setBindingFromSpec`
+-- | when the spec parses as `midi-cc-cont` / `cv-cont`, and by the
+-- | Erlang shell when it wants to register a destination directly.
+setContinuousBinding :: String -> ContDest -> State -> State
+setContinuousBinding name dest (State s) =
+  State (s { continuousBindings = Map.insert name dest s.continuousBindings })
+
 -- | Parse a `bind <name> <action-spec>` body and install the resulting
--- | Binding. Returns Left with the parser's error message if the spec
--- | doesn't parse as a discrete binding.
+-- | Binding (discrete) or ContDest (continuous).
 -- |
--- | Continuous-binding specs (`midi-cc-cont …`, `cv-cont …`) currently
--- | return Left because the dispatcher has no `continuousBindings`
--- | field yet — they'll get a proper home in PR1.5. The Erlang shell
--- | swallows the error during the PR1.4d-i dual-write transition;
--- | MIDIScheduler still handles continuous bindings as before.
+-- | Tries `parseContBinding` first — if the spec is a continuous-voice
+-- | declaration, install in `continuousBindings`. Otherwise fall
+-- | through to the discrete `parseCompoundAction`.
+-- |
+-- | Returns Left with the parser's error if neither shape matches.
 setBindingFromSpec :: String -> String -> State -> Either String State
-setBindingFromSpec name spec st =
-  case Binding.parseCompoundAction spec of
+setBindingFromSpec name spec st = case Binding.parseContBinding spec of
+  Just dest -> Right (setContinuousBinding name dest st)
+  Nothing -> case Binding.parseCompoundAction spec of
     Left err -> Left err
     Right binding -> Right (setBinding name binding st)
 
+-- | Remove a binding by name. Clears both the discrete and the
+-- | continuous registry — `unbind` is one verb at the WS layer and
+-- | the user shouldn't have to know which kind it was.
 removeBinding :: String -> State -> State
 removeBinding name (State s) =
-  State (s { bindings = Map.delete name s.bindings })
+  State (s { bindings = Map.delete name s.bindings
+           , continuousBindings = Map.delete name s.continuousBindings
+           })
 
--- | Look up a binding by name. Used by the WS handler at PR1.4d-ii-b
--- | to decide whether to install a voice in the new tree (binding
--- | exists) or fall back to MIDIScheduler's legacy whole-message
--- | pattern path (unbound name).
+-- | Look up a discrete binding by name. Used by the WS handler at
+-- | PR1.4d-ii-b to decide whether to install a voice in the new tree
+-- | (binding exists) or fall back to MIDIScheduler's legacy
+-- | whole-message pattern path (unbound name).
 lookupBinding :: String -> State -> Maybe Binding
 lookupBinding name (State s) = Map.lookup name s.bindings
+
+-- | Look up a continuous binding by name. The PR1.5-b WS handler
+-- | falls back to this when `lookupBinding` returns Nothing — if a
+-- | continuous binding exists, the play-by-name-expr verb installs a
+-- | Continuous voice through `tidal_voice_sup:set_voice_cont_pat`.
+lookupContinuousBinding :: String -> State -> Maybe ContDest
+lookupContinuousBinding name (State s) = Map.lookup name s.continuousBindings
 
 registerMidiDevice :: String -> MidiDevice -> State -> State
 registerMidiDevice alias device (State s) =
@@ -269,6 +294,41 @@ dispatchPrimAction (State s) name token wallUs delayMs _delayInt params = case _
             let adjustedUnixUs = wallUs - dev.latencyMs * 1000.0
             Log.debug $ "◇ [" <> name <> "] midi " <> dev.name <> " ch" <> show m.channel <> " cc" <> show m.cc <> " = " <> show value7bit
             scheduleCCAt s.bridgeClient dev.name m.channel m.cc value7bit adjustedUnixUs
+
+-- | Route one continuous-voice event. Looks up the voice's name in
+-- | `continuousBindings`, applies the recorded `ContDest`, and emits
+-- | one MIDI CC or CV update.
+-- |
+-- | No latency adjustment, no event-time book-keeping — continuous
+-- | voices fire at "now" each tick, and whoever they reach
+-- | interpolates / smooths. For MIDI CC the raw value is scaled
+-- | 0..1 → 0..127. For CV the raw value passes through the
+-- | destination's `transforms` pipeline unchanged.
+-- |
+-- | Mirror of MIDIScheduler.dispatchContValue.
+dispatchContEvent
+  :: { name :: String, value :: Number, wallTimeUs :: Number }
+  -> State
+  -> Effect State
+dispatchContEvent { name, value, wallTimeUs } (State s) = do
+  case Map.lookup name s.continuousBindings of
+    Nothing -> pure unit
+    Just (ContMidiCC m) ->
+      case Map.lookup m.device s.midiDevices of
+        Nothing -> pure unit
+        Just dev -> do
+          let v7 = clamp7bit (value * 127.0)
+          let adjustedUs = wallTimeUs - dev.latencyMs * 1000.0
+          Log.debug $ "≈ [" <> name <> "] cc " <> show m.cc <> " = " <> show v7
+          scheduleCCAt s.bridgeClient dev.name m.channel m.cc v7 adjustedUs
+    Just (ContCV c) ->
+      case s.oscClient of
+        Nothing -> pure unit
+        Just osc -> do
+          let outValue = applyTransforms c.transforms value
+          Log.debug $ "≈ [" <> name <> "] cv bus " <> show c.bus <> " = " <> show outValue
+          sendCVAfter osc c.bus outValue 0.0
+  pure (State (s { eventCount = s.eventCount + 1 }))
 
 -- | Is this `#` parameter name consumed by a slot override on any of
 -- | the binding's actions? If yes, the per-PrimAction dispatch already

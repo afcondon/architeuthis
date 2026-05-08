@@ -40,6 +40,7 @@ import Erl.Process (Process, ProcessM, spawn, receive)
 import Erl.Process.Raw as Raw
 import Tidal.Eval.Interpret (tpatToPattern)
 import Tidal.Expr as Expr
+import Tidal.Binding (ContDest(..), parseContBinding)
 import Tidal.Binding as Binding
 import Tidal.Dispatch.Helpers (noteNameMidi, voctValue, clamp7bit, samplePatternAt)
 import Tidal.Sink as Sink
@@ -204,15 +205,6 @@ data ParsedTrack
   -- | `fh2-envelope`). Note name in the token (e.g. `c4`) overrides the
   -- | default trigger note; bare tokens (e.g. `bd`) fall back to MIDI 60.
   | Fh2TriggerTrack { pattern :: Pattern String, voice :: Int }
-
--- | Where a continuous (LFO-style) voice sends its sampled value.
--- |
--- | A continuous voice runs at the scheduler tick rate (one sample per
--- | tick, default 50ms = 20Hz) and emits one MIDI CC or CV update per
--- | sample.
-data ContDest
-  = ContMidiCC { device :: String, channel :: Int, cc :: Int }
-  | ContCV     { bus :: Int, transforms :: Array Transform }
 
 -- | A continuous-sampling voice.  Held in `MIDISchedulerState.continuousTracks`
 -- | rather than `tracks` because the pattern type differs (`Pattern Number`
@@ -916,32 +908,6 @@ patternTypeOfEval = case _ of
   Expr.VPattern _ -> Just (Sink.PatString Sink.ContentMixed)
   Expr.VNumPattern _ -> Just Sink.PatNumber
   _ -> Nothing
-
--- | Try to parse a binding spec as a continuous-voice declaration.
--- | Recognised shapes:
--- |
--- |   `midi-cc-cont <device> <channel> <cc>`
--- |     Each scheduler tick the voice's pattern is sampled and the
--- |     resulting 0..1 value is scaled to a 0..127 MIDI CC.
--- |
--- |   `cv-cont <bus>`
--- |     Each tick samples the pattern and emits the raw value as a
--- |     CV update on the given bus (cv-router OSC).  No scaling —
--- |     the user controls the range via `range` in the expression.
--- |
--- | Returns `Nothing` for any other shape, letting the caller fall
--- | through to the discrete binding parser.
-parseContBinding :: String -> Maybe ContDest
-parseContBinding s =
-  case Array.filter (_ /= "") (String.split (String.Pattern " ") (String.trim s)) of
-    ["midi-cc-cont", device, chStr, ccStr] -> do
-      ch <- Int.fromString chStr
-      cc <- Int.fromString ccStr
-      Just (ContMidiCC { device, channel: ch, cc })
-    ["cv-cont", busStr] -> do
-      bus <- Int.fromString busStr
-      Just (ContCV { bus, transforms: [] })
-    _ -> Nothing
 
 -- | Convert a fractional-cycle Number into a Rational with microcycle
 -- | precision.  Used by the continuous-voice sampler so we can call

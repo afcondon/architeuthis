@@ -35,6 +35,8 @@ module Tidal.Binding
   , defaultRegistry
   , parseAction
   , parseCompoundAction
+  , ContDest(..)
+  , parseContBinding
   ) where
 
 import Prelude
@@ -48,6 +50,7 @@ import Data.Maybe (Maybe(..))
 import Data.String (Pattern(..), trim)
 import Data.String as String
 import Data.Tuple (Tuple(..))
+import Tidal.Transform (Transform)
 
 -- ---------------------------------------------------------------------------
 -- Types
@@ -287,3 +290,48 @@ parseMapping = case _ of
   "literal" -> Just LiteralValue
   "voct"    -> Just NoteNameVoct
   _         -> Nothing
+
+-- ---------------------------------------------------------------------------
+-- Continuous-voice destination (server-only — no wire-protocol mirror).
+-- ---------------------------------------------------------------------------
+
+-- | Where a continuous (LFO-style) voice sends its sampled value.
+-- |
+-- | A continuous voice runs at the scheduler tick rate (one sample per
+-- | tick) and emits one MIDI CC or CV update per sample.
+-- |
+-- | **Server-only**: ContDest is dispatch state, not part of the wire
+-- | protocol. Do NOT mirror in tidal-protocol's Binding.purs — clients
+-- | send the spec text (`midi-cc-cont …` / `cv-cont …`) and the server
+-- | parses it via `parseContBinding`.
+data ContDest
+  = ContMidiCC { device :: String, channel :: Int, cc :: Int }
+  | ContCV     { bus :: Int, transforms :: Array Transform }
+
+derive instance eqContDest :: Eq ContDest
+
+-- | Try to parse a binding spec as a continuous-voice declaration.
+-- | Recognised shapes:
+-- |
+-- |   `midi-cc-cont <device> <channel> <cc>`
+-- |     Each scheduler tick the voice's pattern is sampled and the
+-- |     resulting 0..1 value is scaled to a 0..127 MIDI CC.
+-- |
+-- |   `cv-cont <bus>`
+-- |     Each tick samples the pattern and emits the raw value as a
+-- |     CV update on the given bus (cv-router OSC). No scaling — the
+-- |     user controls the range via `range` in the expression.
+-- |
+-- | Returns `Nothing` for any other shape, letting the caller fall
+-- | through to the discrete binding parser.
+parseContBinding :: String -> Maybe ContDest
+parseContBinding s =
+  case Array.filter (_ /= "") (String.split (Pattern " ") (trim s)) of
+    ["midi-cc-cont", device, chStr, ccStr] -> do
+      ch <- Int.fromString chStr
+      cc <- Int.fromString ccStr
+      Just (ContMidiCC { device, channel: ch, cc })
+    ["cv-cont", busStr] -> do
+      bus <- Int.fromString busStr
+      Just (ContCV { bus, transforms: [] })
+    _ -> Nothing

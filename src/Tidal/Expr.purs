@@ -39,6 +39,7 @@ module Tidal.Expr
   , eval
   , evalMulti
   , parseEvalPattern
+  , parseEvalNumPattern
   ) where
 
 import Prelude
@@ -788,6 +789,19 @@ asPattern = case _ of
 -- | caller, which has continuousBindings).
 parseEvalPattern :: String -> Either String (Pattern String)
 parseEvalPattern src = parseExpr src >>= evalExpr >>= asPattern
+
+-- | Sister of `parseEvalPattern` for continuous voices: parse, eval,
+-- | coerce to `Pattern Number`. Used by the PR1.5-b WS handler when
+-- | the play target is a continuous-bound name and the expression
+-- | source represents an oscillator / numeric pattern.
+-- |
+-- | Returns `Left` for any of: parse failure, eval failure, or eval
+-- | success with a non-numeric result (e.g. `VPattern` String). The
+-- | scalar promotions (`VInt`, `VRat` → constant Analog Pattern) come
+-- | from `asNumPattern`.
+parseEvalNumPattern :: String -> Either String (Pattern Number)
+parseEvalNumPattern src =
+  parseExpr src >>= evalExpr >>= asNumPattern "parseEvalNumPattern"
 
 -- A list of functions is treated as left-to-right composition:
 -- `[rev, (slow 2)]` means "apply rev, then slow 2" — i.e. the

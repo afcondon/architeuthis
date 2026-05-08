@@ -25,10 +25,13 @@
 
 -export([start_link/0,
          dispatch_event/4,
+         dispatch_cont_event/3,
          set_binding/2,
          set_binding_from_spec/2,
+         set_continuous_binding/2,
          remove_binding/1,
          lookup_binding/1,
+         lookup_continuous_binding/1,
          register_midi_device/3,
          get_info/0,
          stop/0]).
@@ -51,10 +54,24 @@ dispatch_event(BindingName, Token, WallTimeUs, Params) ->
     gen_server:cast(?MODULE,
                     {event, BindingName, Token, WallTimeUs, Params}).
 
+%% Continuous-voice event cast. Value is a 0..1 (or wider, with
+%% transforms) Number; the dispatcher consults `continuousBindings` to
+%% pick the destination (MIDI CC or CV bus) and emits one update.
+dispatch_cont_event(BindingName, Value, WallTimeUs) ->
+    gen_server:cast(?MODULE,
+                    {cont_event, BindingName, Value, WallTimeUs}).
+
 %% Cache a binding for a voice name. Called by the WS handler when a
 %% `bind` verb is processed (PR1.4d).
 set_binding(Name, Binding) ->
     gen_server:call(?MODULE, {set_binding, Name, Binding}).
+
+%% Cache a continuous-voice destination for a voice name. The WS
+%% handler can use this directly when it has an already-parsed
+%% ContDest term; in the typical bind flow `set_binding_from_spec`
+%% already covers this since it tries parseContBinding first.
+set_continuous_binding(Name, Dest) ->
+    gen_server:call(?MODULE, {set_continuous_binding, Name, Dest}).
 
 %% Parse a `bind <name> <action-spec>` body and install the resulting
 %% Binding. Called by the WS handler at PR1.4d-i so the dispatcher
@@ -75,6 +92,14 @@ remove_binding(Name) ->
 %% encoding — the caller pattern-matches on the tuple).
 lookup_binding(Name) ->
     gen_server:call(?MODULE, {lookup_binding, Name}).
+
+%% Look up a continuous binding by name. Used by the PR1.5-b WS
+%% handler — falls back to this when `lookup_binding` returns
+%% `{nothing}` so the play-by-name-expr verb can route a continuous
+%% voice through `tidal_voice_sup:set_voice_cont_pat`.
+%% Returns `{just, ContDest}` or `{nothing}`.
+lookup_continuous_binding(Name) ->
+    gen_server:call(?MODULE, {lookup_continuous_binding, Name}).
 
 %% Register a MIDI device alias. Mirrors the existing
 %% `midi-device <alias> <real-name> [lat <ms>]` verb.
@@ -126,15 +151,18 @@ init([]) ->
 handle_call({set_binding, Name, Binding}, _From, PsState) ->
     NewState = 'tidal_dispatcher@ps':setBinding(Name, Binding, PsState),
     {reply, ok, NewState};
+handle_call({set_continuous_binding, Name, Dest}, _From, PsState) ->
+    NewState = 'tidal_dispatcher@ps':setContinuousBinding(Name, Dest, PsState),
+    {reply, ok, NewState};
 handle_call({set_binding_from_spec, Name, ActionSpec}, _From, PsState) ->
     case 'tidal_dispatcher@ps':setBindingFromSpec(Name, ActionSpec, PsState) of
         {right, NewState} ->
             {reply, ok, NewState};
         {left, Err} ->
-            %% Parse error — likely a continuous-binding spec
-            %% (`midi-cc-cont` / `cv-cont`) that the dispatcher's
-            %% discrete-only parser rejects. MIDIScheduler still
-            %% handles those during the transition. Log at debug.
+            %% Genuine parse error — neither `parseContBinding` nor
+            %% `parseCompoundAction` matched. (As of PR1.5-a the
+            %% dispatcher handles both shapes natively, so reaching
+            %% Left here means the user's spec is malformed.)
             tidal_log:debug(
                 "dispatcher: setBindingFromSpec ~s ignored: ~s~n",
                 [Name, Err]),
@@ -145,6 +173,9 @@ handle_call({remove_binding, Name}, _From, PsState) ->
     {reply, ok, NewState};
 handle_call({lookup_binding, Name}, _From, PsState) ->
     {reply, 'tidal_dispatcher@ps':lookupBinding(Name, PsState), PsState};
+handle_call({lookup_continuous_binding, Name}, _From, PsState) ->
+    {reply, 'tidal_dispatcher@ps':lookupContinuousBinding(Name, PsState),
+     PsState};
 handle_call({register_midi_device, Alias, Name, Lat}, _From, PsState) ->
     Device = #{name => Name, latencyMs => float(Lat)},
     NewState = 'tidal_dispatcher@ps':registerMidiDevice(Alias, Device, PsState),
@@ -159,6 +190,12 @@ handle_cast({event, BindingName, Token, WallTimeUs, Params}, PsState) ->
                  params     => Params},
     %% dispatchEvent is Effect-returning — execute the thunk.
     NewState = ('tidal_dispatcher@ps':dispatchEvent(EventMap, PsState))(),
+    {noreply, NewState};
+handle_cast({cont_event, BindingName, Value, WallTimeUs}, PsState) ->
+    EventMap = #{name       => BindingName,
+                 value      => float(Value),
+                 wallTimeUs => float(WallTimeUs)},
+    NewState = ('tidal_dispatcher@ps':dispatchContEvent(EventMap, PsState))(),
     {noreply, NewState}.
 
 terminate(_Reason, _State) -> ok.

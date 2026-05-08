@@ -16,8 +16,10 @@
 
 -export([start_link/0,
          add_voice/2,
+         add_voice_cont/2,
          set_voice/4,
          set_voice_pat/3,
+         set_voice_cont_pat/3,
          remove_voice/1,
          find_voice/1,
          which_voices/0,
@@ -31,10 +33,20 @@
 start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
-%% Add a new voice. Returns {ok, Pid} on success.
+%% Add a new Discrete voice. Returns {ok, Pid} on success.
 %% Idempotent: re-adding an existing name returns the original Pid.
 add_voice(Name, Binding) ->
-    case supervisor:start_child(?MODULE, [Name, Binding]) of
+    case supervisor:start_child(?MODULE, [Name, {discrete, Binding}]) of
+        {error, {already_started, Pid}} -> {ok, Pid};
+        Other -> Other
+    end.
+
+%% Add a new Continuous voice. Returns {ok, Pid} on success.
+%% Idempotent: re-adding an existing name returns the original Pid.
+%% Dest is a `Tidal.Binding.ContDest` term — the supervisor passes it
+%% through to tidal_voice:start_link as `{continuous, Dest}`.
+add_voice_cont(Name, Dest) ->
+    case supervisor:start_child(?MODULE, [Name, {continuous, Dest}]) of
         {error, {already_started, Pid}} -> {ok, Pid};
         Other -> Other
     end.
@@ -88,6 +100,29 @@ set_voice_pat(Name, Binding, Pattern) ->
             end;
         {ok, _Pid} ->
             tidal_voice:set_pattern(Name, Pattern)
+    end.
+
+%% Continuous-voice analogue of set_voice_pat/3. Pattern is a
+%% `Pattern Number` (the result of Tidal.Expr.parseEvalNumPattern);
+%% Dest is a `Tidal.Binding.ContDest`. Upserts: creates a Continuous
+%% voice if absent, otherwise just replaces the pattern. Phase
+%% preserved, mute preserved.
+%%
+%% No param specs — continuous voices don't carry `#`-join params
+%% (they evaluate a single Pattern Number per tick). The destination
+%% is captured at create-time, mirroring how Discrete voices snapshot
+%% their Binding.
+set_voice_cont_pat(Name, Dest, Pattern) ->
+    case find_voice(Name) of
+        not_found ->
+            case add_voice_cont(Name, Dest) of
+                {ok, _Pid} ->
+                    tidal_voice:set_continuous_pattern(Name, Pattern);
+                Err ->
+                    Err
+            end;
+        {ok, _Pid} ->
+            tidal_voice:set_continuous_pattern(Name, Pattern)
     end.
 
 %% Remove a voice by name. Idempotent: missing voices return ok.
