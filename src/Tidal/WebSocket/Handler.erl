@@ -541,7 +541,13 @@ handle_pattern_message(Text, SchedulerPid, State) ->
             Reply = {text, <<"OK: unbind ", Name/binary>>},
             {reply, Reply, State};
         {hush} ->
+            %% Dual-write: MIDIScheduler drops its tracks (legacy
+            %% GateTrack / continuous voices etc.); voice_sup clears
+            %% every new-tree voice's pattern. Both branches are
+            %% required during the migration — neither owns the full
+            %% set of running voices alone.
             SchedulerPid ! {hush},
+            tidal_voice_sup:hush_all(),
             Reply = {text, <<"OK: hush">>},
             {reply, Reply, State};
         {log_level, N} ->
@@ -613,7 +619,12 @@ handle_pattern_message(Text, SchedulerPid, State) ->
             Json = (tidal_stateBus@foreign:read())(),
             {reply, {text, Json}, State};
         {set_bpm, N} ->
+            %% Dual-write: MIDIScheduler updates its config + tells
+            %% link-spike (the canonical tempo broadcaster); the
+            %% clock updates its local fallback so the new tree
+            %% behaves correctly when Link is unavailable.
             SchedulerPid ! {setBpm, N},
+            tidal_clock:set_bpm(N),
             NumBin = list_to_binary(io_lib:format("~p", [N])),
             {reply, {text, <<"OK: bpm = ", NumBin/binary>>}, State};
         {set_default_midi_device, Name} ->
@@ -1213,7 +1224,9 @@ dispatch_setup_action(Action, SchedulerPid) ->
             tidal_dispatcher:remove_binding(Name),
             ok;
         {hush} ->
-            SchedulerPid ! {hush}, ok;
+            SchedulerPid ! {hush},
+            tidal_voice_sup:hush_all(),
+            ok;
         {load, Name} ->
             %% Recursive load — common pattern: a "scene" file that
             %% loads device packs first, then defines patterns.

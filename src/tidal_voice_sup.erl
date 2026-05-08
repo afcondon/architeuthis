@@ -20,7 +20,8 @@
          set_voice_pat/3,
          remove_voice/1,
          find_voice/1,
-         which_voices/0]).
+         which_voices/0,
+         hush_all/0]).
 -export([init/1]).
 
 %% =========================================================================
@@ -110,6 +111,20 @@ find_voice(Name) ->
 which_voices() ->
     [Pid || {_, Pid, _, _} <- supervisor:which_children(?MODULE),
             is_pid(Pid)].
+
+%% Tidal-compat hush: clear every voice's pattern. Voices stay alive
+%% (pids preserved, binding preserved, phase keeps advancing) but
+%% computeUntil produces no events so nothing reaches the dispatcher.
+%% A subsequent re-fire installs a fresh pattern and the voice picks
+%% up at the current cycle position — same as MIDIScheduler.Hush
+%% which dropped tracks (re-fires recompute from current elapsedMs).
+%%
+%% Calls clear_pattern directly on each pid (via gen_server:call with
+%% the pid rather than the registered name) — saves the round-trip
+%% through whereis when we already have the pid list.
+hush_all() ->
+    [gen_server:call(Pid, clear_pattern) || Pid <- which_voices()],
+    ok.
 
 %% =========================================================================
 %% supervisor callback
