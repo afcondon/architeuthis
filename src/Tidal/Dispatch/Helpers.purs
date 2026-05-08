@@ -89,9 +89,6 @@ noteNameMidi = Map.fromFoldable (entries <> sharpAliases entries)
 -- |   LiteralValue   → parse as Number
 -- |   NoteNameVoct   → parse as note name → 1V/oct on ±10V→±1.0 scale
 -- |   SampleNameMap  → lookup
--- |   LiteralOrNote  → try Number first, fall back to V/oct lookup;
--- |                    used by the legacy `cv <bus> <pat>` verb's
--- |                    synthetic bindings (per-token permissive).
 interpretCV :: Binding.CVMapping -> String -> Maybe Number
 interpretCV = case _ of
   Binding.LiteralValue -> Number.fromString
@@ -100,12 +97,6 @@ interpretCV = case _ of
       Just midi -> Just (voctValue midi)
       Nothing -> Nothing
   Binding.SampleNameMap m -> \tok -> Map.lookup tok m
-  Binding.LiteralOrNote -> \tok ->
-    case Number.fromString tok of
-      Just n -> Just n
-      Nothing -> case Map.lookup tok noteNameMidi of
-        Just midi -> Just (voctValue midi)
-        Nothing -> Nothing
 
 -- | Clamp a Number to MIDI's 7-bit range [0..127] and floor it.
 clamp7bit :: Number -> Int

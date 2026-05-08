@@ -14,14 +14,6 @@ binaryToString(Other) ->
     %% Already a string or other type
     Other.
 
-%% Extract leading digits from binary and convert to integer
-extract_number(<<C, Rest/binary>>, Acc) when C >= $0, C =< $9 ->
-    extract_number(Rest, <<Acc/binary, C>>);
-extract_number(_, <<>>) ->
-    10;  % No digits found, default
-extract_number(_, Acc) ->
-    binary_to_integer(Acc).
-
 %% Cowboy callbacks - delegate to PureScript
 init(Req, Config) ->
     SchedulerPid = maps:get(schedulerPid, Config),
@@ -49,16 +41,13 @@ websocket_handle(_Frame, State) ->
 
 %% Try to parse one of the built-in verb prefixes.
 %% Returns one of:
-%%   {gate, Ch, Pattern}                       — fire gates on cv-router
-%%   {cv, Bus, Pattern}                        — emit /cv updates
-%%   {esx, Slot, Pattern}                      — emit /esx updates (Silent Way → ESX-8CV)
 %%   {fh2_envelope, Voice, Output, Channel}    — register an FH-2 envelope voice
 %%   {fh2_trigger, Voice, Pattern}             — pattern fires MIDI notes to FH-2 voice
 %%   {fh2_shape, Voice, A, D, S, R}            — live ADSR via CCs 70/71/72/73
 %%   {bind, Name, ActionSpec}                  — register a named binding
 %%   {unbind, Name}                            — remove a named binding
 %%   {hush}                                    — silence everything (Tidal-compat)
-%%   none                                      — try named-binding dispatch via play_or_legacy
+%%   none                                      — try named-binding dispatch
 try_parse_prefixed(<<"hush">>) -> {hush};
 try_parse_prefixed(<<"hush ", _/binary>>) -> {hush};
 try_parse_prefixed(<<"silence">>) -> {hush};
@@ -87,12 +76,6 @@ try_parse_prefixed(<<"midi-device ", Rest/binary>>) ->
             {midi_device, Alias, DeviceName, Latency};
         _ -> none
     end;
-try_parse_prefixed(<<"gate ", Rest/binary>>) ->
-    try_parse_num_pattern(gate, Rest);
-try_parse_prefixed(<<"cv ", Rest/binary>>) ->
-    try_parse_num_pattern(cv, Rest);
-try_parse_prefixed(<<"esx ", Rest/binary>>) ->
-    try_parse_num_pattern(esx, Rest);
 try_parse_prefixed(<<"fh2-envelope ", Rest/binary>>) ->
     %% fh2-envelope <voice> <output> <channel>
     case binary:split(Rest, <<" ">>, [global]) of
@@ -295,59 +278,6 @@ strip_quotes(Bin) ->
         false -> Bin
     end.
 
-%% Split a pattern body on " | " into {Pattern, Transforms}.
-%% Each transform segment is parsed via parse_transform_spec/1 and
-%% becomes one of:  {specOffset, N} | specInvert | {specScale, Lo, Hi}
-%% These match the PureScript `TransformSpec` ADT shape that
-%% MIDIScheduler converts to typed `Transform` values.
-%%
-%% Examples:
-%%   `0.3 1.0 0.6 0.0`                      → {<<"0.3 1.0 0.6 0.0">>, []}
-%%   `0.3 1.0 0.6 0.0 | offset -0.5`        → {<<"0.3 1.0 ...">>, [{specOffset, -0.5}]}
-%%   `0.3 1.0 | scale -1 1 | offset 0.1`    → {<<"0.3 1.0">>, [{specScale, -1, 1}, {specOffset, 0.1}]}
-split_transforms(Body) ->
-    Parts = binary:split(Body, <<" | ">>, [global]),
-    case Parts of
-        [Pattern] -> {strip_quotes(Pattern), []};
-        [Pattern | TformBins] ->
-            Specs = lists:foldl(
-                fun(Bin, Acc) ->
-                    case parse_transform_spec(Bin) of
-                        {ok, Spec} -> Acc ++ [Spec];
-                        error -> Acc  %% silently drop malformed; log via reply if useful
-                    end
-                end,
-                [],
-                TformBins),
-            {strip_quotes(Pattern), Specs}
-    end.
-
-%% Parse one transform-spec segment. Recognized:
-%%   "offset <n>"     → {specOffset, N}
-%%   "invert"         → specInvert
-%%   "scale <lo> <hi>"→ {specScale, Lo, Hi}
-%% Note on tuple shapes: purs-backend-erl wraps EVERY ADT constructor
-%% as a tuple, including nullary ones. So `SpecInvert` (no args) is
-%% `{specInvert}` (1-tuple), not bare atom `specInvert`. Bare atoms
-%% trigger a "Failed pattern match" crash in the generated decoder.
-parse_transform_spec(Bin) ->
-    Trimmed = trim_binary(Bin),
-    case binary:split(Trimmed, <<" ">>, [global]) of
-        [<<"invert">>] ->
-            {ok, {specInvert}};
-        [<<"offset">>, NBin] ->
-            case parse_number(NBin) of
-                {ok, N} -> {ok, {specOffset, N}};
-                error -> error
-            end;
-        [<<"scale">>, LoBin, HiBin] ->
-            case {parse_number(LoBin), parse_number(HiBin)} of
-                {{ok, Lo}, {ok, Hi}} -> {ok, {specScale, Lo, Hi}};
-                _ -> error
-            end;
-        _ -> error
-    end.
-
 %% Trim leading/trailing whitespace from a binary.
 trim_binary(Bin) ->
     list_to_binary(string:trim(binary_to_list(Bin))).
@@ -389,37 +319,6 @@ split_lat_suffix(Bin) ->
 %% fall through to the legacy single-pattern / multi-track JSON parser.
 handle_pattern_message(Text, SchedulerPid, State) ->
     case try_parse_prefixed(Text) of
-        {gate, Ch, Pattern} ->
-            case Pattern of
-                <<":", ExprSrc/binary>> ->
-                    %% Host-language expression form: `gate <ch> :<expr>`.
-                    handle_gate_expr(Ch, ExprSrc, SchedulerPid, State);
-                _ ->
-                    install_legacy_voice_mini(
-                      legacy_gate_name(Ch),
-                      legacy_gate_binding(Ch),
-                      Pattern,
-                      <<"gate ", (integer_to_binary(Ch))/binary, " ", Pattern/binary>>,
-                      State)
-            end;
-        {cv, Bus, RawPattern} ->
-            {Pattern, Specs} = split_transforms(RawPattern),
-            Transforms = specs_to_transforms(Specs),
-            install_legacy_voice_mini(
-              legacy_cv_name(Bus),
-              legacy_cv_binding(Bus, Transforms),
-              Pattern,
-              <<"cv ", (integer_to_binary(Bus))/binary, " ", RawPattern/binary>>,
-              State);
-        {esx, Slot, RawPattern} ->
-            {Pattern, Specs} = split_transforms(RawPattern),
-            Transforms = specs_to_transforms(Specs),
-            install_legacy_voice_mini(
-              legacy_esx_name(Slot),
-              legacy_esx_binding(Slot, Transforms),
-              Pattern,
-              <<"esx ", (integer_to_binary(Slot))/binary, " ", RawPattern/binary>>,
-              State);
         {bind, Name, ActionSpec} ->
             %% Dual-write: MIDIScheduler keeps its registry alive so the
             %% BoundTrack walk's compositional `#` joins still resolve;
@@ -666,101 +565,6 @@ safe_parse(Text) ->
         Class:Reason ->
             {parse_err, list_to_binary(io_lib:format("~p:~p", [Class, Reason]))}
     end.
-
-%% Run a host-language expression against `Tidal.Expr.eval` and install
-%% the resulting Pattern closure on a synthetic legacy gate voice.
-handle_gate_expr(Ch, ExprSrc, _SchedulerPid, State) ->
-    Result = try ('tidal_expr@ps':eval())(ExprSrc)
-             catch Class:Reason ->
-                 {crash, list_to_binary(io_lib:format("~p:~p", [Class, Reason]))}
-             end,
-    case Result of
-        {right, Pat} ->
-            VoiceName = legacy_gate_name(Ch),
-            Binding = legacy_gate_binding(Ch),
-            tidal_dispatcher:set_binding(VoiceName, Binding),
-            case tidal_voice_sup:set_voice_pat(VoiceName, Binding, Pat) of
-                ok ->
-                    {reply,
-                     {text, <<"OK: gate ",
-                              (integer_to_binary(Ch))/binary,
-                              " :", ExprSrc/binary>>},
-                     State};
-                {error, Err} ->
-                    ErrBin = list_to_binary(io_lib:format("~p", [Err])),
-                    {reply, {text, <<"ERROR: gate :expr: ", ErrBin/binary>>},
-                     State}
-            end;
-        {left, Err} ->
-            ErrBin = to_binary(Err),
-            {reply, {text, <<"ERROR: expr: ", ErrBin/binary>>}, State};
-        {crash, CrashBin} ->
-            {reply, {text, <<"ERROR: expr crash: ", CrashBin/binary>>}, State}
-    end.
-
-%% Helper: install a "legacy" voice (gate / cv / esx N) on the new
-%% voice tree. Builds the synthetic binding under a reserved name
-%% (__legacy-{gate,cv,esx}-N) and routes the parsed mini-notation
-%% pattern through tidal_voice_sup. Returns the full {reply, ...}
-%% tuple so callers just delegate.
-install_legacy_voice_mini(VoiceName, Binding, MiniPat, ReplyPrefix, State) ->
-    case ('tidal_expr@ps':parseMiniPattern())(MiniPat) of
-        {right, Pat} ->
-            tidal_dispatcher:set_binding(VoiceName, Binding),
-            case tidal_voice_sup:set_voice_pat(VoiceName, Binding, Pat) of
-                ok ->
-                    {reply,
-                     {text, <<"OK: ", ReplyPrefix/binary>>},
-                     State};
-                {error, Err} ->
-                    ErrBin = list_to_binary(io_lib:format("~p", [Err])),
-                    {reply,
-                     {text, <<"ERROR: ", ReplyPrefix/binary,
-                              ": ", ErrBin/binary>>},
-                     State}
-            end;
-        {left, Err} ->
-            ErrBin = to_binary(Err),
-            {reply,
-             {text, <<"ERROR: ", ReplyPrefix/binary, " parse: ", ErrBin/binary>>},
-             State}
-    end.
-
-%% Reserved voice names + synthetic bindings for the legacy track verbs.
-legacy_gate_name(Ch) ->
-    <<"__legacy-gate-", (integer_to_binary(Ch))/binary>>.
-
-legacy_cv_name(Bus) ->
-    <<"__legacy-cv-", (integer_to_binary(Bus))/binary>>.
-
-legacy_esx_name(Slot) ->
-    <<"__legacy-esx-", (integer_to_binary(Slot))/binary>>.
-
-legacy_gate_binding(Ch) ->
-    array:from_list(
-      [{gate, #{channel => Ch, latencyMs => 0}}]).
-
-%% LiteralOrNote = number-then-voct fallback per token (the legacy
-%% `cv <bus> <pat>` verb's interpretation). Transforms is an Erlang
-%% array of Transform tuples (see specs_to_transforms/1).
-legacy_cv_binding(Bus, Transforms) ->
-    array:from_list(
-      [{cV, Bus, {literalOrNote}, Transforms}]).
-
-legacy_esx_binding(Slot, Transforms) ->
-    array:from_list(
-      [{eSX, #{slot => Slot, latencyMs => 0,
-               transforms => Transforms}}]).
-
-%% Convert WS-side TransformSpec tuples to runtime Transform tuples,
-%% wrapped as a PureScript-shaped Erlang array (the dispatcher's
-%% applyTransforms walks it as Array Transform).
-specs_to_transforms(Specs) ->
-    array:from_list([spec_to_transform(S) || S <- Specs]).
-
-spec_to_transform({specOffset, N}) -> {offset, float(N)};
-spec_to_transform({specInvert})    -> {invert};
-spec_to_transform({specScale, Lo, Hi}) -> {scale, float(Lo), float(Hi)}.
 
 to_binary(B) when is_binary(B) -> B;
 to_binary(L) when is_list(L) -> list_to_binary(L);

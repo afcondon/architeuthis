@@ -67,7 +67,7 @@ import Tidal.Log as Log
 import Tidal.MIDIBridge (BridgeClient, scheduleCCAt, scheduleNoteAt)
 import Tidal.Dispatch.Helpers (clamp7bit, interpretCV, noteNameMidi, param7bit)
 import Tidal.OSC (OSCClient, sendCVAfter, sendES5GateTrigAfter, sendESXAfter, sendGateTrigAfter)
-import Tidal.Transform (Transform, applyTransforms)
+import Tidal.Transform (applyTransforms)
 
 -- ---------------------------------------------------------------------------
 -- Types
@@ -237,16 +237,11 @@ dispatchPrimAction
   -> PrimAction
   -> Effect Unit
 dispatchPrimAction (State s) name token wallUs delayMs _delayInt params = case _ of
-  CV bus mapping transforms ->
+  CV bus mapping ->
     case s.oscClient, interpretCV mapping token of
-      Just osc, Just raw -> do
+      Just osc, Just value -> do
         -- CV pre-sets fire `cvLeadMs` earlier than the gate, so V/oct
         -- has time to settle before the gate trigger arrives.
-        -- Transform pipeline (offset / invert / scale) applies after
-        -- token interpretation; empty for `bind`-spec bindings,
-        -- non-empty when synthesised from the legacy `cv <bus>` verb
-        -- with `| <transform>` segments.
-        let value = applyTransforms transforms raw
         let cvDelay = max 0.0 (delayMs - s.config.cvLeadMs)
         Log.debug $ "〰 [" <> name <> "] cv bus " <> show bus <> " = " <> show value
         sendCVAfter osc bus value cvDelay
@@ -254,8 +249,7 @@ dispatchPrimAction (State s) name token wallUs delayMs _delayInt params = case _
 
   ESX e ->
     case s.oscClient, Number.fromString token of
-      Just osc, Just raw -> do
-        let value = applyTransforms e.transforms raw
+      Just osc, Just value -> do
         let adjusted = max 0.0 (delayMs - Int.toNumber e.latencyMs)
         Log.debug $ "⌇ [" <> name <> "] esx slot " <> show e.slot <> " = " <> show value
         sendESXAfter osc e.slot value adjusted

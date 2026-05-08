@@ -4,10 +4,8 @@
 module Tidal.Scheduler
   ( SchedulerConfig
   , ScheduledEvent
-  , TrackInfo
   , ParamSpec
   , Msg(..)
-  , TransformSpec(..)
   , startScheduler
   , sendAfter
   , currentTimeMs
@@ -57,9 +55,6 @@ type ScheduledEvent =
   , sample :: String      -- What sample to play
   }
 
--- | A track with its pattern string and MIDI channel
-type TrackInfo = { pattern :: String, channel :: Int }
-
 -- | One named-parameter join from a `#` segment.  Carried alongside the
 -- | structure pattern in PlayByName so the scheduler can build per-event
 -- | parameter values when a binding fires.
@@ -71,30 +66,11 @@ type ParamSpec = { name :: String, pat :: String }
 -- | Messages to the scheduler process
 data Msg
   = Tick              -- Time to schedule more events
-  | UpdatePattern String  -- Update the pattern (legacy, uses default channel)
-  | UpdatePatternWithChannel String Int  -- Update pattern with specific MIDI channel
-  | UpdateTracks (Array TrackInfo)  -- Update multiple tracks, each with own channel
-  | UpdateGateTrack Int String   -- Replace gate track at channel idx with pattern
-  -- Pre-parsed gate track. Carries a `Pattern String` closure built by
-  -- the host-language layer (`Tidal.Expr`), bypassing the mini-notation
-  -- parse step. Used by the `gate <ch> :<expr>` cell form.
-  | UpdateGateTrackP Int (Pattern String)
-  | UpdateCVTrack Int String (Array TransformSpec)
-                                 -- Replace CV track at bus idx with pattern + transforms
-  | UpdateESXTrack Int String (Array TransformSpec)
-                                 -- Replace ESX-8CV track at slot idx (0-7) with pattern + transforms
   -- Named bindings (Tidal.Binding.PrimAction). Action specs come in as
   -- pre-formatted strings the scheduler parses, so binding errors show up
   -- in the BEAM logs rather than requiring an Erlang-side parser.
   | AddBinding String String      -- name, action-spec (e.g. "gate 6 + cv 15 voct")
   | RemoveBinding String          -- name
-  -- Named-binding dispatch with legacy fallback. If name is registered,
-  -- play the patternStr through the binding; if not, treat fullText as
-  -- a legacy whole-message pattern (so `bd sn hh cp` still works for
-  -- users without bindings).
-  | PlayByName String String String (Array ParamSpec)
-      -- name, patternStr, fullText, joined-parameter patterns from `#`
-      -- segments (empty when no `#` used)
   -- Like PlayByName but with a pre-evaluated structure pattern (from
   -- `Tidal.Expr.eval`).  Used by the `<bound-name> :<expr>` form so
   -- the host language's Branched combinators flow through the
@@ -122,9 +98,9 @@ data Msg
   -- are logged and skipped — the rest still ship.
   | PlayMultiByName (Array (Tuple String (Pattern String))) String
       -- per-voice patterns, fullText (for logging only)
-  -- Tidal-compat: silence everything, kill all running tracks. Bindings
-  -- registry is preserved (so subsequent `kick bd*4` works without
-  -- rebinding). Same intent as upstream Tidal's `hush`.
+  -- Tidal-compat: silence everything. Bindings registry is preserved
+  -- (so subsequent `kick bd*4` works without rebinding). Same intent
+  -- as upstream Tidal's `hush`.
   | Hush
   -- MIDI device alias registry: `midi-device <alias> <real-device-name> [lat <ms>]`.
   -- Real device name is the rest-of-line so it can contain spaces
@@ -137,10 +113,6 @@ data Msg
   -- resolve it. The accompanying SysEx push to actually configure the FH-2
   -- happens in Handler.erl (shell-out to fh2-config), not here.
   | Fh2Envelope Int Int Int            -- voice, base-output, MIDI channel
-  -- Per-track replacement for FH-2 trigger patterns. Same shape as
-  -- UpdateGateTrack but emits MIDI notes (which the FH-2 reads as triggers
-  -- for its onboard envelopes) on the channel registered by Fh2Envelope.
-  | UpdateFh2TriggerTrack Int String   -- voice, pattern
   -- One-shot ADSR push for an FH-2 voice. Sends 4 MIDI CCs (70/71/72/73 by
   -- convention, per the configurator's ADSR bindings) to the FH-2 device
   -- on the voice's MIDI channel. Not pattern-driven — fires immediately on
@@ -156,20 +128,6 @@ data Msg
   | SetGateEnabled Boolean             -- toggles OSC gate output to cv-router
   | SetLookAheadMs Number              -- scheduler look-ahead in ms
   | Stop              -- Stop the scheduler
-
--- | Wire-level transform shape: matches the Erlang tuples sent by the
--- | WS handler. MIDIScheduler converts these into typed
--- | `Tidal.Transform.Transform` values.
--- |
--- |   {offset, N}     -> SpecOffset N      → Offset N
--- |   invert          -> SpecInvert        → Invert
--- |   {scale, Lo, Hi} -> SpecScale Lo Hi   → Scale Lo Hi
-data TransformSpec
-  = SpecOffset Number
-  | SpecInvert
-  | SpecScale Number Number
-
-derive instance eqTransformSpec :: Eq TransformSpec
 
 -- | FFI for erlang:send_after
 foreign import sendAfterImpl :: Int -> Raw.Pid -> Msg -> Effect Unit
@@ -258,66 +216,11 @@ schedulerLoop stateRef = do
       liftEffect $ sendAfter state.config.scheduleInterval pid Tick
       schedulerLoop stateRef
 
-    UpdatePattern patStr -> do
-      state <- liftEffect $ Ref.read stateRef
-      let newPat = case parse patStr of
-            Right ast -> tpatToPattern ast
-            Left _ -> state.pattern
-      liftEffect $ Ref.write (state { pattern = newPat }) stateRef
-      liftEffect $ log $ "Pattern updated: " <> patStr
-      schedulerLoop stateRef
-
-    UpdatePatternWithChannel patStr _ -> do
-      -- Base scheduler ignores channel (MIDI scheduler handles it)
-      state <- liftEffect $ Ref.read stateRef
-      let newPat = case parse patStr of
-            Right ast -> tpatToPattern ast
-            Left _ -> state.pattern
-      liftEffect $ Ref.write (state { pattern = newPat }) stateRef
-      liftEffect $ log $ "Pattern updated: " <> patStr
-      schedulerLoop stateRef
-
-    UpdateTracks tracks -> do
-      -- Base scheduler combines all track patterns (MIDI scheduler handles per-track channels)
-      state <- liftEffect $ Ref.read stateRef
-      let patterns = Array.mapMaybe (\t -> case parse t.pattern of
-            Right ast -> Just (tpatToPattern ast)
-            Left _ -> Nothing) tracks
-      let combined = stack patterns
-      liftEffect $ Ref.write (state { pattern = combined }) stateRef
-      liftEffect $ log $ "Tracks updated: " <> show (Array.length tracks) <> " tracks"
-      schedulerLoop stateRef
-
-    UpdateGateTrack _ patStr -> do
-      -- Base scheduler treats GateTrack the same as a single pattern update.
-      state <- liftEffect $ Ref.read stateRef
-      let newPat = case parse patStr of
-            Right ast -> tpatToPattern ast
-            Left _ -> state.pattern
-      liftEffect $ Ref.write (state { pattern = newPat }) stateRef
-      schedulerLoop stateRef
-
-    UpdateGateTrackP _ pat -> do
-      -- Base scheduler: same as UpdateGateTrack but the pattern is
-      -- already built by the host-language evaluator.
-      state <- liftEffect $ Ref.read stateRef
-      liftEffect $ Ref.write (state { pattern = pat }) stateRef
-      schedulerLoop stateRef
-
-    UpdateCVTrack _ _ _ -> do
-      -- Base scheduler has no concept of CV; ignore.
-      schedulerLoop stateRef
-
-    UpdateESXTrack _ _ _ -> do
-      -- Base scheduler has no concept of ESX-8CV either; ignore.
-      schedulerLoop stateRef
-
     -- Named-binding messages have no meaning in the base scheduler
     -- (it has no binding registry, no PrimAction dispatcher, no slot env).
     -- Ignore so the Cowboy handler can broadcast to either scheduler kind.
     AddBinding _ _ -> schedulerLoop stateRef
     RemoveBinding _ -> schedulerLoop stateRef
-    PlayByName _ _ _ _ -> schedulerLoop stateRef
     PlayByNameP _ _ _ -> schedulerLoop stateRef
     PlayByNameExpr _ _ _ -> schedulerLoop stateRef
     PlayMultiByName _ _ -> schedulerLoop stateRef
@@ -332,7 +235,6 @@ schedulerLoop stateRef = do
     -- Base scheduler has no FH-2 awareness either; the MIDI scheduler
     -- carries that state.
     Fh2Envelope _ _ _ -> schedulerLoop stateRef
-    UpdateFh2TriggerTrack _ _ -> schedulerLoop stateRef
     Fh2Shape _ _ _ _ _ -> schedulerLoop stateRef
 
     -- Live config writes are handled in MIDIScheduler; the base

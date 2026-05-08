@@ -390,40 +390,6 @@ midiSchedulerLoop stateRef = do
       liftEffect $ sendAfter state.config.scheduleInterval pid Tick
       midiSchedulerLoop stateRef
 
-    UpdatePattern _patStr -> do
-      -- Dead handler — legacy single-pattern message format gone in
-      -- PR1.7a. Msg variant kept for type completeness; no Erlang
-      -- call site builds it.
-      midiSchedulerLoop stateRef
-
-    UpdatePatternWithChannel _patStr _newChannel -> do
-      -- Dead handler — legacy single-pattern format gone in PR1.7a.
-      midiSchedulerLoop stateRef
-
-    UpdateGateTrack _ch _patStr -> do
-      -- Dead handler — `gate <ch>` verb installs a bound voice on
-      -- the new tree as of PR1.7a.
-      midiSchedulerLoop stateRef
-
-    UpdateGateTrackP _ch _pat -> do
-      -- Dead handler — `gate <ch> :<expr>` installs a bound voice
-      -- on the new tree as of PR1.7a.
-      midiSchedulerLoop stateRef
-
-    UpdateCVTrack _bus _patStr _specs -> do
-      -- Dead handler — `cv <bus> <pat>` verb installs a bound voice
-      -- on the new tree as of PR1.7a.
-      midiSchedulerLoop stateRef
-
-    UpdateESXTrack _slot _patStr _specs -> do
-      -- Dead handler — `esx <slot> <pat>` verb installs a bound
-      -- voice on the new tree as of PR1.7a.
-      midiSchedulerLoop stateRef
-
-    UpdateTracks _trackInfos -> do
-      -- Dead handler — JSON multi-track format gone in PR1.7a.
-      midiSchedulerLoop stateRef
-
     AddBinding name actionSpec -> do
       state <- liftEffect $ Ref.read stateRef
       -- Try the continuous-voice declaration first (`midi-cc-cont` /
@@ -466,11 +432,6 @@ midiSchedulerLoop stateRef = do
                                     , continuousTracks = newCTs
                                     }) stateRef
       liftEffect $ log $ "unbind " <> name
-      midiSchedulerLoop stateRef
-
-    PlayByName _name _patStr _fullText _paramSpecs -> do
-      -- Dead handler — unbound-name fallback gone in PR1.7a (the WS
-      -- handler now returns an error for unbound names).
       midiSchedulerLoop stateRef
 
     PlayByNameP _name _pat _fullText -> do
@@ -542,13 +503,6 @@ midiSchedulerLoop stateRef = do
         (state { fh2VoiceChannels = newVoices, midiDevices = newDevices })
         stateRef
       liftEffect $ log $ "fh2-envelope: voice " <> show voice <> " → ch " <> show channel
-      midiSchedulerLoop stateRef
-
-    UpdateFh2TriggerTrack _voice _patStr -> do
-      -- Dead handler — fh2-trigger now installs voices on the new
-      -- tree directly via the WS handler (PR1.6). Kept on the Msg
-      -- sum for type completeness; removed when the Msg type
-      -- shrinks (post-PR1.7 cleanup).
       midiSchedulerLoop stateRef
 
     Fh2Shape voice a d s r -> do
