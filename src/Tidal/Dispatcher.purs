@@ -48,6 +48,8 @@ module Tidal.Dispatcher
   , dispatchFh2Shape
   , Snapshot
   , snapshot
+  , PublisherSnapshot
+  , publisherSnapshot
   ) where
 
 import Prelude
@@ -494,6 +496,36 @@ snapshot (State s) =
   , oscEnabled: case s.oscClient of
       Just _ -> true
       Nothing -> false
+  }
+
+-- | Publisher's view: everything tidal_state_pub needs to render the
+-- | full JSON snapshot Calypso reads via the `state` verb.
+-- |
+-- | Contains opaque-to-Erlang Map values (bindings / continuousBindings /
+-- | midiDevices / fh2VoiceChannels) — the Erlang publisher shuttles
+-- | them through to `Tidal.StatePublisher.serializeSnapshot` which is
+-- | the only consumer that reads them.
+type PublisherSnapshot =
+  { bindings :: Map String Binding
+  , continuousBindings :: Map String ContDest
+  , midiDevices :: Map String MidiDevice
+  , fh2VoiceChannels :: Map Int Int
+  , gateEnabled :: Boolean
+  , gateDurationMs :: Number
+  , cvLeadMs :: Number
+  }
+
+publisherSnapshot :: State -> PublisherSnapshot
+publisherSnapshot (State s) =
+  { bindings: s.bindings
+  , continuousBindings: s.continuousBindings
+  , midiDevices: s.midiDevices
+  , fh2VoiceChannels: s.fh2VoiceChannels
+  , gateEnabled: case s.oscClient of
+      Just _ -> true
+      Nothing -> false
+  , gateDurationMs: s.config.gateDuration
+  , cvLeadMs: s.config.cvLeadMs
   }
 
 -- ---------------------------------------------------------------------------

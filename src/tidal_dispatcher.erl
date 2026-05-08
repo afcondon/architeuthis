@@ -36,6 +36,7 @@
          set_fh2_voice_channel/2,
          dispatch_fh2_shape/5,
          get_info/0,
+         get_publisher_snapshot/0,
          stop/0]).
 
 -export([init/1, handle_call/3, handle_cast/2, terminate/2]).
@@ -128,6 +129,12 @@ dispatch_fh2_shape(Voice, A, D, S, R) ->
 get_info() ->
     gen_server:call(?MODULE, get_info).
 
+%% Snapshot for the state publisher (tidal_state_pub). Returns the
+%% PureScript record opaque to Erlang — passed straight through to
+%% Tidal.StatePublisher.serializeSnapshot.
+get_publisher_snapshot() ->
+    gen_server:call(?MODULE, get_publisher_snapshot).
+
 stop() ->
     gen_server:stop(?MODULE).
 
@@ -203,7 +210,9 @@ handle_call({set_fh2_voice_channel, Voice, Channel}, _From, PsState) ->
                  Voice, Channel, PsState),
     {reply, ok, NewState};
 handle_call(get_info, _From, PsState) ->
-    {reply, 'tidal_dispatcher@ps':snapshot(PsState), PsState}.
+    {reply, 'tidal_dispatcher@ps':snapshot(PsState), PsState};
+handle_call(get_publisher_snapshot, _From, PsState) ->
+    {reply, 'tidal_dispatcher@ps':publisherSnapshot(PsState), PsState}.
 
 handle_cast({event, BindingName, Token, WallTimeUs, Params}, PsState) ->
     EventMap = #{name       => BindingName,

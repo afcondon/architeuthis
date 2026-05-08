@@ -50,7 +50,6 @@ import Tidal.MIDIBridge as MIDIBridge
 import Tidal.LinkAnchor as LinkAnchor
 import Tidal.OSC as OSC
 import Tidal.Scheduler (sendAfter, currentTimeMs, Msg(..))
-import Tidal.StateBus as StateBus
 
 -- | Gate output configuration (for Expert Sleepers ES-9 via cv-router)
 type GateConfig =
@@ -308,8 +307,6 @@ startMIDIScheduler config _initialPatternStr = do
 
     startTime <- liftEffect currentTimeMs
 
-    liftEffect StateBus.init
-
     stateRef <- liftEffect $ Ref.new
       { config
       , startTime
@@ -335,14 +332,12 @@ startMIDIScheduler config _initialPatternStr = do
 
     midiSchedulerLoop stateRef
 
--- | Main loop. Each iteration publishes the current state to the
--- | StateBus before blocking on `receive` — that way Calypso's
--- | `state` verb (read via ETS) always sees the post-handle state
--- | of the most recent message. ~20 writes/sec from Tick is fine
--- | (ETS insert of a few-KB binary is sub-microsecond).
+-- | Main loop. Receives Msg and updates state. As of PR1.7c the
+-- | StateBus snapshot is published by `tidal_state_pub` rather than
+-- | from inside this loop; the MIDIScheduler's remaining state is
+-- | a husk awaiting full deletion in PR1.7d.
 midiSchedulerLoop :: Ref MIDISchedulerState -> ProcessM Msg Unit
 midiSchedulerLoop stateRef = do
-  liftEffect (publishState stateRef)
   msg <- receive
   case msg of
     Tick -> do
@@ -561,124 +556,8 @@ patternTypeOfEval = case _ of
   Expr.VNumPattern _ -> Just Sink.PatNumber
   _ -> Nothing
 
--- ---------------------------------------------------------------------------
--- State publication for the `state` debug verb
--- ---------------------------------------------------------------------------
-
--- | Read the current scheduler state and publish a JSON snapshot to
--- | the StateBus ETS table.  Called at the top of every loop
--- | iteration so the latest snapshot reflects the post-handle state
--- | of the most recent message.
-publishState :: Ref MIDISchedulerState -> Effect Unit
-publishState stateRef = do
-  s <- Ref.read stateRef
-  StateBus.write (serializeState s)
-
--- | Serialize a `MIDISchedulerState` as a JSON string.  Hand-rolled
--- | because Argonaut isn't currently in the purerl-tidal dep set;
--- | the shape is small and stable enough that the cost is fine.
--- | Handles standard JSON-string escaping for `\` and `"`; other
--- | control chars are unlikely in the values we produce (device
--- | names, binding names, etc.).
-serializeState :: MIDISchedulerState -> String
-serializeState s =
-  let
-    cfg = s.config
-    mc = cfg.midi
-    gc = cfg.gate
-
-    configObj = "{"
-      <> "\"bpm\":" <> show cfg.bpm
-      <> ",\"lookAheadMs\":" <> show cfg.lookAhead
-      <> ",\"scheduleIntervalMs\":" <> show cfg.scheduleInterval
-      <> ",\"noteDurationMs\":" <> show cfg.noteDuration
-      <> ",\"midi\":{"
-      <>   "\"device\":" <> jsStr mc.device
-      <>   ",\"channel\":" <> show mc.channel
-      <>   ",\"defaultVelocity\":" <> show mc.defaultVelocity
-      <> "}"
-      <> ",\"gate\":{"
-      <>   "\"enabled\":" <> jsBool gc.enabled
-      <>   ",\"oscHost\":" <> jsStr gc.oscHost
-      <>   ",\"oscPort\":" <> show gc.oscPort
-      <>   ",\"gateDurationMs\":" <> show gc.gateDuration
-      <>   ",\"cvLeadMs\":" <> show gc.cvLeadMs
-      <>   ",\"channelOffset\":" <> show gc.channelOffset
-      <> "}"
-      <> "}"
-
-    midiDeviceEntry (Tuple alias dev) =
-      "{\"alias\":" <> jsStr alias
-        <> ",\"name\":" <> jsStr dev.name
-        <> ",\"latencyMs\":" <> show dev.latencyMs <> "}"
-    midiDevicesArr = jsArrOf midiDeviceEntry
-      (Map.toUnfoldable s.midiDevices :: Array (Tuple String { name :: String, latencyMs :: Number }))
-
-    bindingNamesArr = jsArrOf jsStr
-      (Array.fromFoldable (Map.keys s.bindings))
-
-    -- Voices: each name with its sink type signature (full unaliased
-    -- form) so the eventual Calypso Voices pane can render them.
-    voiceEntry (Tuple name sinks) =
-      "{\"name\":" <> jsStr name
-        <> ",\"signature\":" <> jsStr (Str.joinWith " ⊕ " (map Sink.renderSinkType sinks))
-        <> ",\"sinks\":" <> jsArrOf Sink.renderSinkTypeJSON sinks
-        <> "}"
-    voicesArr = jsArrOf voiceEntry
-      (Map.toUnfoldable s.sinkTypes :: Array (Tuple String (Array Sink.SinkType)))
-
-    -- Legacy `tracks` array always empty after PR1.7a (track verbs
-    -- moved to bound voices). Keeping the JSON field for snapshot
-    -- shape stability until PR1.7c.
-    tracksArr = "[]"
-
-    contTrackEntry ct =
-      "{\"name\":" <> jsStr ct.name <> ",\"dest\":" <> contDestEntry ct.dest <> "}"
-    contDestEntry = case _ of
-      ContMidiCC m ->
-        "{\"kind\":\"midi-cc-cont\",\"device\":" <> jsStr m.device
-          <> ",\"channel\":" <> show m.channel
-          <> ",\"cc\":" <> show m.cc <> "}"
-      ContCV c ->
-        "{\"kind\":\"cv-cont\",\"bus\":" <> show c.bus <> "}"
-    contTracksArr = jsArrOf contTrackEntry s.continuousTracks
-    contBindingsArr = jsArrOf
-      (\(Tuple n d) ->
-        "{\"name\":" <> jsStr n <> ",\"dest\":" <> contDestEntry d <> "}")
-      (Map.toUnfoldable s.continuousBindings :: Array (Tuple String ContDest))
-
-    fh2Entry (Tuple voice channel) =
-      "{\"voice\":" <> show voice <> ",\"channel\":" <> show channel <> "}"
-    fh2Arr = jsArrOf fh2Entry
-      (Map.toUnfoldable s.fh2VoiceChannels :: Array (Tuple Int Int))
-
-  in
-    "{\"config\":" <> configObj
-      <> ",\"midiDevices\":" <> midiDevicesArr
-      <> ",\"bindingNames\":" <> bindingNamesArr
-      <> ",\"voices\":" <> voicesArr
-      <> ",\"tracks\":" <> tracksArr
-      <> ",\"continuousTracks\":" <> contTracksArr
-      <> ",\"continuousBindings\":" <> contBindingsArr
-      <> ",\"fh2VoiceChannels\":" <> fh2Arr
-      <> "}"
-
--- | JSON string literal — escape `\` and `"` and wrap in double quotes.
-jsStr :: String -> String
-jsStr s = "\"" <> escapeJson s <> "\""
-
-jsBool :: Boolean -> String
-jsBool b = if b then "true" else "false"
-
--- | Build a JSON array literal by mapping a per-element renderer
--- | over an `Array a`.  Handles the empty-array case (`[]`) cleanly.
-jsArrOf :: forall a. (a -> String) -> Array a -> String
-jsArrOf f xs = "[" <> Str.joinWith "," (map f xs) <> "]"
-
--- | Replace JSON-string-relevant escapes.  Order matters: backslash
--- | first so the doubled `\\` doesn't get re-escaped on the quote pass.
-escapeJson :: String -> String
-escapeJson s0 =
-  let s1 = String.replaceAll (String.Pattern "\\") (String.Replacement "\\\\") s0
-      s2 = String.replaceAll (String.Pattern "\"") (String.Replacement "\\\"") s1
-  in s2
+-- State publication moved to `tidal_state_pub` gen_server in PR1.7c.
+-- The publisher reads from `tidal_dispatcher` (bindings, midiDevices,
+-- continuousBindings, fh2VoiceChannels) and `tidal_clock` (bpm,
+-- tickInterval, lookAhead) directly; MIDIScheduler is no longer in the
+-- snapshot path.
