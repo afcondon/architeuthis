@@ -24,10 +24,11 @@
 -behaviour(gen_server).
 
 -export([start_link/0,
-         dispatch_event/3,
+         dispatch_event/4,
          set_binding/2,
          set_binding_from_spec/2,
          remove_binding/1,
+         lookup_binding/1,
          register_midi_device/3,
          get_info/0,
          stop/0]).
@@ -41,9 +42,14 @@
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
-%% Voices cast events here.
-dispatch_event(BindingName, Token, WallTimeUs) ->
-    gen_server:cast(?MODULE, {event, BindingName, Token, WallTimeUs}).
+%% Voices cast events here. `Params` is a map of pre-sampled per-event
+%% values for `#`-joined parameter patterns (Map String String at the
+%% PureScript level; Erlang `#{}` here). Dispatcher uses it for slot
+%% overrides on the matching PrimAction (e.g. `vel` → MidiNote.velocity)
+%% and compositional fanout to other registered bindings.
+dispatch_event(BindingName, Token, WallTimeUs, Params) ->
+    gen_server:cast(?MODULE,
+                    {event, BindingName, Token, WallTimeUs, Params}).
 
 %% Cache a binding for a voice name. Called by the WS handler when a
 %% `bind` verb is processed (PR1.4d).
@@ -61,6 +67,14 @@ set_binding_from_spec(Name, ActionSpec) ->
 
 remove_binding(Name) ->
     gen_server:call(?MODULE, {remove_binding, Name}).
+
+%% Look up a binding by name. Used by the WS handler at PR1.4d-ii-b
+%% to decide whether the play verb routes to the new voice tree
+%% (binding exists) or falls back to MIDIScheduler's legacy path.
+%% Returns `{just, Binding}` or `{nothing}` (purs-backend-erl Maybe
+%% encoding — the caller pattern-matches on the tuple).
+lookup_binding(Name) ->
+    gen_server:call(?MODULE, {lookup_binding, Name}).
 
 %% Register a MIDI device alias. Mirrors the existing
 %% `midi-device <alias> <real-name> [lat <ms>]` verb.
@@ -129,6 +143,8 @@ handle_call({set_binding_from_spec, Name, ActionSpec}, _From, PsState) ->
 handle_call({remove_binding, Name}, _From, PsState) ->
     NewState = 'tidal_dispatcher@ps':removeBinding(Name, PsState),
     {reply, ok, NewState};
+handle_call({lookup_binding, Name}, _From, PsState) ->
+    {reply, 'tidal_dispatcher@ps':lookupBinding(Name, PsState), PsState};
 handle_call({register_midi_device, Alias, Name, Lat}, _From, PsState) ->
     Device = #{name => Name, latencyMs => float(Lat)},
     NewState = 'tidal_dispatcher@ps':registerMidiDevice(Alias, Device, PsState),
@@ -136,10 +152,11 @@ handle_call({register_midi_device, Alias, Name, Lat}, _From, PsState) ->
 handle_call(get_info, _From, PsState) ->
     {reply, 'tidal_dispatcher@ps':snapshot(PsState), PsState}.
 
-handle_cast({event, BindingName, Token, WallTimeUs}, PsState) ->
+handle_cast({event, BindingName, Token, WallTimeUs, Params}, PsState) ->
     EventMap = #{name       => BindingName,
                  token      => Token,
-                 wallTimeUs => float(WallTimeUs)},
+                 wallTimeUs => float(WallTimeUs),
+                 params     => Params},
     %% dispatchEvent is Effect-returning — execute the thunk.
     NewState = ('tidal_dispatcher@ps':dispatchEvent(EventMap, PsState))(),
     {noreply, NewState}.

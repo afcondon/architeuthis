@@ -21,6 +21,7 @@
 
 -export([start_link/2,
          set_pattern/2,
+         install_from_spec/3,
          clear_pattern/1,
          set_muted/2,
          reset_phase/1,
@@ -44,6 +45,19 @@ start_link(Name, Binding) ->
 
 set_pattern(Name, Pattern) ->
     gen_server:call(registered_name(Name), {set_pattern, Pattern}).
+
+%% Parse a `<name> <pat>` body + its `# <key> <pat>` param segments
+%% and install them atomically. ParamSpecs is an Erlang list of maps
+%% (#{name => K, pat => P}) — list, NOT array, because the WS handler
+%% builds it that way and Tidal.Voice.installFromSpec accepts
+%% `Array { name, pat }` which decodes from either.
+%%
+%% Returns ok on success, {error, Reason} on parse failure of the
+%% structure pattern. Param specs that fail to parse are silently
+%% dropped (mirroring MIDIScheduler.PlayByName).
+install_from_spec(Name, PatStr, ParamSpecs) ->
+    gen_server:call(registered_name(Name),
+                    {install_from_spec, PatStr, ParamSpecs}).
 
 clear_pattern(Name) ->
     gen_server:call(registered_name(Name), clear_pattern).
@@ -82,6 +96,20 @@ init({Name, Binding}) ->
 
 handle_call({set_pattern, P}, _From, {Name, PsState}) ->
     {reply, ok, {Name, 'tidal_voice@ps':setPattern(P, PsState)}};
+handle_call({install_from_spec, PatStr, ParamSpecs}, _From, {Name, PsState}) ->
+    %% Tidal.Voice.installFromSpec :: String -> Array Spec -> State
+    %%   -> Either String State.  PureScript Array compiles to
+    %% Erlang's `array` module — convert the incoming list.
+    SpecsArr = case ParamSpecs of
+        L when is_list(L) -> array:from_list(L);
+        A -> A  %% already an array
+    end,
+    case 'tidal_voice@ps':installFromSpec(PatStr, SpecsArr, PsState) of
+        {right, NewPsState} ->
+            {reply, ok, {Name, NewPsState}};
+        {left, Err} ->
+            {reply, {error, Err}, {Name, PsState}}
+    end;
 handle_call(clear_pattern, _From, {Name, PsState}) ->
     {reply, ok, {Name, 'tidal_voice@ps':clearPattern(PsState)}};
 handle_call(get_state, _From, {Name, PsState}) ->
@@ -99,9 +127,11 @@ handle_cast({compute_until, Window}, {Name, PsState}) ->
     %% plain list. Iterate side-effectingly via array:foldl/3 (the fold
     %% accumulator is unused; this is just a "for each element").
     array:foldl(fun(_Idx, E, _) ->
-                    tidal_dispatcher:dispatch_event(Name,
-                                                    maps:get(token, E),
-                                                    maps:get(wallTimeUs, E))
+                    tidal_dispatcher:dispatch_event(
+                      Name,
+                      maps:get(token, E),
+                      maps:get(wallTimeUs, E),
+                      maps:get(params, E))
                 end,
                 ok, Events),
     {noreply, {Name, NewPsState}}.

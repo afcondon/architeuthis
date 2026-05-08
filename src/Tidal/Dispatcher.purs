@@ -38,6 +38,7 @@ module Tidal.Dispatcher
   , setBinding
   , setBindingFromSpec
   , removeBinding
+  , lookupBinding
   , registerMidiDevice
   , dispatchEvent
   , Snapshot
@@ -46,8 +47,10 @@ module Tidal.Dispatcher
 
 import Prelude
 
+import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Foldable (for_)
+import Data.Tuple (Tuple(..))
 import Data.Int as Int
 import Data.Map (Map)
 import Data.Map as Map
@@ -58,7 +61,7 @@ import Tidal.Binding (Binding, PrimAction(..))
 import Tidal.Binding as Binding
 import Tidal.Log as Log
 import Tidal.MIDIBridge (BridgeClient, scheduleCCAt, scheduleNoteAt)
-import Tidal.MIDIScheduler (clamp7bit, interpretCV, noteNameMidi)
+import Tidal.MIDIScheduler (clamp7bit, interpretCV, noteNameMidi, param7bit)
 import Tidal.OSC (OSCClient, sendCVAfter, sendES5GateTrigAfter, sendESXAfter, sendGateTrigAfter)
 
 -- ---------------------------------------------------------------------------
@@ -127,6 +130,13 @@ removeBinding :: String -> State -> State
 removeBinding name (State s) =
   State (s { bindings = Map.delete name s.bindings })
 
+-- | Look up a binding by name. Used by the WS handler at PR1.4d-ii-b
+-- | to decide whether to install a voice in the new tree (binding
+-- | exists) or fall back to MIDIScheduler's legacy whole-message
+-- | pattern path (unbound name).
+lookupBinding :: String -> State -> Maybe Binding
+lookupBinding name (State s) = Map.lookup name s.bindings
+
 registerMidiDevice :: String -> MidiDevice -> State -> State
 registerMidiDevice alias device (State s) =
   State (s { midiDevices = Map.insert alias device s.midiDevices })
@@ -144,10 +154,14 @@ registerMidiDevice alias device (State s) =
 -- | hasn't been told about yet (race during reconfig). Logging would
 -- | be too noisy.
 dispatchEvent
-  :: { name :: String, token :: String, wallTimeUs :: Number }
+  :: { name :: String
+     , token :: String
+     , wallTimeUs :: Number
+     , params :: Map String String
+     }
   -> State
   -> Effect State
-dispatchEvent { name, token, wallTimeUs } (State s) = do
+dispatchEvent { name, token, wallTimeUs, params } (State s) = do
   nowUs <- nowUnixMicros
   let
     delayMsRaw = (wallTimeUs - nowUs) / 1000.0
@@ -155,20 +169,34 @@ dispatchEvent { name, token, wallTimeUs } (State s) = do
     delayInt = Int.floor delayClamped
   case Map.lookup name s.bindings of
     Nothing -> pure unit
-    Just binding ->
-      for_ binding (dispatchPrimAction (State s) name token wallTimeUs delayClamped delayInt)
+    Just binding -> do
+      -- 1. Per-PrimAction dispatch: each action fires once per event,
+      --    consulting `params` for slot overrides where applicable.
+      for_ binding
+        (dispatchPrimAction (State s) name token wallTimeUs delayClamped
+                            delayInt params)
+      -- 2. Compositional `#` fanout: any param NAME that matches another
+      --    registered binding fires that binding's MidiCC actions with
+      --    the joined value as the token. Slot-override params (consumed
+      --    by step 1) are skipped here to avoid double-fire.
+      for_ (Map.toUnfoldable params :: Array (Tuple String String))
+        \(Tuple paramName paramValue) ->
+          when (not (isSlotOverride paramName binding)) do
+            dispatchComposedFanout (State s) name paramName paramValue
+                                   wallTimeUs delayClamped
   pure (State (s { eventCount = s.eventCount + 1 }))
 
 dispatchPrimAction
   :: State
-  -> String         -- voice name (for logging)
-  -> String         -- pattern token
-  -> Number         -- absolute Unix microsecond fire time
-  -> Number         -- ms delay from now (clamped)
-  -> Int            -- floor of delayClamped, for human-readable logs
+  -> String              -- voice name (for logging)
+  -> String              -- pattern token
+  -> Number              -- absolute Unix microsecond fire time
+  -> Number              -- ms delay from now (clamped)
+  -> Int                 -- floor of delayClamped, for human-readable logs
+  -> Map String String   -- pre-sampled per-event params for slot overrides
   -> PrimAction
   -> Effect Unit
-dispatchPrimAction (State s) name token wallUs delayMs _delayInt = case _ of
+dispatchPrimAction (State s) name token wallUs delayMs _delayInt params = case _ of
   CV bus mapping ->
     case s.oscClient, interpretCV mapping token of
       Just osc, Just value -> do
@@ -216,10 +244,18 @@ dispatchPrimAction (State s) name token wallUs delayMs _delayInt = case _ of
           let note = case Map.lookup token noteNameMidi of
                 Just n -> n
                 Nothing -> m.defaultNote
-          let adjustedDelayMs = max 0.0 (delayMs - dev.latencyMs)
+          -- `# vel "..."` slot override: param value (already sampled
+          -- at the event's cycle by the voice) overrides the binding's
+          -- default velocity. Out-of-range / non-numeric tokens fall
+          -- back to the binding default.
+          let velocity = case Map.lookup "vel" params of
+                Nothing -> m.velocity
+                Just velTok -> case param7bit velTok of
+                  Just v -> v
+                  Nothing -> m.velocity
           let adjustedUnixUs = wallUs - dev.latencyMs * 1000.0
-          Log.debug $ "♪ [" <> name <> "] midi " <> dev.name <> " ch" <> show m.channel <> " note " <> show note
-          scheduleNoteAt s.bridgeClient dev.name m.channel note m.velocity m.durationMs adjustedUnixUs
+          Log.debug $ "♪ [" <> name <> "] midi " <> dev.name <> " ch" <> show m.channel <> " note " <> show note <> " vel " <> show velocity
+          scheduleNoteAt s.bridgeClient dev.name m.channel note velocity m.durationMs adjustedUnixUs
 
   MidiCC m ->
     case Number.fromString token of
@@ -233,6 +269,52 @@ dispatchPrimAction (State s) name token wallUs delayMs _delayInt = case _ of
             let adjustedUnixUs = wallUs - dev.latencyMs * 1000.0
             Log.debug $ "◇ [" <> name <> "] midi " <> dev.name <> " ch" <> show m.channel <> " cc" <> show m.cc <> " = " <> show value7bit
             scheduleCCAt s.bridgeClient dev.name m.channel m.cc value7bit adjustedUnixUs
+
+-- | Is this `#` parameter name consumed by a slot override on any of
+-- | the binding's actions? If yes, the per-PrimAction dispatch already
+-- | used it; the compositional fallback skips it to avoid double-fire.
+-- |
+-- | Currently only `vel` is a recognised slot, applying to MidiNote
+-- | actions. Extend as more slots become pattern-driven.
+isSlotOverride :: String -> Binding -> Boolean
+isSlotOverride paramName binding = case paramName of
+  "vel" -> Array.any isMidiNote binding
+    where
+    isMidiNote = case _ of
+      MidiNote _ -> true
+      _ -> false
+  _ -> false
+
+-- | Compositional `#` fanout: when a param name matches another
+-- | registered binding, fire that binding's MidiCC actions with the
+-- | joined value as the token. Currently MidiCC composition only —
+-- | other action types ignored. This is how `lap "x*4" #
+-- | laplace-resonator-strength "0.2 0.7"` both plays the note AND
+-- | sweeps the resonator CC.
+dispatchComposedFanout
+  :: State
+  -> String   -- structure-binding name (for logging)
+  -> String   -- param name
+  -> String   -- pre-sampled param value
+  -> Number   -- absolute Unix microsecond fire time
+  -> Number   -- ms delay from now (clamped)
+  -> Effect Unit
+dispatchComposedFanout (State s) structName paramName paramValue wallUs delayMs =
+  case Map.lookup paramName s.bindings of
+    Nothing -> pure unit
+    Just composedBinding -> for_ composedBinding case _ of
+      MidiCC m -> case Number.fromString paramValue of
+        Nothing -> pure unit
+        Just raw ->
+          case Map.lookup m.device s.midiDevices of
+            Nothing -> pure unit
+            Just dev -> do
+              let v7 = clamp7bit (raw * 127.0)
+              let dms = max 0.0 (delayMs - dev.latencyMs)
+              let uus = wallUs - dev.latencyMs * 1000.0
+              Log.debug $ "  ◇ [" <> structName <> " # " <> paramName <> "] cc " <> show m.cc <> " = " <> show v7 <> " in " <> show (Int.floor dms) <> "ms"
+              scheduleCCAt s.bridgeClient dev.name m.channel m.cc v7 uus
+      _ -> pure unit  -- only MidiCC composition for now
 
 -- ---------------------------------------------------------------------------
 -- Snapshot

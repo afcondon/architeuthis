@@ -16,6 +16,8 @@ module Tidal.Voice
   ( State
   , initialState
   , setPattern
+  , setPatternWithParams
+  , installFromSpec
   , clearPattern
   , setMuted
   , resetPhase
@@ -30,11 +32,17 @@ module Tidal.Voice
 import Prelude
 
 import Data.Array as Array
+import Data.Either (Either(..))
 import Data.Int as Int
+import Data.Map (Map)
+import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Rational (Rational, fromInt)
 import Data.Rational as R
+import Data.Tuple (Tuple(..))
 import Tidal.Binding (Binding)
+import Tidal.Eval.Interpret (tpatToPattern)
+import Tidal.Parse.Parser (parse)
 import Tidal.Pattern.Core (queryArc)
 import Tidal.Pattern.Types (Arc(..), Event(..), Pattern)
 
@@ -60,6 +68,7 @@ import Tidal.Pattern.Types (Arc(..), Event(..), Pattern)
 newtype State = State
   { name :: String
   , pattern :: Maybe (Pattern String)
+  , params :: Map String (Pattern String)
   , binding :: Binding
   , phase :: Rational
   , lastEmittedUntil :: Rational
@@ -70,6 +79,7 @@ initialState :: String -> Binding -> State
 initialState name binding = State
   { name
   , pattern: Nothing
+  , params: Map.empty
   , binding
   , phase: fromInt 0
   , lastEmittedUntil: fromInt 0
@@ -77,10 +87,47 @@ initialState name binding = State
   }
 
 setPattern :: Pattern String -> State -> State
-setPattern p (State s) = State (s { pattern = Just p })
+setPattern p (State s) = State (s { pattern = Just p, params = Map.empty })
+
+-- | Replace the pattern AND the parameter-pattern map atomically.
+-- | Used by the WS handler when installing a `<name> <pat> # <key> <pat>...`
+-- | message: each `# <key> <pat>` segment becomes a (key, Pattern String)
+-- | entry in the params map. The voice samples each at event-time and
+-- | the dispatcher applies slot overrides + compositional fanout.
+setPatternWithParams
+  :: Pattern String
+  -> Map String (Pattern String)
+  -> State
+  -> State
+setPatternWithParams p ps (State s) =
+  State (s { pattern = Just p, params = ps })
+
+-- | Parse a `<name> <pat>` body + its `# <key> <pat>` segments and
+-- | install both atomically. Param specs that fail to parse are
+-- | dropped (mirroring MIDIScheduler.PlayByName's behaviour); the
+-- | structure pattern's parse error returns Left and leaves state
+-- | untouched.
+installFromSpec
+  :: String
+  -> Array { name :: String, pat :: String }
+  -> State
+  -> Either String State
+installFromSpec patStr paramSpecs st = case parse patStr of
+  Left err -> Left (show err)
+  Right ast ->
+    let
+      pattern = tpatToPattern ast
+      paramsMap = Map.fromFoldable
+        $ Array.mapMaybe
+            (\ps -> case parse ps.pat of
+              Right p -> Just (Tuple ps.name (tpatToPattern p))
+              Left _ -> Nothing)
+            paramSpecs
+    in Right (setPatternWithParams pattern paramsMap st)
 
 clearPattern :: State -> State
-clearPattern (State s) = State (s { pattern = Nothing })
+clearPattern (State s) =
+  State (s { pattern = Nothing, params = Map.empty })
 
 setMuted :: Boolean -> State -> State
 setMuted m (State s) = State (s { muted = m })
@@ -100,6 +147,7 @@ resetPhase (State s) = State
 type Snapshot =
   { name :: String
   , hasPattern :: Boolean
+  , paramCount :: Int
   , muted :: Boolean
   }
 
@@ -109,6 +157,7 @@ snapshot (State s) =
   , hasPattern: case s.pattern of
       Just _ -> true
       Nothing -> false
+  , paramCount: Map.size s.params
   , muted: s.muted
   }
 
@@ -128,9 +177,18 @@ type Window =
   }
 
 -- | One event the voice wants the dispatcher to send.
+-- |
+-- | `params` carries the pre-sampled values for each `#`-joined
+-- | parameter pattern at this event's cycle position. The dispatcher
+-- | uses them for two purposes: slot overrides on the matching
+-- | PrimAction (e.g. `# vel "100 60"` overrides MidiNote.velocity),
+-- | and compositional fanout when the param name matches another
+-- | registered binding (fires that binding's actions with the value).
+-- | Empty map = a plain `<name> <pat>` event with no `#` joins.
 type EventToDispatch =
   { token :: String
   , wallTimeUs :: Number
+  , params :: Map String String
   }
 
 -- | Result of `computeUntil`: new voice state plus the events to
@@ -166,18 +224,53 @@ computeUntil w (State s) = case s.pattern of
             let cN = R.toNumber (eventStartCycle e)
             in cN >= fromCycleNum && cN < toCycleNum
           kept = Array.filter inWindow queryEvents
+          -- Sample each param pattern at this event's cycle position.
+          -- Param patterns whose query produces no event at this point
+          -- (e.g. a rest token) are simply absent from the params map;
+          -- the dispatcher treats absence as "use binding default".
+          sampleParamsAt cyc =
+            Map.fromFoldable
+              $ Array.mapMaybe
+                  (\(Tuple paramName paramPat) ->
+                    case samplePatternAt cyc paramPat of
+                      Just v -> Just (Tuple paramName v)
+                      Nothing -> Nothing)
+                  (Map.toUnfoldable s.params :: Array (Tuple String (Pattern String)))
           toDispatch e =
             let
-              cycleN = R.toNumber (eventStartCycle e)
+              eventCycle = eventStartCycle e
+              cycleN = R.toNumber eventCycle
               delayMs = (cycleN - w.currentCycle) * w.cycleDurationMs
               delayClamped = max 0.0 delayMs
               wallTimeUs = w.nowUnixUs + delayClamped * 1000.0
             in
-              { token: eventSample e, wallTimeUs }
+              { token: eventSample e
+              , wallTimeUs
+              , params: sampleParamsAt eventCycle
+              }
           evs = if s.muted then [] else map toDispatch kept
           newSt = State (s { lastEmittedUntil = toCycle })
         in
           { newState: newSt, events: evs }
+
+-- | Sample a parameter pattern at a single cycle time. Used for `#`
+-- | parameter joins: the structure pattern's event determines `when`;
+-- | each `# <name> <pat>` segment's pattern, queried at that same time,
+-- | provides the parameter value used to override a binding-default
+-- | field (velocity, note, …) for this one event.
+-- |
+-- | Mirrors `MIDIScheduler.samplePatternAt` exactly. Inlined here so
+-- | Voice doesn't depend on MIDIScheduler; cleanup in PR1.4e moves
+-- | both call sites onto a shared helper module.
+samplePatternAt :: forall a. Rational -> Pattern a -> Maybe a
+samplePatternAt cycleAt pat =
+  let
+    epsilon = fromInt 1 / fromInt 1000000
+    events = queryArc pat cycleAt (cycleAt + epsilon)
+  in case Array.head events of
+    Just (Digital ev) -> Just ev.value
+    Just (Analog ev) -> Just ev.value
+    Nothing -> Nothing
 
 -- ---------------------------------------------------------------------------
 -- Event helpers (private — not yet promoted to Pattern.Types).
