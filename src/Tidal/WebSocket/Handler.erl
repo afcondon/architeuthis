@@ -150,7 +150,6 @@ websocket_handle(_Frame, State) ->
 %%   {fh2_shape, Voice, A, D, S, R}            — live ADSR via CCs 70/71/72/73
 %%   {bind, Name, ActionSpec}                  — register a named binding
 %%   {unbind, Name}                            — remove a named binding
-%%   {slot, Name, Value}                       — set an input slot value (manual)
 %%   {hush}                                    — silence everything (Tidal-compat)
 %%   none                                      — try named-binding dispatch via play_or_legacy
 try_parse_prefixed(<<"hush">>) -> {hush};
@@ -247,16 +246,6 @@ try_parse_prefixed(<<"unbind ", Rest/binary>>) ->
     Name = binary_part(Rest, 0, byte_size(Rest)),
     case binary:match(Name, <<" ">>) of
         nomatch -> {unbind, Name};
-        _ -> none
-    end;
-try_parse_prefixed(<<"slot ", Rest/binary>>) ->
-    %% slot <name> <value>
-    case binary:split(Rest, <<" ">>) of
-        [Name, ValueBin] ->
-            case parse_number(ValueBin) of
-                {ok, Value} -> {slot, Name, Value};
-                error -> none
-            end;
         _ -> none
     end;
 try_parse_prefixed(<<"load ", Rest/binary>>) ->
@@ -543,11 +532,6 @@ handle_pattern_message(Text, SchedulerPid, State) ->
         {unbind, Name} ->
             SchedulerPid ! {removeBinding, Name},
             Reply = {text, <<"OK: unbind ", Name/binary>>},
-            {reply, Reply, State};
-        {slot, Name, Value} ->
-            SchedulerPid ! {setSlot, Name, Value},
-            ValueBin = list_to_binary(io_lib:format("~p", [Value])),
-            Reply = {text, <<"OK: slot ", Name/binary, " ", ValueBin/binary>>},
             {reply, Reply, State};
         {hush} ->
             SchedulerPid ! {hush},
@@ -1139,8 +1123,6 @@ dispatch_setup_action(Action, SchedulerPid) ->
             SchedulerPid ! {addBinding, Name, ActionSpec}, ok;
         {unbind, Name} ->
             SchedulerPid ! {removeBinding, Name}, ok;
-        {slot, Name, Value} ->
-            SchedulerPid ! {setSlot, Name, Value}, ok;
         {hush} ->
             SchedulerPid ! {hush}, ok;
         {load, Name} ->

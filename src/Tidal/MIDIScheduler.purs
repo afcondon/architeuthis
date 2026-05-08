@@ -290,7 +290,6 @@ type MIDISchedulerState =
                                           -- PrimActions (e.g. plaits = gate +
                                           -- cv-voct); continuous bindings
                                           -- always have a singleton.
-  , slots :: Map String Number           -- Param/input slot env (modulation values)
   , midiDevices :: Map String { name :: String, latencyMs :: Number }
                                           -- alias → device-name + latency offset.
                                           -- Latency is subtracted from the delay
@@ -404,7 +403,6 @@ startMIDIScheduler config patternStr = do
       , lastTrigger: R.fromInt (-1)
       , bindings: Binding.defaultRegistry
       , sinkTypes: defaultSinkTypes
-      , slots: Map.empty
       , midiDevices: Map.empty
       , fh2VoiceChannels: Map.empty
       }
@@ -1030,13 +1028,6 @@ midiSchedulerLoop stateRef = do
         liftEffect $ log $ "(no binding '" <> n <> "', voice skipped)"
       midiSchedulerLoop stateRef
 
-    SetSlot name value -> do
-      state <- liftEffect $ Ref.read stateRef
-      let newSlots = Map.insert name value state.slots
-      liftEffect $ Ref.write (state { slots = newSlots }) stateRef
-      liftEffect $ log $ "slot " <> name <> " = " <> show value
-      midiSchedulerLoop stateRef
-
     Hush -> do
       -- Tidal-compat: silence everything. Drop all running tracks
       -- (discrete and continuous) but preserve the binding registry so
@@ -1516,11 +1507,6 @@ serializeState s =
     fh2Arr = jsArrOf fh2Entry
       (Map.toUnfoldable s.fh2VoiceChannels :: Array (Tuple Int Int))
 
-    slotEntry (Tuple name value) =
-      "{\"name\":" <> jsStr name <> ",\"value\":" <> show value <> "}"
-    slotsArr = jsArrOf slotEntry
-      (Map.toUnfoldable s.slots :: Array (Tuple String Number))
-
   in
     "{\"config\":" <> configObj
       <> ",\"midiDevices\":" <> midiDevicesArr
@@ -1530,7 +1516,6 @@ serializeState s =
       <> ",\"continuousTracks\":" <> contTracksArr
       <> ",\"continuousBindings\":" <> contBindingsArr
       <> ",\"fh2VoiceChannels\":" <> fh2Arr
-      <> ",\"slots\":" <> slotsArr
       <> "}"
 
 -- | JSON string literal — escape `\` and `"` and wrap in double quotes.

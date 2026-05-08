@@ -122,7 +122,6 @@ data Msg
   -- are logged and skipped — the rest still ship.
   | PlayMultiByName (Array (Tuple String (Pattern String))) String
       -- per-voice patterns, fullText (for logging only)
-  | SetSlot String Number         -- slot name, current value (input bindings scaffold)
   -- Tidal-compat: silence everything, kill all running tracks. Bindings
   -- registry is preserved (so subsequent `kick bd*4` works without
   -- rebinding). Same intent as upstream Tidal's `hush`.
@@ -322,7 +321,6 @@ schedulerLoop stateRef = do
     PlayByNameP _ _ _ -> schedulerLoop stateRef
     PlayByNameExpr _ _ _ -> schedulerLoop stateRef
     PlayMultiByName _ _ -> schedulerLoop stateRef
-    SetSlot _ _ -> schedulerLoop stateRef
     Hush -> do
       state <- liftEffect $ Ref.read stateRef
       liftEffect $ Ref.write (state { pattern = pure "~" }) stateRef
