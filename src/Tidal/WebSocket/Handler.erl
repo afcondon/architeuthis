@@ -821,20 +821,27 @@ handle_play_by_name_expr(Word, ExprSrc, FullText, SchedulerPid, State) ->
 %% Bare `:<expr>` form: voice tags name bindings, each voice flows to
 %% its own destination. Tidal.Expr.evalMulti returns the per-voice
 %% (name, Pattern) pairs as an Erlang array of `{tuple, Name, Pat}`
-%% (PureScript Array (Tuple String (Pattern String))). We pass the
-%% array through unchanged — the scheduler handler iterates it.
-handle_multi_expr(ExprSrc, FullText, SchedulerPid, State) ->
+%% (PureScript Array (Tuple String (Pattern String))). For each entry
+%% we look up the binding on the dispatcher; entries with a discrete
+%% binding install on the new voice tree, entries without log the
+%% same "voice skipped" message MIDIScheduler.PlayMultiByName used to.
+%%
+%% After this commit MIDIScheduler is no longer in this path —
+%% PlayMultiByName migrates entirely to the new tree. The reply still
+%% lists only the names that actually got installed (skipped entries
+%% don't appear in the bracketed list).
+handle_multi_expr(ExprSrc, FullText, _SchedulerPid, State) ->
     Result = try ('tidal_expr@ps':evalMulti())(ExprSrc)
              catch Class:Reason ->
                  {crash, list_to_binary(io_lib:format("~p:~p", [Class, Reason]))}
              end,
     case Result of
         {right, Entries} ->
-            SchedulerPid ! {playMultiByName, Entries, FullText},
-            Names = entries_names(Entries),
-            NamesBin = case Names of
-                <<>> -> <<"(no voices)">>;
-                _    -> Names
+            EntryList = array:to_list(Entries),
+            InstalledNames = install_multi_entries(EntryList),
+            NamesBin = case InstalledNames of
+                [] -> <<"(no voices)">>;
+                _  -> join_binary(InstalledNames, <<", ">>)
             end,
             {reply,
              {text, <<"OK: dispatched multi [", NamesBin/binary, "] :",
@@ -847,12 +854,23 @@ handle_multi_expr(ExprSrc, FullText, SchedulerPid, State) ->
             {reply, {text, <<"ERROR: expr crash: ", CrashBin/binary>>}, State}
     end.
 
-%% Pull the binding-names out of an Array of {tuple, Name, _Pat} for
-%% the WS reply text. Comma-separated. Names is whatever Tidal.Expr
-%% put in the first slot of each Tuple — bare String, so a binary.
-entries_names(Entries) ->
-    Names = [Name || {tuple, Name, _Pat} <- array:to_list(Entries)],
-    join_binary(Names, <<", ">>).
+%% Walk the entries list, installing each on the new tree if its name
+%% has a discrete binding. Returns the list of installed names in
+%% original order (for the WS reply text).
+install_multi_entries(Entries) ->
+    install_multi_entries(Entries, []).
+
+install_multi_entries([], Acc) ->
+    lists:reverse(Acc);
+install_multi_entries([{tuple, Name, Pat} | Rest], Acc) ->
+    case tidal_dispatcher:lookup_binding(Name) of
+        {just, Binding} ->
+            tidal_voice_sup:set_voice_pat(Name, Binding, Pat),
+            install_multi_entries(Rest, [Name | Acc]);
+        {nothing} ->
+            io:format("(no binding '~s', voice skipped)~n", [Name]),
+            install_multi_entries(Rest, Acc)
+    end.
 
 join_binary([], _Sep) -> <<>>;
 join_binary([X], _Sep) -> X;
