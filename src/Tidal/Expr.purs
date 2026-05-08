@@ -38,6 +38,7 @@ module Tidal.Expr
   , asPattern
   , eval
   , evalMulti
+  , parseEvalPattern
   ) where
 
 import Prelude
@@ -775,6 +776,18 @@ asPattern :: EvalResult -> Either String (Pattern String)
 asPattern = case _ of
   VPattern p -> Right p
   _ -> Left "expected a pattern"
+
+-- | Convenience: parse an expression source, evaluate it, and coerce
+-- | the result to a `Pattern String`. Used by the WS handler's
+-- | PlayByNameExpr migration to install single-voice patterns through
+-- | the new tree without surfacing intermediate value types to Erlang.
+-- |
+-- | Returns `Left` for any of: parse failure, eval failure, or eval
+-- | success with a non-`VPattern` result (e.g. `VNumPattern` from a
+-- | continuous expression — those are routed to MIDIScheduler by the
+-- | caller, which has continuousBindings).
+parseEvalPattern :: String -> Either String (Pattern String)
+parseEvalPattern src = parseExpr src >>= evalExpr >>= asPattern
 
 -- A list of functions is treated as left-to-right composition:
 -- `[rev, (slow 2)]` means "apply rev, then slow 2" — i.e. the

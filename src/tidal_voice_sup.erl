@@ -17,6 +17,7 @@
 -export([start_link/0,
          add_voice/2,
          set_voice/4,
+         set_voice_pat/3,
          remove_voice/1,
          find_voice/1,
          which_voices/0]).
@@ -67,6 +68,25 @@ set_voice(Name, Binding, PatStr, ParamSpecs) ->
             end;
         {ok, _Pid} ->
             tidal_voice:install_from_spec(Name, PatStr, ParamSpecs)
+    end.
+
+%% Sister of set_voice/4 that takes an already-parsed Pattern (the
+%% PureScript `Pattern String` value) instead of a source string.
+%% Used by the PlayByNameExpr migration: the WS handler evaluates the
+%% expression via Tidal.Expr first, so by the time it calls into the
+%% voice tree the Pattern is already typed. No param specs — the
+%% colon-expr form doesn't currently support `#` joins.
+set_voice_pat(Name, Binding, Pattern) ->
+    case find_voice(Name) of
+        not_found ->
+            case add_voice(Name, Binding) of
+                {ok, _Pid} ->
+                    tidal_voice:set_pattern(Name, Pattern);
+                Err ->
+                    Err
+            end;
+        {ok, _Pid} ->
+            tidal_voice:set_pattern(Name, Pattern)
     end.
 
 %% Remove a voice by name. Idempotent: missing voices return ok.

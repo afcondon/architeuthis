@@ -768,10 +768,44 @@ to_binary(Other) -> list_to_binary(io_lib:format("~p", [Other])).
 %% logs rather than as a reply payload — the cell stays running and
 %% the user notices via missing audio + log.
 handle_play_by_name_expr(Word, ExprSrc, FullText, SchedulerPid, State) ->
-    SchedulerPid ! {playByNameExpr, Word, ExprSrc, FullText},
-    {reply,
-     {text, <<"OK: dispatched '", Word/binary, "' :", ExprSrc/binary>>},
-     State}.
+    %% Route discrete bindings through the new voice tree; fall through
+    %% to MIDIScheduler for continuous bindings, unbound names, and any
+    %% case where eval doesn't produce a Pattern String. The fall-
+    %% through preserves the existing error logging in MIDIScheduler so
+    %% users get consistent diagnostics whether the path is new or old.
+    case tidal_dispatcher:lookup_binding(Word) of
+        {just, Binding} ->
+            case ('tidal_expr@ps':parseEvalPattern())(ExprSrc) of
+                {right, Pattern} ->
+                    case tidal_voice_sup:set_voice_pat(Word, Binding, Pattern) of
+                        ok ->
+                            {reply,
+                             {text, <<"OK: dispatched '", Word/binary,
+                                      "' :", ExprSrc/binary>>},
+                             State};
+                        {error, Err} ->
+                            ErrBin = list_to_binary(io_lib:format("~p", [Err])),
+                            {reply,
+                             {text, <<"ERROR: ", ErrBin/binary>>},
+                             State}
+                    end;
+                {left, _Err} ->
+                    %% Eval failed or produced a non-Pattern-String
+                    %% result. Forward to MIDIScheduler which will
+                    %% re-eval and surface the error consistently.
+                    SchedulerPid ! {playByNameExpr, Word, ExprSrc, FullText},
+                    {reply,
+                     {text, <<"OK: dispatched '", Word/binary,
+                              "' :", ExprSrc/binary>>},
+                     State}
+            end;
+        {nothing} ->
+            SchedulerPid ! {playByNameExpr, Word, ExprSrc, FullText},
+            {reply,
+             {text, <<"OK: dispatched '", Word/binary,
+                      "' :", ExprSrc/binary>>},
+             State}
+    end.
 
 %% Bare `:<expr>` form: voice tags name bindings, each voice flows to
 %% its own destination. Tidal.Expr.evalMulti returns the per-voice
