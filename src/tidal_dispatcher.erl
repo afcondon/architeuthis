@@ -35,6 +35,7 @@
          register_midi_device/3,
          set_fh2_voice_channel/2,
          dispatch_fh2_shape/5,
+         set_link_tempo/1,
          get_info/0,
          get_publisher_snapshot/0,
          stop/0]).
@@ -125,6 +126,12 @@ set_fh2_voice_channel(Voice, Channel) ->
 dispatch_fh2_shape(Voice, A, D, S, R) ->
     gen_server:cast(?MODULE,
                     {fh2_shape, Voice, A, D, S, R}).
+
+%% Broadcast a new BPM to link-spike (which propagates it to all
+%% Link peers). Cast — fire-and-forget; the dispatcher's PS handler
+%% sends `/link/set-tempo` via its bridgeClient socket.
+set_link_tempo(Bpm) ->
+    gen_server:cast(?MODULE, {set_link_tempo, Bpm}).
 
 get_info() ->
     gen_server:call(?MODULE, get_info).
@@ -234,6 +241,11 @@ handle_cast({fh2_shape, Voice, A, D, S, R}, PsState) ->
     %% own `s` binding inside dispatchFh2Shape.
     Args = #{voice => Voice, a => A, d => D, sustain => S, r => R},
     NewState = ('tidal_dispatcher@ps':dispatchFh2Shape(Args, PsState))(),
-    {noreply, NewState}.
+    {noreply, NewState};
+handle_cast({set_link_tempo, Bpm}, PsState) ->
+    %% setLinkTempo is Effect Unit; thunk it but discard the result.
+    %% State unchanged (this just sends OSC out the bridgeClient).
+    ('tidal_dispatcher@ps':setLinkTempo(float(Bpm), PsState))(),
+    {noreply, PsState}.
 
 terminate(_Reason, _State) -> ok.

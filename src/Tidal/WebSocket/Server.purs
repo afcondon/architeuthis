@@ -23,10 +23,7 @@ import Erl.Kernel.Inet (Port(..))
 import Erl.Kernel.Tcp (defaultListenOptions)
 import Erl.Atom (atom) as Atom
 import Erl.ModuleName (NativeModuleName(..))
-import Erl.Process (Process)
 import Foreign (unsafeToForeign)
-import Tidal.Scheduler (Msg)
-import Tidal.WebSocket.Handler as Handler
 
 -- | Start required OTP applications (ranch, cowboy)
 foreign import ensureStarted :: Effect Unit
@@ -44,17 +41,17 @@ defaultServerConfig =
   , name: "tidal_ws"
   }
 
--- | Start the WebSocket server
-startServer :: ServerConfig -> Process Msg -> Effect (Either String Unit)
-startServer config schedulerPid = do
+-- | Start the WebSocket server. The Erlang handler reaches the
+-- | dispatcher / voice supervisor / clock through their registered
+-- | names; no per-handler state is needed beyond connection
+-- | liveness, so we hand Cowboy an empty-map InitialState.
+startServer :: ServerConfig -> Effect (Either String Unit)
+startServer config = do
   -- Ensure cowboy and ranch are started
   ensureStarted
 
   log $ "Starting WebSocket server on port " <> show config.port
   log $ "Connect to ws://localhost:" <> show config.port <> "/ws"
-
-  -- Create handler config
-  let handlerConfig = Handler.wsHandler schedulerPid
 
   -- Set up routes - use the foreign handler module directly
   let handlerModule = NativeModuleName (Atom.atom "tidal_webSocket_handler@foreign")
@@ -62,7 +59,7 @@ startServer config schedulerPid = do
         Routes.anyHost $ List.singleton $
           Routes.path "/ws"
             handlerModule
-            (Routes.InitialState (unsafeToForeign handlerConfig))
+            (Routes.InitialState (unsafeToForeign {}))
 
   -- Create cowboy environment with dispatch
   let env = Cowboy.dispatch routes Map.empty

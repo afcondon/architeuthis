@@ -1,24 +1,12 @@
--- | WebSocket handler config used by `Tidal.WebSocket.Server`.
+-- | Placeholder PureScript module that exists only so spago / purs-
+-- | backend-erl pair the sibling `Handler.erl` foreign file as
+-- | `tidal_webSocket_handler@foreign` and copy it into output-erl
+-- | for the Makefile's `find … -exec erlc` pass.
 -- |
--- | The actual live-wire parsing and dispatch is done in the Erlang
--- | shell `tidal_webSocket_handler@foreign` (`Handler.erl`); this
--- | module just provides the `Config` record + a constructor used by
--- | the Server module to wire the scheduler pid into Cowboy's handler
--- | initial state.
-module Tidal.WebSocket.Handler
-  ( Config
-  , wsHandler
-  ) where
-
-import Erl.Process (Process)
-import Tidal.Scheduler (Msg)
-
--- | Configuration passed to init.
-type Config =
-  { schedulerPid :: Process Msg
-  }
-
--- | Build a Config from a scheduler pid. Server.purs feeds this into
--- | Cowboy's route dispatch as the handler's initial state.
-wsHandler :: Process Msg -> Config
-wsHandler schedulerPid = { schedulerPid }
+-- | Cowboy's dispatch (in `Tidal.WebSocket.Server`) refers to that
+-- | module name directly via `NativeModuleName`. Without this empty
+-- | PS file the foreign .erl wouldn't end up in ebin/ and the
+-- | WebSocket handler would never start.
+-- |
+-- | All the actual WS verb parsing + dispatch lives in `Handler.erl`.
+module Tidal.WebSocket.Handler where

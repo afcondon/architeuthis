@@ -46,6 +46,7 @@ module Tidal.Dispatcher
   , dispatchEvent
   , dispatchContEvent
   , dispatchFh2Shape
+  , setLinkTempo
   , Snapshot
   , snapshot
   , PublisherSnapshot
@@ -68,6 +69,7 @@ import Tidal.Binding (Binding, ContDest(..), PrimAction(..))
 import Tidal.Binding as Binding
 import Tidal.Log as Log
 import Tidal.MIDIBridge (BridgeClient, scheduleCCAt, scheduleNoteAt)
+import Tidal.MIDIBridge as MIDIBridge
 import Tidal.Dispatch.Helpers (clamp7bit, interpretCV, noteNameMidi, param7bit)
 import Tidal.OSC (OSCClient, sendCVAfter, sendES5GateTrigAfter, sendESXAfter, sendGateTrigAfter)
 import Tidal.Transform (applyTransforms)
@@ -430,6 +432,19 @@ dispatchFh2Shape { voice, a, d, sustain, r } (State s) = do
       scheduleCCAt s.bridgeClient dev.name channel ccS (clamp7bit (Int.toNumber sustain)) nowUs
       scheduleCCAt s.bridgeClient dev.name channel ccR (clamp7bit (Int.toNumber r)) nowUs
   pure (State s)
+
+-- | Send `/link/set-tempo` to link-spike, which propagates the new
+-- | BPM to all Link peers (Ableton, other modular clocks, this
+-- | rig's own clock when it next reads the anchor). Side-effecting
+-- | only — no state mutation.
+-- |
+-- | Migrated from MIDIScheduler.SetBpm in PR1.7d. The dispatcher's
+-- | bridgeClient is the only socket left after MIDIScheduler's
+-- | deletion; the clock owns the BPM value (`tidal_clock:set_bpm/1`),
+-- | this just broadcasts the change.
+setLinkTempo :: Number -> State -> Effect Unit
+setLinkTempo bpm (State s) =
+  MIDIBridge.setLinkTempo s.bridgeClient bpm
 
 -- | Is this `#` parameter name consumed by a slot override on any of
 -- | the binding's actions? If yes, the per-PrimAction dispatch already

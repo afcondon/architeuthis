@@ -15,10 +15,13 @@ binaryToString(Other) ->
     Other.
 
 %% Cowboy callbacks - delegate to PureScript
-init(Req, Config) ->
-    SchedulerPid = maps:get(schedulerPid, Config),
-    State = #{schedulerPid => SchedulerPid, connected => true},
-    io:format("WebSocket: New connection (handler v2 - channel support)~n"),
+init(Req, _Config) ->
+    %% After PR1.7d the WS handler no longer holds a scheduler pid;
+    %% all dispatch goes through registered names (tidal_dispatcher,
+    %% tidal_voice_sup, tidal_clock). State just tracks connection
+    %% liveness for hypothetical disconnect cleanup.
+    State = #{connected => true},
+    io:format("WebSocket: New connection~n"),
     %% Default cowboy idle_timeout is 60_000ms — too aggressive for a
     %% live-coding session (the user routinely sits looking at the
     %% modular for >1 minute between commands). Bump to 30 minutes.
@@ -30,9 +33,7 @@ websocket_init(State) ->
 
 websocket_handle({text, Text}, State) ->
     tidal_log:debug("WebSocket: Received message: ~s~n", [Text]),
-    SchedulerPid = maps:get(schedulerPid, State),
-
-    handle_pattern_message(Text, SchedulerPid, State);
+    handle_pattern_message(Text, State);
 websocket_handle({binary, Bin}, State) ->
     %% Treat binary as text
     websocket_handle({text, Bin}, State);
@@ -162,21 +163,6 @@ try_parse_prefixed(<<"bpm ", Rest/binary>>) ->
 try_parse_prefixed(<<"config bpm ", Rest/binary>>) ->
     case parse_number(trim_binary(Rest)) of
         {ok, N} -> {set_bpm, N};
-        error -> none
-    end;
-try_parse_prefixed(<<"config midi-device ", Rest/binary>>) ->
-    %% Device name may be quoted ("AUDIO4c USB2"); strip surrounding
-    %% quotes idempotently.  Per-line trailing whitespace also goes.
-    {set_default_midi_device, strip_surrounding_quotes(trim_binary(Rest))};
-try_parse_prefixed(<<"config gate-enabled ", Rest/binary>>) ->
-    case trim_binary(Rest) of
-        <<"true">> -> {set_gate_enabled, true};
-        <<"false">> -> {set_gate_enabled, false};
-        _ -> none
-    end;
-try_parse_prefixed(<<"config look-ahead-ms ", Rest/binary>>) ->
-    case parse_number(trim_binary(Rest)) of
-        {ok, N} -> {set_look_ahead_ms, N};
         error -> none
     end;
 try_parse_prefixed(_) ->
@@ -317,30 +303,17 @@ split_lat_suffix(Bin) ->
 %% Handle pattern messages. New path: recognise "gate <ch>" / "cv <bus>"
 %% prefixes for per-track replacement (live-coding shape). Otherwise
 %% fall through to the legacy single-pattern / multi-track JSON parser.
-handle_pattern_message(Text, SchedulerPid, State) ->
+handle_pattern_message(Text, State) ->
     case try_parse_prefixed(Text) of
         {bind, Name, ActionSpec} ->
-            %% Dual-write: MIDIScheduler keeps its registry alive so the
-            %% BoundTrack walk's compositional `#` joins still resolve;
-            %% the dispatcher gets the same binding so PR1.4d-ii's voice
-            %% events can be dispatched from the new tree. Removed in
-            %% PR1.4e once MIDIScheduler stops hosting BoundTracks.
-            SchedulerPid ! {addBinding, Name, ActionSpec},
             tidal_dispatcher:set_binding_from_spec(Name, ActionSpec),
             Reply = {text, <<"OK: bind ", Name/binary, " ", ActionSpec/binary>>},
             {reply, Reply, State};
         {unbind, Name} ->
-            SchedulerPid ! {removeBinding, Name},
             tidal_dispatcher:remove_binding(Name),
             Reply = {text, <<"OK: unbind ", Name/binary>>},
             {reply, Reply, State};
         {hush} ->
-            %% Dual-write: MIDIScheduler drops its tracks (legacy
-            %% GateTrack / continuous voices etc.); voice_sup clears
-            %% every new-tree voice's pattern. Both branches are
-            %% required during the migration — neither owns the full
-            %% set of running voices alone.
-            SchedulerPid ! {hush},
             tidal_voice_sup:hush_all(),
             Reply = {text, <<"OK: hush">>},
             {reply, Reply, State};
@@ -350,9 +323,8 @@ handle_pattern_message(Text, SchedulerPid, State) ->
             Reply = {text, <<"OK: log-level ", NBin/binary>>},
             {reply, Reply, State};
         {load, Name} ->
-            handle_load_setup(Name, SchedulerPid, State);
+            handle_load_setup(Name, State);
         {midi_device, Alias, DeviceName, Latency} ->
-            SchedulerPid ! {registerMidiDevice, Alias, DeviceName, Latency},
             tidal_dispatcher:register_midi_device(Alias, DeviceName, Latency),
             LatBin = list_to_binary(io_lib:format("~p", [Latency])),
             Reply = {text, <<"OK: midi-device ", Alias/binary,
@@ -448,25 +420,15 @@ handle_pattern_message(Text, SchedulerPid, State) ->
             Json = (tidal_stateBus@foreign:read())(),
             {reply, {text, Json}, State};
         {set_bpm, N} ->
-            %% Dual-write: MIDIScheduler updates its config + tells
-            %% link-spike (the canonical tempo broadcaster); the
-            %% clock updates its local fallback so the new tree
-            %% behaves correctly when Link is unavailable.
-            SchedulerPid ! {setBpm, N},
+            %% Clock owns the BPM value; dispatcher broadcasts to
+            %% link-spike. Both fire in parallel — clock's set_bpm is
+            %% synchronous (so the snapshot picks up the new value on
+            %% the next publisher tick), dispatcher's set_link_tempo
+            %% is fire-and-forget OSC.
             tidal_clock:set_bpm(N),
+            tidal_dispatcher:set_link_tempo(N),
             NumBin = list_to_binary(io_lib:format("~p", [N])),
             {reply, {text, <<"OK: bpm = ", NumBin/binary>>}, State};
-        {set_default_midi_device, Name} ->
-            SchedulerPid ! {setDefaultMidiDevice, Name},
-            {reply, {text, <<"OK: midi-device = ", Name/binary>>}, State};
-        {set_gate_enabled, B} ->
-            SchedulerPid ! {setGateEnabled, B},
-            BBin = case B of true -> <<"true">>; false -> <<"false">> end,
-            {reply, {text, <<"OK: gate-enabled = ", BBin/binary>>}, State};
-        {set_look_ahead_ms, N} ->
-            SchedulerPid ! {setLookAheadMs, N},
-            NumBin = list_to_binary(io_lib:format("~p", [N])),
-            {reply, {text, <<"OK: look-ahead-ms = ", NumBin/binary>>}, State};
         none ->
             %% Not a built-in verb. Try named-binding dispatch.
             %% Unbound names produce an error reply (the legacy whole-
@@ -479,7 +441,7 @@ handle_pattern_message(Text, SchedulerPid, State) ->
                     %% directly, so each voice flows to its own
                     %% destination. Distinct from `<binding> :<expr>`
                     %% which fans-out-then-merges through one channel.
-                    handle_multi_expr(ExprSrc, Text, SchedulerPid, State);
+                    handle_multi_expr(ExprSrc, Text, State);
                 _ ->
                     {Word, Rest, ParamSpecs} = parse_with_join(Text),
                     case Rest of
@@ -492,7 +454,7 @@ handle_pattern_message(Text, SchedulerPid, State) ->
                             %% segments are ignored on this path in v1;
                             %% the expression already produces a
                             %% complete Pattern.
-                            handle_play_by_name_expr(Word, ExprSrc, Text, SchedulerPid, State);
+                            handle_play_by_name_expr(Word, ExprSrc, Text, State);
                         _ ->
                             %% Pre-flight parse so malformed input
                             %% (non-ASCII chars reaching the upstream
@@ -565,27 +527,16 @@ to_binary(B) when is_binary(B) -> B;
 to_binary(L) when is_list(L) -> list_to_binary(L);
 to_binary(Other) -> list_to_binary(io_lib:format("~p", [Other])).
 
-%% Mirror of handle_gate_expr for the bound-name path. Sends the raw
-%% expression source to the scheduler, which evaluates it against the
-%% binding registry — `Tidal.Expr.eval` (string-typed pattern, BoundTrack)
-%% if the name is a discrete binding, or as `VNumPattern`
-%% (number-typed, ContinuousTrack) if the name is a continuous-voice
-%% binding (`midi-cc-cont`/`cv-cont`).  The scheduler-side dispatch lets
-%% the same `<name> :<expr>` syntax serve both kinds without the WS
-%% handler needing to consult the registry.  Errors surface in the BEAM
-%% logs rather than as a reply payload — the cell stays running and
-%% the user notices via missing audio + log.
-handle_play_by_name_expr(Word, ExprSrc, FullText, SchedulerPid, State) ->
-    %% Three-way routing:
-    %%   * discrete binding   → new voice tree, parseEvalPattern.
-    %%   * continuous binding → new voice tree, parseEvalNumPattern,
-    %%                          set_voice_cont_pat (PR1.5-b).
-    %%   * neither            → fall through to MIDIScheduler for the
-    %%                          legacy whole-text path / error logging.
-    %%
-    %% On parse failure within either bound branch we fall through too,
-    %% so MIDIScheduler's existing error logging stays the user-visible
-    %% diagnostic surface during the transition.
+%% Named-binding `<name> :<expr>` path. Three-way routing:
+%%   * discrete binding   → new voice tree, parseEvalPattern.
+%%   * continuous binding → new voice tree, parseEvalNumPattern.
+%%   * neither            → ERROR reply (legacy fallback gone).
+%%
+%% Parse failures inside either bound branch surface as ERROR
+%% replies too — the user sees the message in Calypso instead of
+%% buried in the BEAM log (the MIDIScheduler-side typed-error
+%% diagnostic was retired with PR1.7d).
+handle_play_by_name_expr(Word, ExprSrc, _FullText, State) ->
     OkReply = {reply,
                {text, <<"OK: dispatched '", Word/binary,
                         "' :", ExprSrc/binary>>},
@@ -602,9 +553,12 @@ handle_play_by_name_expr(Word, ExprSrc, FullText, SchedulerPid, State) ->
                              {text, <<"ERROR: ", ErrBin/binary>>},
                              State}
                     end;
-                {left, _Err} ->
-                    SchedulerPid ! {playByNameExpr, Word, ExprSrc, FullText},
-                    OkReply
+                {left, Err} ->
+                    ErrBin = to_binary(Err),
+                    {reply,
+                     {text, <<"ERROR: ", Word/binary, " :expr: ",
+                              ErrBin/binary>>},
+                     State}
             end;
         {nothing} ->
             case tidal_dispatcher:lookup_continuous_binding(Word) of
@@ -621,17 +575,18 @@ handle_play_by_name_expr(Word, ExprSrc, FullText, SchedulerPid, State) ->
                                      {text, <<"ERROR: ", ErrBin/binary>>},
                                      State}
                             end;
-                        {left, _Err} ->
-                            %% Continuous binding but the expression
-                            %% didn't evaluate to Pattern Number — let
-                            %% MIDIScheduler surface the typed error.
-                            SchedulerPid !
-                                {playByNameExpr, Word, ExprSrc, FullText},
-                            OkReply
+                        {left, Err} ->
+                            ErrBin = to_binary(Err),
+                            {reply,
+                             {text, <<"ERROR: ", Word/binary, " :expr: ",
+                                      ErrBin/binary>>},
+                             State}
                     end;
                 {nothing} ->
-                    SchedulerPid ! {playByNameExpr, Word, ExprSrc, FullText},
-                    OkReply
+                    {reply,
+                     {text, <<"ERROR: no binding '", Word/binary,
+                              "' (use `bind` first)">>},
+                     State}
             end
     end.
 
@@ -647,7 +602,7 @@ handle_play_by_name_expr(Word, ExprSrc, FullText, SchedulerPid, State) ->
 %% PlayMultiByName migrates entirely to the new tree. The reply still
 %% lists only the names that actually got installed (skipped entries
 %% don't appear in the bracketed list).
-handle_multi_expr(ExprSrc, FullText, _SchedulerPid, State) ->
+handle_multi_expr(ExprSrc, _FullText, State) ->
     Result = try ('tidal_expr@ps':evalMulti())(ExprSrc)
              catch Class:Reason ->
                  {crash, list_to_binary(io_lib:format("~p:~p", [Class, Reason]))}
@@ -736,7 +691,7 @@ sanitize_name_loop(<<_, Rest/binary>>, Acc) ->
 %% setup files. Errors on individual lines are logged but don't abort
 %% the load (best-effort — partial setup is more useful than none).
 
-handle_load_setup(Name, SchedulerPid, State) ->
+handle_load_setup(Name, State) ->
     case sanitize_name(Name) of
         <<>> ->
             Reply = {text, <<"ERROR: load - invalid name (alphanum/dash/underscore only)">>},
@@ -753,7 +708,7 @@ handle_load_setup(Name, SchedulerPid, State) ->
                                 blank   -> {T, S + 1, E};
                                 comment -> {T, S + 1, E};
                                 code    ->
-                                    case dispatch_setup_line(Trimmed, SchedulerPid) of
+                                    case dispatch_setup_line(Trimmed) of
                                         ok    -> {T + 1, S, E};
                                         error -> {T + 1, S, E + 1}
                                     end
@@ -795,11 +750,10 @@ classify_line(<<>>) -> blank;
 classify_line(<<"--", _/binary>>) -> comment;
 classify_line(_) -> code.
 
-%% Dispatch one line through the same parsing as a direct WS message.
-%% We pattern-match on try_parse_prefixed's result and fire the matching
-%% scheduler message. For unrecognized lines we fall back to named-binding
-%% dispatch (so calling `bd "1 ~ 1 1"` inside a setup file plays through).
-dispatch_setup_line(Line, SchedulerPid) ->
+%% Dispatch one line from a setup file. Mirrors handle_pattern_message
+%% minus the WS replies, plus a "name + pattern" path for unprefixed
+%% lines.
+dispatch_setup_line(Line) ->
     case try_parse_prefixed(Line) of
         none ->
             %% Unprefixed line — treat as named-binding dispatch with
@@ -807,9 +761,6 @@ dispatch_setup_line(Line, SchedulerPid) ->
             {Word, Rest, ParamSpecs} = parse_with_join(Line),
             case safe_parse(Rest) of
                 {ok, _} ->
-                    %% Same routing logic as handle_pattern_message:
-                    %% bound names go to the new voice tree; unbound
-                    %% names error out (legacy fallback removed in PR1.7a).
                     case tidal_dispatcher:lookup_binding(Word) of
                         {just, Binding} ->
                             case tidal_voice_sup:set_voice(
@@ -830,36 +781,31 @@ dispatch_setup_line(Line, SchedulerPid) ->
                     error
             end;
         Action ->
-            dispatch_setup_action(Action, SchedulerPid)
+            dispatch_setup_action(Action)
     end.
 
-%% Send the matching scheduler message for a parsed action.  This mirrors
-%% handle_pattern_message's case arms minus the WS replies. Add a clause
-%% here whenever a new verb is added to handle_pattern_message that should
-%% also work inside setup files.
-dispatch_setup_action(Action, SchedulerPid) ->
+%% Run a parsed action against the same destinations
+%% handle_pattern_message uses, minus the WS reply side. Add a clause
+%% here whenever a new verb is added to handle_pattern_message that
+%% should also work inside setup files.
+dispatch_setup_action(Action) ->
     case Action of
         {midi_device, Alias, DeviceName, Latency} ->
-            SchedulerPid ! {registerMidiDevice, Alias, DeviceName, Latency},
             tidal_dispatcher:register_midi_device(Alias, DeviceName, Latency),
             ok;
         {bind, Name, ActionSpec} ->
-            %% Dual-write — see comment in handle_pattern_message.
-            SchedulerPid ! {addBinding, Name, ActionSpec},
             tidal_dispatcher:set_binding_from_spec(Name, ActionSpec),
             ok;
         {unbind, Name} ->
-            SchedulerPid ! {removeBinding, Name},
             tidal_dispatcher:remove_binding(Name),
             ok;
         {hush} ->
-            SchedulerPid ! {hush},
             tidal_voice_sup:hush_all(),
             ok;
         {load, Name} ->
             %% Recursive load — common pattern: a "scene" file that
             %% loads device packs first, then defines patterns.
-            handle_load_setup(Name, SchedulerPid, #{}),
+            handle_load_setup(Name, #{}),
             ok;
         {fh2_gate, Voice, Output, Channel} ->
             %% Synchronous on the load path. fh2-config does a read-
@@ -874,6 +820,10 @@ dispatch_setup_action(Action, SchedulerPid) ->
         {fh2_envelope, Voice, Output, Channel} ->
             tidal_dispatcher:set_fh2_voice_channel(Voice, Channel),
             fh2_set_envelope(Voice, Output, Channel),
+            ok;
+        {set_bpm, N} ->
+            tidal_clock:set_bpm(N),
+            tidal_dispatcher:set_link_tempo(N),
             ok;
         Other ->
             io:format("[load] verb not yet supported in setup files: ~p~n", [Other]),
