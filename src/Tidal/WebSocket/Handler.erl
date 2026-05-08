@@ -671,15 +671,40 @@ handle_pattern_message(Text, SchedulerPid, State) ->
                             %% quote chars the parser doesn't understand.
                             case safe_parse(Rest) of
                                 {ok, _} ->
-                                    %% PureScript Array a is encoded as
-                                    %% Erlang `array` (sparse-array
-                                    %% module), not list — sending a
-                                    %% plain list here makes array:size
-                                    %% crash with badarg in the scheduler.
-                                    ParamSpecsArray = array:from_list(ParamSpecs),
-                                    SchedulerPid ! {playByName, Word, Rest, Text, ParamSpecsArray},
-                                    Reply = {text, <<"OK: dispatched '", Word/binary, "'">>},
-                                    {reply, Reply, State};
+                                    %% Route through new tree if Word
+                                    %% is a registered binding; otherwise
+                                    %% fall back to MIDIScheduler's
+                                    %% legacy whole-text pattern path.
+                                    case tidal_dispatcher:lookup_binding(Word) of
+                                        {just, Binding} ->
+                                            case tidal_voice_sup:set_voice(
+                                                   Word, Binding, Rest, ParamSpecs) of
+                                                ok ->
+                                                    Reply = {text, <<"OK: dispatched '",
+                                                                     Word/binary, "'">>},
+                                                    {reply, Reply, State};
+                                                {error, Err} ->
+                                                    ErrBin = list_to_binary(
+                                                               io_lib:format("~p", [Err])),
+                                                    Reply = {text, <<"ERROR: ",
+                                                                     ErrBin/binary>>},
+                                                    {reply, Reply, State}
+                                            end;
+                                        {nothing} ->
+                                            %% Unbound name → MIDIScheduler
+                                            %% does the legacy whole-text
+                                            %% interpretation (`bd sn hh cp`
+                                            %% style without prior bind).
+                                            %% PureScript Array a is
+                                            %% encoded as Erlang `array`,
+                                            %% not list — sending a plain
+                                            %% list makes array:size crash
+                                            %% with badarg in the scheduler.
+                                            ParamSpecsArray = array:from_list(ParamSpecs),
+                                            SchedulerPid ! {playByName, Word, Rest, Text, ParamSpecsArray},
+                                            Reply = {text, <<"OK: dispatched '", Word/binary, "'">>},
+                                            {reply, Reply, State}
+                                    end;
                                 {parse_err, ErrBin} ->
                                     Reply = {text, <<"ERROR: parse: ", ErrBin/binary>>},
                                     {reply, Reply, State}
@@ -1108,9 +1133,24 @@ dispatch_setup_line(Line, SchedulerPid) ->
             {Word, Rest, ParamSpecs} = parse_with_join(Line),
             case safe_parse(Rest) of
                 {ok, _} ->
-                    ParamSpecsArray = array:from_list(ParamSpecs),
-                    SchedulerPid ! {playByName, Word, Rest, Line, ParamSpecsArray},
-                    ok;
+                    %% Same routing logic as handle_pattern_message:
+                    %% bound name → new voice tree, unbound → MIDIScheduler
+                    %% legacy fallback.
+                    case tidal_dispatcher:lookup_binding(Word) of
+                        {just, Binding} ->
+                            case tidal_voice_sup:set_voice(
+                                   Word, Binding, Rest, ParamSpecs) of
+                                ok -> ok;
+                                {error, Err} ->
+                                    io:format("[load] install error on line ~s: ~p~n",
+                                              [Line, Err]),
+                                    error
+                            end;
+                        {nothing} ->
+                            ParamSpecsArray = array:from_list(ParamSpecs),
+                            SchedulerPid ! {playByName, Word, Rest, Line, ParamSpecsArray},
+                            ok
+                    end;
                 {parse_err, _} ->
                     io:format("[load] parse error on line: ~s~n", [Line]),
                     error
