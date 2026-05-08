@@ -740,18 +740,90 @@ After 1.6: MIDIScheduler.purs is empty modulo helpers and the
 legacy GateTrack/CVTrack/ESXTrack code (which already migrated to
 synthesized BoundTrack equivalents at the verb-handling level).
 
-### 3.5 PR1.7 — Legacy verbs synthesize BoundTracks
+### 3.5 PR1.7 — Dismantle MIDIScheduler in four sub-commits
 
-- WS handler's `UpdateGateTrack`, `UpdateCVTrack`, `UpdateESXTrack`
-  install voices with auto-generated bindings under reserved names.
-- MIDIScheduler.purs is deleted in this commit.
+The original §3.5 plan ("migrate legacy verbs and delete
+MIDIScheduler.purs in one commit") underestimated how much non-track
+work MIDIScheduler still owns. Audit at end of PR1.6:
 
-### 3.6 PR1.8 — State publisher
+- Track verbs: `UpdateGateTrack`, `UpdateCVTrack`, `UpdateESXTrack`,
+  `UpdateGateTrackP`, `UpdateTracks`, `UpdatePattern`,
+  `UpdatePatternWithChannel`.
+- `Fh2Shape` (sends ADSR CCs; reads MIDIScheduler.fh2VoiceChannels).
+- Config verbs: `SetBpm`, `SetGateEnabled`, `SetLookAheadMs`,
+  `SetDefaultMidiDevice`.
+- Snapshot publication via `publishState` writing to StateBus.
+- Snapshot mirror state for `bindings`, `sinkTypes`, `midiDevices`,
+  `continuousBindings`, `continuousTracks`, `fh2VoiceChannels`
+  (populated by AddBinding, RegisterMidiDevice, Fh2Envelope, etc.).
 
-- `tidal_state_pub` gen_server reads from voice_sup + dispatcher +
-  clock at 10Hz, writes JSON to StateBus.
-- Calypso's `state` reading is unchanged (same ETS row, same JSON
+**Constraint**: at each sub-PR boundary, every verb has exactly
+ONE runtime owner. Dual-write to passive snapshot registries is
+allowed (read-only-on-read); dual-DISPATCH is forbidden (can't tell
+which path produced the audio when verifying).
+
+**Sub-commit plan:**
+
+#### 3.5.1 PR1.7a — Legacy track verbs migrate
+
+- WS handler's `track`-style verbs (UpdateGateTrack, UpdateCVTrack,
+  UpdateESXTrack, UpdateGateTrackP, UpdateTracks, UpdatePattern,
+  UpdatePatternWithChannel) install bound voices in
+  `tidal_voice_sup` with auto-generated bindings under reserved
+  names (e.g. `__legacy-gate-1`, `__legacy-cv-15`).
+- WS handler stops sending these messages to MIDIScheduler.
+- MIDIScheduler's handlers become no-op stubs. `state.tracks`
+  field stops being populated; `for_ state.tracks` tick walk goes
+  unreachable. Tick handler can lose the loop entirely OR keep
+  it running over an empty array (cosmetic).
+
+#### 3.5.2 PR1.7b — Fh2Shape migrates to dispatcher
+
+- New `dispatcher:dispatch_fh2_shape(voice, a, d, s, r)` API.
+  Reads dispatcher.fh2VoiceChannels (already populated since
+  PR1.6); finds the `fh2` device alias; emits the 4 ADSR CCs
+  (70+offset/71+/72+/73+) via scheduleCCAt.
+- WS handler calls dispatcher directly; removes SchedulerPid send.
+- Fh2Envelope: drop the SchedulerPid send (the only consumer in
+  MIDIScheduler was Fh2Shape; that's now on the dispatcher).
+- MIDIScheduler's Fh2Shape and Fh2Envelope handlers become stubs.
+
+#### 3.5.3 PR1.7c — State publisher gen_server
+
+- New `tidal_state_pub` gen_server: timer-driven (10 Hz);
+  reads from voice_sup (which voices), dispatcher (bindings,
+  midiDevices, continuousBindings, fh2VoiceChannels), clock
+  (BPM, schedule interval, look-ahead).
+- Writes the same JSON shape the MIDIScheduler used to produce
+  to the same ETS row in StateBus.
+- Same commit: remove `publishState` call from
+  midiSchedulerLoop.
+- Calypso's `state` verb reads unchanged (same ETS row, same
   shape).
+
+#### 3.5.4 PR1.7d — Config verbs migrate; delete MIDIScheduler
+
+- `SetBpm` → tidal_clock (BPM is the clock's concern).
+- `SetGateEnabled`, `SetLookAheadMs`, `SetDefaultMidiDevice` →
+  appropriate homes; some may simply become no-ops (gate-enabled
+  is now a function of whether the dispatcher has an OSC client;
+  look-ahead is the clock's; default midi device is unused once
+  binding-registered devices replace it).
+- Boot path: Main.purs no longer calls `startMIDIScheduler`.
+- Delete `src/Tidal/MIDIScheduler.purs`. Delete dead Msg variants
+  from `Tidal.Scheduler`. Update WS handler to drop dead
+  SchedulerPid wiring (the variable becomes unused).
+
+After PR1.7: MIDIScheduler is gone. Voice tree owns voice events;
+dispatcher owns destination dispatch + ADSR; clock owns time/BPM;
+state publisher owns snapshot. Each verb has exactly one owner.
+
+### 3.6 PR1.8 — Reserved (was state publisher; folded into PR1.7c)
+
+PR1.7c replaces the original PR1.8 plan. PR1.8 is reserved for
+post-cleanup polish identified after the migration verifies
+(e.g., new sink renderings, FH-2 compositional fanout, etc.) and
+may not be needed at all.
 
 ## 4. Failure modes and rollback strategy
 
