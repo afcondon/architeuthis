@@ -41,6 +41,7 @@ import Data.Rational (Rational, fromInt)
 import Data.Rational as R
 import Data.Tuple (Tuple(..))
 import Tidal.Binding (Binding)
+import Tidal.Dispatch.Helpers (samplePatternAt)
 import Tidal.Eval.Interpret (tpatToPattern)
 import Tidal.Parse.Parser (parse)
 import Tidal.Pattern.Core (queryArc)
@@ -252,25 +253,6 @@ computeUntil w (State s) = case s.pattern of
           newSt = State (s { lastEmittedUntil = toCycle })
         in
           { newState: newSt, events: evs }
-
--- | Sample a parameter pattern at a single cycle time. Used for `#`
--- | parameter joins: the structure pattern's event determines `when`;
--- | each `# <name> <pat>` segment's pattern, queried at that same time,
--- | provides the parameter value used to override a binding-default
--- | field (velocity, note, …) for this one event.
--- |
--- | Mirrors `MIDIScheduler.samplePatternAt` exactly. Inlined here so
--- | Voice doesn't depend on MIDIScheduler; cleanup in PR1.4e moves
--- | both call sites onto a shared helper module.
-samplePatternAt :: forall a. Rational -> Pattern a -> Maybe a
-samplePatternAt cycleAt pat =
-  let
-    epsilon = fromInt 1 / fromInt 1000000
-    events = queryArc pat cycleAt (cycleAt + epsilon)
-  in case Array.head events of
-    Just (Digital ev) -> Just ev.value
-    Just (Analog ev) -> Just ev.value
-    Nothing -> Nothing
 
 -- ---------------------------------------------------------------------------
 -- Event helpers (private — not yet promoted to Pattern.Types).

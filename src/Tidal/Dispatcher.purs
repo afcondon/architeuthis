@@ -61,7 +61,7 @@ import Tidal.Binding (Binding, PrimAction(..))
 import Tidal.Binding as Binding
 import Tidal.Log as Log
 import Tidal.MIDIBridge (BridgeClient, scheduleCCAt, scheduleNoteAt)
-import Tidal.MIDIScheduler (clamp7bit, interpretCV, noteNameMidi, param7bit)
+import Tidal.Dispatch.Helpers (clamp7bit, interpretCV, noteNameMidi, param7bit)
 import Tidal.OSC (OSCClient, sendCVAfter, sendES5GateTrigAfter, sendESXAfter, sendGateTrigAfter)
 
 -- ---------------------------------------------------------------------------

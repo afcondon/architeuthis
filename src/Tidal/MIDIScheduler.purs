@@ -11,14 +11,7 @@ module Tidal.MIDIScheduler
   , defaultGateConfig
   , defaultSampleGateMap
   , defaultSampleCVMap
-  , voctValue
   , noteEntry
-  -- Re-exported for `Tidal.Dispatcher` during the per-voice migration.
-  -- Move these to a shared `Tidal.Dispatch.Helpers` module in PR1.4e.
-  , noteNameMidi
-  , interpretCV
-  , clamp7bit
-  , param7bit
   ) where
 
 import Prelude
@@ -48,6 +41,7 @@ import Erl.Process.Raw as Raw
 import Tidal.Eval.Interpret (tpatToPattern)
 import Tidal.Expr as Expr
 import Tidal.Binding as Binding
+import Tidal.Dispatch.Helpers (noteNameMidi, voctValue, clamp7bit, samplePatternAt)
 import Tidal.Sink as Sink
 import Tidal.MIDI (MIDIConfig)
 import Tidal.MIDIBridge (BridgeClient, scheduleNoteAt, scheduleCCAt)
@@ -143,13 +137,6 @@ defaultSampleGateMap = Map.fromFoldable $
        , "c6"
        ]
 
--- | Convert a MIDI note number to a digital CV value at 1V/octave on
--- | the ES-9's ±10V → digital ±1.0 scale: `value = midiNote / 120.0`.
--- | Examples: MIDI 0 (C-1) → 0.0 (0V), MIDI 60 (C4 / middle C) → 0.5
--- | (5V), MIDI 120 (C9) → 1.0 (10V).
-voctValue :: Int -> Number
-voctValue midiNote = Int.toNumber midiNote / 120.0
-
 -- | Build a (sample-name, sampleCVMap entry) tuple for a pitched voice.
 -- | `noteEntry "c4" 60 15` gives `Tuple "c4" { bus: 15, value: 0.5 }`.
 noteEntry :: String -> Int -> Int -> Tuple String { bus :: Int, value :: Number }
@@ -211,20 +198,6 @@ data ParsedTrack
   -- | after the Tidal parser produces each numeric value: e.g. `[Offset
   -- | (-0.5)]` shifts an unsigned [0..1] LFO into bipolar [-0.5..0.5].
   | ESXTrack  { pattern :: Pattern String, slot :: Int, transforms :: Array Transform }
-  -- | A pattern dispatched via a named binding. The binding is a list of
-  -- | PrimActions; each pattern event fires every action. Replaces the
-  -- | hardcoded `gate <ch>` / `cv <bus>` dispatch when the user has
-  -- | registered a name like `kick` or `plaits`.
-  | BoundTrack
-      { pattern :: Pattern String
-      , name :: String
-      , binding :: Binding.Binding
-      , params :: Map String (Pattern String)
-        -- ^ Joined parameter patterns from `#` segments.  At dispatch
-        -- time, each is queried at the same `eventCycle` as the
-        -- structure pattern; the resulting per-event values override
-        -- corresponding fields on the bound PrimActions.
-      }
   -- | FH-2 trigger track. Each pattern token fires a MIDI note on the FH-2
   -- | for the given voice. The voice's MIDI channel is looked up from
   -- | `state.fh2VoiceChannels` at dispatch time (registered via
@@ -236,8 +209,7 @@ data ParsedTrack
 -- |
 -- | A continuous voice runs at the scheduler tick rate (one sample per
 -- | tick, default 50ms = 20Hz) and emits one MIDI CC or CV update per
--- | sample.  Distinct from the discrete event-driven dispatch path of
--- | `BoundTrack`.
+-- | sample.
 data ContDest
   = ContMidiCC { device :: String, channel :: Int, cc :: Int }
   | ContCV     { bus :: Int, transforms :: Array Transform }
@@ -470,7 +442,6 @@ midiSchedulerLoop stateRef = do
                 GateTrack g -> g.pattern
                 CVTrack c -> c.pattern
                 ESXTrack e -> e.pattern
-                BoundTrack b -> b.pattern
                 Fh2TriggerTrack f -> f.pattern
           let events = queryArc pattern fromCycle toCycle
           for_ events \event -> do
@@ -548,129 +519,6 @@ midiSchedulerLoop stateRef = do
                         liftEffect $ OSC.sendESXAfter osc e.slot value delayClamped
                       Nothing -> pure unit
                     Nothing -> pure unit
-
-                BoundTrack b -> do
-                  -- Run the binding's PrimAction list. CVs fire first
-                  -- (with cvLeadMs head start) so V/oct settles before
-                  -- the gate trigger. MIDI dispatch lives alongside —
-                  -- different destinations, same per-event loop.
-                  let cvLead = state.config.gate.cvLeadMs
-                  let cvDelay = max 0.0 (delayClamped - cvLead)
-                  for_ b.binding \action -> case action of
-                    Binding.CV bus mapping ->
-                      case state.oscClient, interpretCV mapping token of
-                        Just osc, Just value -> do
-                          liftEffect $ Log.debug $ "〰 [" <> b.name <> "] cv bus " <> show bus <> " = " <> show value
-                          liftEffect $ OSC.sendCVAfter osc bus value cvDelay
-                        _, _ -> pure unit
-                    Binding.ESX e ->
-                      case state.oscClient, Number.fromString token of
-                        Just osc, Just value -> do
-                          let adjusted = max 0.0 (delayClamped - Int.toNumber e.latencyMs)
-                          liftEffect $ Log.debug $ "⌇ [" <> b.name <> "] esx slot " <> show e.slot <> " = " <> show value <> " (lat " <> show e.latencyMs <> "ms)"
-                          liftEffect $ OSC.sendESXAfter osc e.slot value adjusted
-                        _, _ -> pure unit
-                    Binding.Gate g ->
-                      when (token /= "~") do
-                        case state.oscClient of
-                          Just osc -> do
-                            let adjusted = max 0.0 (delayClamped - Int.toNumber g.latencyMs)
-                            liftEffect $ Log.debug $ "⚡ [" <> b.name <> "] gate " <> show g.channel <> " in " <> show delayInt <> "ms (lat " <> show g.latencyMs <> "ms)"
-                            liftEffect $ OSC.sendGateTrigAfter osc g.channel state.config.gate.gateDuration adjusted
-                          Nothing -> pure unit
-                    Binding.ES5Gate g ->
-                      when (token /= "~") do
-                        case state.oscClient of
-                          Just osc -> do
-                            let adjusted = max 0.0 (delayClamped - Int.toNumber g.latencyMs)
-                            liftEffect $ Log.debug $ "✦ [" <> b.name <> "] es5gate " <> show g.bit <> " in " <> show delayInt <> "ms (lat " <> show g.latencyMs <> "ms)"
-                            liftEffect $ OSC.sendES5GateTrigAfter osc g.bit state.config.gate.gateDuration adjusted
-                          Nothing -> pure unit
-                    Binding.MidiNote m ->
-                      when (token /= "~") do
-                        case Map.lookup m.device state.midiDevices of
-                          Nothing ->
-                            liftEffect $ Log.debug $ "✗ [" <> b.name <> "] midi-note: unknown device alias '" <> m.device <> "'"
-                          Just dev -> do
-                            -- Token can override the binding's defaultNote with
-                            -- a note name (c4, e4, etc.). Falls back to the
-                            -- binding's defaultNote for trigger-style tokens
-                            -- (bd, sn, etc.) so drum patterns work.
-                            let note = case Map.lookup token noteNameMidi of
-                                  Just n -> n
-                                  Nothing -> m.defaultNote
-                            -- `# vel "..."` — query the velocity pattern at
-                            -- this event's cycle time and override the
-                            -- binding's default.  Out-of-range / non-numeric
-                            -- tokens (rest `~`, words) fall back to default.
-                            let velocity = case Map.lookup "vel" b.params of
-                                  Nothing -> m.velocity
-                                  Just velPat -> case samplePatternAt eventCycle velPat of
-                                    Just velTok -> case param7bit velTok of
-                                      Just v -> v
-                                      Nothing -> m.velocity
-                                    Nothing -> m.velocity
-                            -- Latency compensation: emit earlier by the
-                            -- device's reported latency so this destination
-                            -- arrives in unison with faster ones.
-                            let adjustedDelayMs = max 0.0 (delayClamped - dev.latencyMs)
-                            let adjustedUnixUs = nowUnixUs + adjustedDelayMs * 1000.0
-                            liftEffect $ Log.debug $ "  [" <> b.name <> "] midi " <> dev.name <> " ch" <> show m.channel <> " note " <> show note <> " vel " <> show velocity <> " (dur " <> show m.durationMs <> "ms) in " <> show (Int.floor adjustedDelayMs) <> "ms"
-                            liftEffect $ scheduleNoteAt state.bridgeClient dev.name m.channel note velocity m.durationMs adjustedUnixUs
-                    Binding.MidiCC m ->
-                      case Number.fromString token of
-                        Nothing -> pure unit  -- ~ rest or non-numeric → skip
-                        Just raw ->
-                          case Map.lookup m.device state.midiDevices of
-                            Nothing ->
-                              liftEffect $ Log.debug $ "✗ [" <> b.name <> "] midi-cc: unknown device alias '" <> m.device <> "'"
-                            Just dev -> do
-                              -- Pattern values 0..1 → MIDI 0..127. Clamp to
-                              -- safe range; CC values >127 or <0 silently
-                              -- truncated by sendmidi anyway, but explicit
-                              -- clamp gives predictable behaviour.
-                              let value7bit = clamp7bit (raw * 127.0)
-                              let adjustedDelayMs = max 0.0 (delayClamped - dev.latencyMs)
-                              let adjustedUnixUs = nowUnixUs + adjustedDelayMs * 1000.0
-                              liftEffect $ Log.debug $ "◇ [" <> b.name <> "] midi " <> dev.name <> " ch" <> show m.channel <> " cc" <> show m.cc <> " = " <> show value7bit
-                              liftEffect $ scheduleCCAt state.bridgeClient dev.name m.channel m.cc value7bit adjustedUnixUs
-
-                  -- Compositional `#` joins: any param NAME that matches
-                  -- another registered binding fires that binding's actions
-                  -- at the same event time, with the value drawn from the
-                  -- joined pattern.  This is how cross-binding chaining
-                  -- works — `lap "x*4" # laplace-resonator-strength "0.2 0.7"`
-                  -- both plays the note AND sweeps the resonator CC.
-                  --
-                  -- Slot-override params (currently just "vel") are skipped
-                  -- here because they were already consumed by the matching
-                  -- PrimAction case above.  Names that don't match any
-                  -- registered binding are silently ignored — the user may
-                  -- have a typo, but a noisy log per-event would drown the
-                  -- useful traces.
-                  let composed = Map.toUnfoldable b.params
-                          :: Array (Tuple String (Pattern String))
-                  for_ composed \(Tuple paramName paramPat) ->
-                    when (not (isSlotOverride paramName b.binding)) do
-                      case Map.lookup paramName state.bindings of
-                        Nothing -> pure unit
-                        Just composedBinding ->
-                          case samplePatternAt eventCycle paramPat of
-                            Nothing -> pure unit  -- rest token → no fire
-                            Just composedToken ->
-                              for_ composedBinding \action -> case action of
-                                Binding.MidiCC m -> case Number.fromString composedToken of
-                                  Nothing -> pure unit
-                                  Just raw ->
-                                    case Map.lookup m.device state.midiDevices of
-                                      Nothing -> pure unit
-                                      Just dev -> do
-                                        let v7 = clamp7bit (raw * 127.0)
-                                        let dms = max 0.0 (delayClamped - dev.latencyMs)
-                                        let uus = nowUnixUs + dms * 1000.0
-                                        liftEffect $ Log.debug $ "  ◇ [" <> b.name <> " # " <> paramName <> "] cc " <> show m.cc <> " = " <> show v7
-                                        liftEffect $ scheduleCCAt state.bridgeClient dev.name m.channel m.cc v7 uus
-                                _ -> pure unit  -- only MidiCC composition for now
 
                 Fh2TriggerTrack f ->
                   -- Look up the voice's MIDI channel. If unregistered (user
@@ -819,7 +667,6 @@ midiSchedulerLoop stateRef = do
         GateTrack g -> liftEffect $ Log.debug $ "- gate ch " <> show g.channel
         CVTrack c -> liftEffect $ Log.debug $ "- cv bus " <> show c.bus
         ESXTrack e -> liftEffect $ Log.debug $ "- esx slot " <> show e.slot
-        BoundTrack b -> liftEffect $ Log.debug $ "- bound: " <> b.name
         Fh2TriggerTrack f -> liftEffect $ Log.debug $ "- fh2-trigger v" <> show f.voice
       midiSchedulerLoop stateRef
 
@@ -867,87 +714,37 @@ midiSchedulerLoop stateRef = do
       liftEffect $ log $ "unbind " <> name
       midiSchedulerLoop stateRef
 
-    PlayByName name patStr fullText paramSpecs -> do
+    PlayByName name _patStr fullText _paramSpecs -> do
+      -- Legacy whole-text fallback path. After PR1.4d-ii-b the WS
+      -- handler only routes here when the name has NO discrete
+      -- binding (otherwise the play installs on the new voice tree
+      -- instead). The fallback installs a single GateTrack from the
+      -- full message text — preserves `bd sn hh cp`-without-bind.
       state <- liftEffect $ Ref.read stateRef
-      case checkPatternForName state name (classifyPatString patStr) of
-        Left msg -> liftEffect $ log $ "✗ " <> msg
-        Right _ -> pure unit
-      case Map.lookup name state.bindings of
-        Just binding ->
-          case parse patStr of
-            Left _ ->
-              liftEffect $ log $ "play '" <> name <> "' parse error: " <> patStr
-            Right ast -> do
-              -- Parse each `# <name> <pat>` segment.  Spec entries that
-              -- don't parse are silently dropped — the structure pattern
-              -- still fires; the user just doesn't get that override.
-              let parsedParams = Map.fromFoldable
-                    $ Array.mapMaybe
-                        (\ps -> case parse ps.pat of
-                          Right p -> Just (Tuple ps.name (tpatToPattern p))
-                          Left _ -> Nothing)
-                        paramSpecs
-              let newTrack = BoundTrack
-                    { pattern: tpatToPattern ast
-                    , name
-                    , binding
-                    , params: parsedParams
-                    }
-              let isOther = case _ of
-                    BoundTrack b -> b.name /= name
-                    _            -> true
-              let newTracks = Array.filter isOther state.tracks <> [newTrack]
-              liftEffect $ Ref.write (state { tracks = newTracks }) stateRef
-              let paramSummary = case Array.length paramSpecs of
-                    0 -> ""
-                    n -> "  (+" <> show n <> " param"
-                      <> (if n == 1 then "" else "s") <> ": "
-                      <> Str.joinWith ", " (map _.name paramSpecs) <> ")"
-              liftEffect $ log $ name <> ": " <> patStr <> paramSummary
-        Nothing -> do
-          -- Fallback: treat fullText as a legacy whole-message pattern.
-          -- This preserves backward compat for `bd sn hh cp`-style messages
-          -- when no binding has shadowed the first word. The legacy path
-          -- replaces ALL tracks (gate + CV) with a single GateTrack.
-          liftEffect $ log $ "(no binding '" <> name <> "', falling back to legacy pattern)"
-          let firstGateChannel = Array.findMap (case _ of
-                GateTrack g -> Just g.channel
-                _ -> Nothing) state.tracks
-          let channel = fromMaybe state.config.midi.channel firstGateChannel
-          let newTracks = case parse fullText of
-                Right ast -> [GateTrack { pattern: tpatToPattern ast, channel, fanout: true }]
-                Left _ -> state.tracks
-          liftEffect $ Ref.write (state { tracks = newTracks }) stateRef
-          liftEffect $ log $ "Pattern updated (legacy): " <> fullText
+      liftEffect $ log $ "(no binding '" <> name <> "', falling back to legacy pattern)"
+      let firstGateChannel = Array.findMap (case _ of
+            GateTrack g -> Just g.channel
+            _ -> Nothing) state.tracks
+      let channel = fromMaybe state.config.midi.channel firstGateChannel
+      let newTracks = case parse fullText of
+            Right ast -> [GateTrack { pattern: tpatToPattern ast, channel, fanout: true }]
+            Left _ -> state.tracks
+      liftEffect $ Ref.write (state { tracks = newTracks }) stateRef
+      liftEffect $ log $ "Pattern updated (legacy): " <> fullText
       midiSchedulerLoop stateRef
 
-    PlayByNameP name pat fullText -> do
-      state <- liftEffect $ Ref.read stateRef
-      case Map.lookup name state.bindings of
-        Just binding -> do
-          let newTrack = BoundTrack
-                { pattern: pat
-                , name
-                , binding
-                , params: Map.empty
-                }
-          let isOther = case _ of
-                BoundTrack b -> b.name /= name
-                _            -> true
-          let newTracks = Array.filter isOther state.tracks <> [newTrack]
-          liftEffect $ Ref.write (state { tracks = newTracks }) stateRef
-          liftEffect $ log $ name <> ": " <> fullText
-        Nothing ->
-          liftEffect $ log $ "(no binding '" <> name <> "', :expr ignored)"
+    PlayByNameP _name _pat _fullText -> do
+      -- Dead constructor — no Erlang call site builds it. Kept on
+      -- the Msg sum for type completeness; cleaned up when the Msg
+      -- type itself shrinks (post-PR1.4e cleanup).
       midiSchedulerLoop stateRef
 
     PlayByNameExpr name exprSrc fullText -> do
-      -- Carrier for the colon-prefix `<name> :<expr>` form.  Three
-      -- steps: evaluate the expression; type-check the result against
-      -- the registered sink; route to either a ContinuousTrack
-      -- (continuous binding) or a BoundTrack (discrete binding).  All
-      -- errors logged with the unaliased sink signature so the user
-      -- can see what was expected.
+      -- After PR1.4d-ii-c the WS handler routes the discrete-binding
+      -- case to the new voice tree directly. This handler only sees
+      -- the colon-expr form when the name is continuous-bound (or
+      -- unbound, in which case we log "no binding"). Continuous voices
+      -- migrate to the new tree in PR1.5; until then they live here.
       state <- liftEffect $ Ref.read stateRef
       case Expr.parseExpr exprSrc >>= Expr.evalExpr of
         Left err ->
@@ -968,64 +765,14 @@ midiSchedulerLoop stateRef = do
                     liftEffect $ Ref.write (state { continuousTracks = newCTs }) stateRef
                     liftEffect $ log $ "≈ " <> name <> ": " <> fullText
                   _, _ ->
-                    case Map.lookup name state.bindings, Expr.asPattern result of
-                      Just binding, Right pat -> do
-                        let newTrack = BoundTrack
-                              { pattern: pat
-                              , name
-                              , binding
-                              , params: Map.empty
-                              }
-                        let isOther = case _ of
-                              BoundTrack b -> b.name /= name
-                              _            -> true
-                        let newTracks = Array.filter isOther state.tracks <> [newTrack]
-                        liftEffect $ Ref.write (state { tracks = newTracks }) stateRef
-                        liftEffect $ log $ name <> ": " <> fullText
-                      _, _ ->
-                        liftEffect $ log $ "(no binding '" <> name <> "', :expr ignored)"
+                    liftEffect $ log $ "(no binding '" <> name <> "', :expr ignored)"
       midiSchedulerLoop stateRef
 
-    PlayMultiByName entries fullText -> do
-      -- Bare `:<expr>` form. Each entry is (binding-name, transformed
-      -- pattern); each becomes a BoundTrack so the binding's note
-      -- resolver applies and the destination is the binding's
-      -- channel.  Atomic replacement: drop all existing BoundTracks
-      -- whose name appears in the incoming entries, then append the
-      -- new ones.  Entries whose name has no binding are logged and
-      -- dropped.
-      state <- liftEffect $ Ref.read stateRef
-      let
-        resolved = Array.mapMaybe
-          (\(Tuple n p) -> case Map.lookup n state.bindings of
-              Just binding -> Just
-                ( BoundTrack
-                    { pattern: p
-                    , name: n
-                    , binding
-                    , params: Map.empty
-                    }
-                )
-              Nothing -> Nothing)
-          entries
-        unresolved = Array.mapMaybe
-          (\(Tuple n _) -> case Map.lookup n state.bindings of
-              Just _  -> Nothing
-              Nothing -> Just n)
-          entries
-        replacing = Array.mapMaybe
-          (\(Tuple n _) -> case Map.lookup n state.bindings of
-              Just _  -> Just n
-              Nothing -> Nothing)
-          entries
-        isReplaced = case _ of
-          BoundTrack b -> Array.elem b.name replacing
-          _            -> false
-        newTracks = Array.filter (not <<< isReplaced) state.tracks <> resolved
-      liftEffect $ Ref.write (state { tracks = newTracks }) stateRef
-      liftEffect $ log $ "multi: " <> fullText
-      for_ unresolved \n ->
-        liftEffect $ log $ "(no binding '" <> n <> "', voice skipped)"
+    PlayMultiByName _entries _fullText -> do
+      -- Dead handler — the WS handler routes :<expr> multi-bare-expr
+      -- entirely through the new voice tree as of PR1.4d-ii-d. Kept
+      -- on the Msg sum for type completeness; cleaned up when the
+      -- Msg type itself shrinks (post-PR1.4e cleanup).
       midiSchedulerLoop stateRef
 
     Hush -> do
@@ -1137,39 +884,6 @@ midiSchedulerLoop stateRef = do
     Stop -> do
       liftEffect $ log "MIDI Scheduler stopped"
 
--- | Interpret a pattern token according to a CV mapping mode.
--- |   LiteralValue   → parse as Number
--- |   NoteNameVoct   → parse as note name → 1V/oct on ±10V→±1.0 scale
--- |   SampleNameMap  → lookup
-interpretCV :: Binding.CVMapping -> String -> Maybe Number
-interpretCV = case _ of
-  Binding.LiteralValue -> Number.fromString
-  Binding.NoteNameVoct -> \tok ->
-    case Map.lookup tok noteNameMidi of
-      Just midi -> Just (voctValue midi)
-      Nothing -> Nothing
-  Binding.SampleNameMap m -> \tok -> Map.lookup tok m
-
--- | Sample a parameter pattern at a single cycle time.  Used for `#`
--- | parameter joins: the structure pattern's event determines `when`;
--- | each `# <name> <pat>` segment's pattern, queried at that same time,
--- | provides the parameter value used to override a binding-default
--- | field (velocity, note, duration, …) for this one event.
-samplePatternAt :: forall a. R.Rational -> Pattern a -> Maybe a
-samplePatternAt cycleAt pat =
-  let
-    -- A thin window starting AT `cycleAt`. An event whose arc covers
-    -- this point is returned; if none cover (e.g. a rest token), Nothing.
-    -- The epsilon must be positive so digital event lookup hits — Tidal
-    -- digital events span half-open arcs, so a zero-width query at the
-    -- arc start would return [].
-    epsilon = R.fromInt 1 / R.fromInt 1000000
-    events = queryArc pat cycleAt (cycleAt + epsilon)
-  in case Array.head events of
-    Just (Digital ev) -> Just ev.value
-    Just (Analog ev) -> Just ev.value
-    Nothing -> Nothing
-
 -- | Check whether a pattern is type-compatible with the registered
 -- | sink(s) for `name`.  A binding can have multiple actions (e.g.
 -- | `plaits = gate 6 + cv 15 voct`); the pattern must satisfy ALL of
@@ -1193,22 +907,10 @@ checkPatternForName state name patType =
         Nothing -> Right unit
         Just msg -> Left $ "voice '" <> name <> "': " <> msg
 
--- | Classify a `Pattern String` (mini-notation) by re-parsing the
--- | source text.  We do this rather than introspecting the live
--- | Pattern because Pattern is opaque (a function); the source text
--- | is preserved at the WS-handler level.
-classifyPatString :: String -> Sink.PatternType
-classifyPatString src = case parse src of
-  Right ast -> Sink.PatString (Sink.classifyTPat ast)
-  Left _ -> Sink.PatString Sink.ContentMixed  -- parse-failure can't be classified
-
 -- | Coarse-grained `PatternType` for an `Expr.EvalResult`.  Only
 -- | distinguishes Number vs String at this layer; can't classify
 -- | string-token content because the original TPat isn't preserved
--- | through Expr-layer transformations.  For bare-pattern dispatch
--- | (`PlayByName`) the source string is available and
--- | `classifyPatString` does the finer classification; here we
--- | accept ContentMixed as a permissive default.
+-- | through Expr-layer transformations.
 patternTypeOfEval :: Expr.EvalResult -> Maybe Sink.PatternType
 patternTypeOfEval = case _ of
   Expr.VPattern _ -> Just (Sink.PatString Sink.ContentMixed)
@@ -1282,32 +984,6 @@ dispatchContValue state dest name rawValue nowUnixUs = case dest of
         Log.debug $ "≈ [" <> name <> "] cv bus " <> show c.bus <> " = " <> show value
         OSC.sendCVAfter osc c.bus value 0.0
 
--- | Parse a parameter token as a 7-bit integer in [0..127].  Used for
--- | the `# vel ...` and (future) `# cc... ...` overrides where the
--- | wire byte is bounded.  Out-of-range values fall back to Nothing
--- | so the dispatcher uses the binding default rather than wrap.
-param7bit :: String -> Maybe Int
-param7bit tok = case Number.fromString tok of
-  Just n | n >= 0.0 && n <= 127.0 -> Just (Int.floor n)
-  _ -> Nothing
-
--- | Is this `#` parameter name consumed by a slot override on any of
--- | the binding's actions?  If yes, the BoundTrack's per-PrimAction
--- | dispatch already used it; the compositional fallback should skip
--- | it to avoid double-dispatch.
--- |
--- | Currently only `vel` is a recognised slot, applying to MidiNote
--- | actions.  Add cases as more slots become pattern-driven (`note`,
--- | `dur`, MIDI CC value scaling, etc.).
-isSlotOverride :: String -> Binding.Binding -> Boolean
-isSlotOverride name binding = case name of
-  "vel" -> Array.any isMidiNote binding
-    where
-    isMidiNote = case _ of
-      Binding.MidiNote _ -> true
-      _ -> false
-  _ -> false
-
 -- | Convert a wire-level TransformSpec into a typed Transform for use
 -- | by `applyTransforms`. The two types are parallel today; if the
 -- | wire spec gains constructors that need richer semantics (e.g. a
@@ -1317,13 +993,6 @@ specToTransform = case _ of
   SpecOffset n  -> Offset n
   SpecInvert    -> Invert
   SpecScale a b -> Scale a b
-
--- | Clamp a Number to MIDI's 7-bit range [0..127] and floor it.
-clamp7bit :: Number -> Int
-clamp7bit n
-  | n < 0.0   = 0
-  | n > 127.0 = 127
-  | otherwise = Int.floor n
 
 -- | Render a transform pipeline for log output, e.g. "  | offset -0.5".
 showTransforms :: Array Transform -> String
@@ -1336,54 +1005,6 @@ showTransforms ts =
     Offset n  -> "offset " <> show n
     Invert    -> "invert"
     Scale a b -> "scale " <> show a <> " " <> show b
-
--- | Note name → MIDI number (C-1 = 0, C0 = 12, C4 = 60, etc.).
--- | Covers C0..C8. Tokens outside this range fall back to the binding's
--- | `defaultNote`, so add octaves here when a session needs them.
--- |
--- | Each sharp (`cs`, `ds`, `fs`, `gs`, `as`) is also registered with
--- | the conventional `#` spelling (`c#`, `d#`, `f#`, `g#`, `a#`) so
--- | users who don't know Tidal's `s`-suffix idiom can still get a
--- | sharp.  Both spellings resolve to the same MIDI number.
-noteNameMidi :: Map String Int
-noteNameMidi = Map.fromFoldable (entries <> sharpAliases entries)
-  where
-    entries :: Array (Tuple String Int)
-    entries =
-      [ Tuple "c0"  12, Tuple "cs0" 13, Tuple "d0"  14, Tuple "ds0" 15
-      , Tuple "e0"  16, Tuple "f0"  17, Tuple "fs0" 18, Tuple "g0"  19
-      , Tuple "gs0" 20, Tuple "a0"  21, Tuple "as0" 22, Tuple "b0"  23
-      , Tuple "c1"  24, Tuple "cs1" 25, Tuple "d1"  26, Tuple "ds1" 27
-      , Tuple "e1"  28, Tuple "f1"  29, Tuple "fs1" 30, Tuple "g1"  31
-      , Tuple "gs1" 32, Tuple "a1"  33, Tuple "as1" 34, Tuple "b1"  35
-      , Tuple "c2"  36, Tuple "cs2" 37, Tuple "d2"  38, Tuple "ds2" 39
-      , Tuple "e2"  40, Tuple "f2"  41, Tuple "fs2" 42, Tuple "g2"  43
-      , Tuple "gs2" 44, Tuple "a2"  45, Tuple "as2" 46, Tuple "b2"  47
-      , Tuple "c3"  48, Tuple "cs3" 49, Tuple "d3"  50, Tuple "ds3" 51
-      , Tuple "e3"  52, Tuple "f3"  53, Tuple "fs3" 54, Tuple "g3"  55
-      , Tuple "gs3" 56, Tuple "a3"  57, Tuple "as3" 58, Tuple "b3"  59
-      , Tuple "c4"  60, Tuple "cs4" 61, Tuple "d4"  62, Tuple "ds4" 63
-      , Tuple "e4"  64, Tuple "f4"  65, Tuple "fs4" 66, Tuple "g4"  67
-      , Tuple "gs4" 68, Tuple "a4"  69, Tuple "as4" 70, Tuple "b4"  71
-      , Tuple "c5"  72, Tuple "cs5" 73, Tuple "d5"  74, Tuple "ds5" 75
-      , Tuple "e5"  76, Tuple "f5"  77, Tuple "fs5" 78, Tuple "g5"  79
-      , Tuple "gs5" 80, Tuple "a5"  81, Tuple "as5" 82, Tuple "b5"  83
-      , Tuple "c6"  84, Tuple "cs6" 85, Tuple "d6"  86, Tuple "ds6" 87
-      , Tuple "e6"  88, Tuple "f6"  89, Tuple "fs6" 90, Tuple "g6"  91
-      , Tuple "gs6" 92, Tuple "a6"  93, Tuple "as6" 94, Tuple "b6"  95
-      , Tuple "c7"  96, Tuple "cs7" 97, Tuple "d7"  98, Tuple "ds7" 99
-      , Tuple "e7" 100, Tuple "f7" 101, Tuple "fs7" 102, Tuple "g7" 103
-      , Tuple "gs7" 104, Tuple "a7" 105, Tuple "as7" 106, Tuple "b7" 107
-      , Tuple "c8" 108
-      ]
-
-    -- | For each `<letter>s<octave>` entry, also expose `<letter>#<octave>`
-    -- | so `f#2` and `fs2` both resolve to MIDI 30.
-    sharpAliases :: Array (Tuple String Int) -> Array (Tuple String Int)
-    sharpAliases = Array.mapMaybe \(Tuple name n) ->
-      case SCU.toCharArray name of
-        [ letter, 's', oct ] -> Just (Tuple (SCU.fromCharArray [letter, '#', oct]) n)
-        _ -> Nothing
 
 -- | Get the cycle time to fire this event AT.
 -- |
@@ -1481,8 +1102,6 @@ serializeState s =
         "{\"kind\":\"cv\",\"bus\":" <> show c.bus <> "}"
       ESXTrack e ->
         "{\"kind\":\"esx\",\"slot\":" <> show e.slot <> "}"
-      BoundTrack b ->
-        "{\"kind\":\"bound\",\"name\":" <> jsStr b.name <> "}"
       Fh2TriggerTrack f ->
         "{\"kind\":\"fh2-trigger\",\"voice\":" <> show f.voice <> "}"
     tracksArr = jsArrOf trackEntry s.tracks
