@@ -779,21 +779,26 @@ to_binary(Other) -> list_to_binary(io_lib:format("~p", [Other])).
 %% logs rather than as a reply payload — the cell stays running and
 %% the user notices via missing audio + log.
 handle_play_by_name_expr(Word, ExprSrc, FullText, SchedulerPid, State) ->
-    %% Route discrete bindings through the new voice tree; fall through
-    %% to MIDIScheduler for continuous bindings, unbound names, and any
-    %% case where eval doesn't produce a Pattern String. The fall-
-    %% through preserves the existing error logging in MIDIScheduler so
-    %% users get consistent diagnostics whether the path is new or old.
+    %% Three-way routing:
+    %%   * discrete binding   → new voice tree, parseEvalPattern.
+    %%   * continuous binding → new voice tree, parseEvalNumPattern,
+    %%                          set_voice_cont_pat (PR1.5-b).
+    %%   * neither            → fall through to MIDIScheduler for the
+    %%                          legacy whole-text path / error logging.
+    %%
+    %% On parse failure within either bound branch we fall through too,
+    %% so MIDIScheduler's existing error logging stays the user-visible
+    %% diagnostic surface during the transition.
+    OkReply = {reply,
+               {text, <<"OK: dispatched '", Word/binary,
+                        "' :", ExprSrc/binary>>},
+               State},
     case tidal_dispatcher:lookup_binding(Word) of
         {just, Binding} ->
             case ('tidal_expr@ps':parseEvalPattern())(ExprSrc) of
                 {right, Pattern} ->
                     case tidal_voice_sup:set_voice_pat(Word, Binding, Pattern) of
-                        ok ->
-                            {reply,
-                             {text, <<"OK: dispatched '", Word/binary,
-                                      "' :", ExprSrc/binary>>},
-                             State};
+                        ok -> OkReply;
                         {error, Err} ->
                             ErrBin = list_to_binary(io_lib:format("~p", [Err])),
                             {reply,
@@ -801,21 +806,36 @@ handle_play_by_name_expr(Word, ExprSrc, FullText, SchedulerPid, State) ->
                              State}
                     end;
                 {left, _Err} ->
-                    %% Eval failed or produced a non-Pattern-String
-                    %% result. Forward to MIDIScheduler which will
-                    %% re-eval and surface the error consistently.
                     SchedulerPid ! {playByNameExpr, Word, ExprSrc, FullText},
-                    {reply,
-                     {text, <<"OK: dispatched '", Word/binary,
-                              "' :", ExprSrc/binary>>},
-                     State}
+                    OkReply
             end;
         {nothing} ->
-            SchedulerPid ! {playByNameExpr, Word, ExprSrc, FullText},
-            {reply,
-             {text, <<"OK: dispatched '", Word/binary,
-                      "' :", ExprSrc/binary>>},
-             State}
+            case tidal_dispatcher:lookup_continuous_binding(Word) of
+                {just, Dest} ->
+                    case ('tidal_expr@ps':parseEvalNumPattern())(ExprSrc) of
+                        {right, NumPattern} ->
+                            case tidal_voice_sup:set_voice_cont_pat(
+                                   Word, Dest, NumPattern) of
+                                ok -> OkReply;
+                                {error, Err} ->
+                                    ErrBin = list_to_binary(
+                                               io_lib:format("~p", [Err])),
+                                    {reply,
+                                     {text, <<"ERROR: ", ErrBin/binary>>},
+                                     State}
+                            end;
+                        {left, _Err} ->
+                            %% Continuous binding but the expression
+                            %% didn't evaluate to Pattern Number — let
+                            %% MIDIScheduler surface the typed error.
+                            SchedulerPid !
+                                {playByNameExpr, Word, ExprSrc, FullText},
+                            OkReply
+                    end;
+                {nothing} ->
+                    SchedulerPid ! {playByNameExpr, Word, ExprSrc, FullText},
+                    OkReply
+            end
     end.
 
 %% Bare `:<expr>` form: voice tags name bindings, each voice flows to
