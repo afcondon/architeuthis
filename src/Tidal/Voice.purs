@@ -220,11 +220,24 @@ computeUntil w (State s) = case s.pattern of
         { newState: State s, events: [] }
       else
         let
+          -- Query the whole integer cycle range and emit all events
+          -- in it. Dedup across ticks comes from `lastEmittedUntil`
+          -- advancing by the same integer toCycle: subsequent ticks
+          -- short-circuit until currentCycle reaches the next
+          -- integer boundary, at which point we query the next cycle.
+          --
+          -- Earlier versions of this function added a sub-cycle
+          -- `inWindow` filter restricting events to [fromCycleNum,
+          -- toCycleNum). That dropped any event whose start cycle
+          -- fell between toCycleNum and the integer toCycle — events
+          -- at non-zero positions within a cycle were silently lost.
+          -- Pattern `c2 c2 c2 c3` only ever emitted the c2 at position
+          -- 0; positions 0.25 / 0.5 / 0.75 never fired. See PR1.4e+1.
+          --
+          -- Matches MIDIScheduler.purs (line 482's per-track loop):
+          -- whole-integer-cycle emission, look-ahead handled by the
+          -- absolute wallTimeUs each event carries.
           queryEvents = queryArc pat fromCycle toCycle
-          inWindow e =
-            let cN = R.toNumber (eventStartCycle e)
-            in cN >= fromCycleNum && cN < toCycleNum
-          kept = Array.filter inWindow queryEvents
           -- Sample each param pattern at this event's cycle position.
           -- Param patterns whose query produces no event at this point
           -- (e.g. a rest token) are simply absent from the params map;
@@ -249,7 +262,7 @@ computeUntil w (State s) = case s.pattern of
               , wallTimeUs
               , params: sampleParamsAt eventCycle
               }
-          evs = if s.muted then [] else map toDispatch kept
+          evs = if s.muted then [] else map toDispatch queryEvents
           newSt = State (s { lastEmittedUntil = toCycle })
         in
           { newState: newSt, events: evs }
