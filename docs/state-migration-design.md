@@ -423,16 +423,309 @@ Scheduler's BoundTrack dispatch is dead (no patterns reach it).
 
 ### 3.3 PR1.5 — Continuous voices migrate
 
-- Voice state gains `Continuous` variant.
-- WS handler's `PlayByNameExpr`: when name matches a `continuousBinding`,
-  install via `voice_sup:set_voice(name, Continuous, ...)`.
-- Voice's `computeUntil` for `Continuous` produces immediate-emit
-  events.
-- Dispatcher's `dispatch_cont_event` looks up `continuousBindings`,
-  emits CC/CV.
+This is the largest sub-PR after PR1.4d. Three sub-commits.
+
+#### 3.3.1 PR1.5-a — Infrastructure (additive, no routing flip)
+
+**Goal**: Voice and Dispatcher both gain the data structures + APIs
+needed to host continuous voices end-to-end, but no WS verb routes
+to the new continuous path yet. Continuous still flows through
+MIDIScheduler.
+
+**Files & changes:**
+
+- **`src/Tidal/Binding.purs`** — new module home for `ContDest`.
+  Move from MIDIScheduler.purs:
+  ```purescript
+  data ContDest
+    = ContMidiCC { device :: String, channel :: Int, cc :: Int }
+    | ContCV     { bus :: Int, transforms :: Array Transform }
+  ```
+  Export from Tidal.Binding's module list. The
+  parallel-implementation note at top of Tidal.Binding noted server-
+  side-only types — ContDest is server-side state, fits there. The
+  `Transform` import comes from `Tidal.Transform` (already used).
+  *Server-only*: do NOT mirror in tidal-protocol's Binding.purs;
+  ContDest is dispatch state, not wire protocol.
+
+- **`src/Tidal/Voice.purs`** — voice state becomes a sum:
+  ```purescript
+  data VoiceKind
+    = Discrete
+        { pattern :: Maybe (Pattern String)
+        , params :: Map String (Pattern String)
+        , binding :: Binding
+        }
+    | Continuous
+        { pattern :: Maybe (Pattern Number)
+        , dest :: ContDest
+        }
+
+  newtype State = State
+    { name :: String
+    , kind :: VoiceKind
+    , phase :: Rational
+    , lastEmittedUntil :: Rational
+    , muted :: Boolean
+    }
+  ```
+  - `initialState` becomes `initialDiscreteState` and
+    `initialContinuousState` (or one constructor with explicit
+    kind).
+  - `setPattern :: Pattern String -> State -> State` updates the
+    Discrete variant only (errors silently if Continuous? or no-op?
+    decision: silent no-op + a debug log; matches existing style).
+  - New: `setContinuousPattern :: Pattern Number -> State -> State`
+    for the Continuous variant.
+  - `installFromSpec` (used by WS handler for discrete) stays as is —
+    its caller checks discrete-binding-ness first.
+  - New: `installContFromExpr :: Pattern Number -> State -> State`
+    or similar — set continuous pattern from an already-evaluated
+    Pattern Number.
+  - `EventToDispatch` becomes a sum:
+    ```purescript
+    data EventToDispatch
+      = DiscreteEvent { token :: String, wallTimeUs :: Number, params :: Map String String }
+      | ContinuousEvent { value :: Number, wallTimeUs :: Number }
+    ```
+  - `computeUntil` dispatches on `state.kind`:
+    - `Discrete`: same logic as today.
+    - `Continuous`: samples the Pattern Number at currentCycle (one
+      tick = one emission). Produces zero or one events. lastEmittedUntil
+      semantics simpler — just bumped to the integer cycle of currentCycle
+      plus a small step, OR we can drop the dedup since each tick
+      always re-samples (no look-ahead). Decision: keep
+      lastEmittedUntil for parity but it doesn't gate emission.
+    - Actually simpler: the Continuous branch emits on every tick if
+      the pattern is set, regardless of lastEmittedUntil.
+  - Snapshot extends to indicate kind.
+
+- **`src/tidal_voice.erl`** — handle the polymorphic state opaquely;
+  the `compute_until` cast iterates events with the correct
+  dispatch_event variant per event tag:
+  ```erlang
+  array:foldl(fun(_Idx, E, _) ->
+                  case E of
+                      #{kind := <<"discrete">>, ...} ->
+                          tidal_dispatcher:dispatch_event(...);
+                      #{kind := <<"continuous">>, ...} ->
+                          tidal_dispatcher:dispatch_cont_event(...)
+                  end
+              end, ok, Events).
+  ```
+  Or the Erlang side can read a `kind` field from each event map.
+  (Note: PureScript sum types compile to tagged tuples;
+  destructuring will use `{discreteEvent, ...}` / `{continuousEvent, ...}`
+  patterns. Test the encoding before writing the dispatch.)
+
+- **`src/tidal_voice_sup.erl`** — new entrypoint:
+  ```erlang
+  set_voice_cont_pat(Name, ContDest, Pattern) ->
+      ...
+  ```
+  Mirror of set_voice_pat/3 but creates a Continuous-kind voice.
+
+- **`src/Tidal/Dispatcher.purs`** — state extends:
+  ```purescript
+  newtype State = State
+    { ...
+    , continuousBindings :: Map String ContDest
+    , ...
+    }
+  ```
+  New API:
+  - `setContinuousBinding :: String -> ContDest -> State -> State`
+  - `removeContinuousBinding :: String -> State -> State` — could
+    unify with removeBinding (delete from both maps). Decision:
+    unify, since unbind is one verb at the WS layer.
+  - `lookupContinuousBinding :: String -> State -> Maybe ContDest`
+  - `dispatchContEvent :: { name, value, wallTimeUs } -> State -> Effect State`
+    that looks up `continuousBindings`, applies the dest's emit
+    logic (mirror of MIDIScheduler.dispatchContValue).
+  - `setBindingFromSpec` extends: tries `parseContBinding` first
+    (move that helper to Tidal.Binding alongside ContDest), falls
+    through to `parseCompoundAction`. On continuous-spec match,
+    install in continuousBindings; on discrete, install in bindings.
+
+- **`src/tidal_dispatcher.erl`** — new APIs:
+  ```erlang
+  -export([..., dispatch_cont_event/3, lookup_continuous_binding/1, ...]).
+
+  dispatch_cont_event(Name, Value, WallTimeUs) ->
+      gen_server:cast(?MODULE,
+                      {cont_event, Name, Value, WallTimeUs}).
+  ```
+  handle_call adds `{lookup_continuous_binding, Name}` →
+  `'tidal_dispatcher@ps':lookupContinuousBinding(Name, PsState)`.
+  handle_cast adds `{cont_event, ...}`.
+
+- **`src/Tidal/Expr.purs`** — `parseEvalNumPattern` (sister to
+  parseEvalPattern):
+  ```purescript
+  parseEvalNumPattern :: String -> Either String (Pattern Number)
+  parseEvalNumPattern src = do
+    e <- parseExpr src
+    r <- evalExpr e
+    case r of
+      VNumPattern p -> Right p
+      _ -> Left "expected a number pattern"
+  ```
+
+- **`src/Tidal/Dispatch/Helpers.purs`** — no changes (already has
+  shared dispatch helpers).
+
+- **`src/Tidal/MIDIScheduler.purs`** — no changes (still hosts
+  continuous voices through ContinuousTrack tick walk; will be
+  cleaned up in PR1.5-c).
+
+**Build/test expectations:**
+- All existing tests pass.
+- Behavior unchanged at the user level — no WS verb reaches the new
+  continuous path.
+
+**Verification before commit:**
+- Manual test: existing discrete cells still play correctly.
+- Existing continuous cells (`bass-cutoff :slow 4 sine`) still LFO
+  through MIDIScheduler.
+
+#### 3.3.2 PR1.5-b — Routing flip
+
+**Goal**: WS handler `bind` dual-writes continuous specs to
+dispatcher; WS handler `playByNameExpr` routes continuous-bound
+expressions through the new tree.
+
+**Files & changes:**
+
+- **`src/Tidal/WebSocket/Handler.erl`** — bind path stays as is
+  (`set_binding_from_spec` now handles continuous specs internally
+  thanks to PR1.5-a's parser extension).
+
+- **`src/Tidal/WebSocket/Handler.erl`** — `handle_play_by_name_expr`
+  extends decision logic:
+  ```erlang
+  case tidal_dispatcher:lookup_binding(Word) of
+      {just, Binding} -> ... discrete path (unchanged)
+      {nothing} ->
+          case tidal_dispatcher:lookup_continuous_binding(Word) of
+              {just, Dest} ->
+                  case ('tidal_expr@ps':parseEvalNumPattern())(ExprSrc) of
+                      {right, Pattern} ->
+                          tidal_voice_sup:set_voice_cont_pat(Word, Dest, Pattern),
+                          ... reply ok
+                      {left, _Err} ->
+                          SchedulerPid ! {playByNameExpr, ...},
+                          ... forward
+                  end;
+              {nothing} ->
+                  SchedulerPid ! {playByNameExpr, ...},
+                  ... legacy fallback in MIDIScheduler
+          end
+  end.
+  ```
+
+- **`src/tidal_voice.erl`** — verify install_from_spec doesn't
+  accidentally apply to Continuous voices (it shouldn't, since
+  Continuous voices are created via set_voice_cont_pat which uses
+  setContinuousPattern).
+
+**Build/test expectations:**
+- All existing tests pass.
+- New behavior: `bass-cutoff :slow 4 sine` runs through new tree.
+- Verification: hush works on both kinds (since hush_all clears
+  pattern of every voice via clear_pattern, polymorphic).
+
+**Verification before commit:**
+- Manual test: LFO modulating a filter (continuous voice through new
+  tree).
+- Existing discrete cells still work.
+- Hush silences both discrete and continuous voices.
+
+#### 3.3.3 PR1.5-c — MIDIScheduler cleanup
+
+**Goal**: remove now-dead continuous-voice code from MIDIScheduler.
+
+**Files & changes:**
+
+- **`src/Tidal/MIDIScheduler.purs`**:
+  - Drop `continuousTracks :: Array ContinuousTrackData` field from
+    `MIDISchedulerState`.
+  - Drop `continuousBindings :: Map String ContDest` field (it's now
+    on dispatcher; see ‘Snapshot' below for cosmetic concern).
+  - Drop `dispatchContValue` function.
+  - Drop the continuous voice tick walk in `midiSchedulerLoop` (the
+    `for_ state.continuousTracks` block at the end of the Tick
+    handler).
+  - Drop `parseContBinding` (moved to Tidal.Binding).
+  - Drop `ContDest` definition (moved).
+  - Drop `ContinuousTrackData` type.
+  - Drop `numberToCycleRat` if unused after removal.
+  - `AddBinding` handler: simplify — it tried parseContBinding then
+    parseCompoundAction; now only parseCompoundAction (continuous is
+    handled by dispatcher's setBindingFromSpec via dual-write). Or
+    maybe keep both for snapshot purposes (continuous bindings
+    appear in JSON snapshot). Decision: keep both, for snapshot
+    until PR1.8.
+  - Actually re-read: continuousBindings stays on MIDIScheduler
+    until PR1.8 for snapshot purposes — same logic as bindings.
+    Re-examine: do we need to keep the field?
+    - bindings + sinkTypes feed the snapshot's `bindingNames` and
+      `voices` arrays.
+    - continuousBindings feeds the snapshot's `continuousBindings`
+      array.
+    - All three should stay until PR1.8.
+  - So PR1.5-c removes ONLY the runtime dispatch code, NOT the
+    state fields used for snapshots. Same pattern as PR1.4e.
+  - Remove ContDest definition (moved to Binding) — but the field
+    references it. Need to import the new location.
+
+- **Update test files** if any reference dropped functions.
+
+**Build/test expectations:**
+- All existing tests pass.
+- MIDIScheduler.purs shrinks ~150-200 lines.
+- Behavior unchanged.
+
+**Verification before commit:**
+- Continuous voices through new tree (smoke).
+- Discrete voices through new tree (smoke).
+- State JSON snapshot still includes continuousBindings (for Calypso).
+
+#### Risks / things to test before each commit
+
+- **PureScript sum-type encoding for VoiceKind**: each variant is
+  a tagged tuple (`{discrete, ...}` / `{continuous, ...}`).
+  The Erlang voice gen_server's `compute_until` handler must NOT
+  pattern-match on this directly — it should pass the opaque state
+  through PureScript and only inspect `EventToDispatch`'s tagged
+  output. The events are where the kind needs to discriminate.
+
+- **EventToDispatch encoding**: `{discreteEvent, #{...}}` vs
+  `{continuousEvent, #{...}}` after compilation. The Erlang voice's
+  `array:foldl` over events case-matches on these tags.
+
+- **ContDest encoding**: `{contMidiCC, #{...}}` and `{contCV, #{...}}`.
+  The dispatcher's PureScript dispatchContEvent destructures these
+  inside PureScript so Erlang doesn't need to know.
+
+- **Map encoding for Pattern Number**: same as Pattern String at
+  runtime — opaque function values. Voice and dispatcher don't
+  inspect them directly.
+
+#### Rollback plan
+
+If PR1.5-a infrastructure has a fundamental issue (e.g. sum-type
+encoding doesn't work as expected), revert the commit and reconsider.
+Options to fall back on:
+- Two parallel voice modules: `Tidal.Voice.Discrete` and
+  `Tidal.Voice.Continuous` with separate State types and supervisors.
+- Keep continuous voices in MIDIScheduler indefinitely; mark PR1.5
+  as "deferred" and skip to PR1.6.
+
+Document failure in §5 and adjust before retry.
 
 After 1.5: continuous voices run on new tree. MIDIScheduler's
-`continuousTracks` walk is dead.
+`continuousTracks` walk is gone. State snapshot fields kept for
+PR1.8.
 
 ### 3.4 PR1.6 — FH-2 migrates
 
