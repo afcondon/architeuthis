@@ -35,6 +35,8 @@ module Tidal.Binding
   , defaultRegistry
   , parseAction
   , parseCompoundAction
+  , ContDest(..)
+  , parseContBinding
   ) where
 
 import Prelude
@@ -48,6 +50,7 @@ import Data.Maybe (Maybe(..))
 import Data.String (Pattern(..), trim)
 import Data.String as String
 import Data.Tuple (Tuple(..))
+import Tidal.Transform (Transform)
 
 -- ---------------------------------------------------------------------------
 -- Types
@@ -84,8 +87,8 @@ derive instance eqCVMapping :: Eq CVMapping
 data PrimAction
   = Gate     { channel :: Int, latencyMs :: Int }     -- → cv-router /tidal/gate
   | CV       Int CVMapping                            -- bus 0..15 → cv-router /cv
-  | ESX      { slot :: Int,    latencyMs :: Int }     -- ESX-8CV slot 0..7 → /esx
-  | ES5Gate  { bit :: Int,     latencyMs :: Int }     -- ES-5 panel gate 0..7 → /esx5gate
+  | ESX      { slot :: Int, latencyMs :: Int }        -- ESX-8CV slot 0..7 → /esx
+  | ES5Gate  { bit :: Int,   latencyMs :: Int }       -- ES-5 panel gate 0..7 → /esx5gate
   -- MIDI primitives — device-aware. The `device` field is an alias
   -- registered via `midi-device <alias> <real-name>`; lets the same
   -- binding shape target FH-2, iPad-AUM, Yarns, IAC bus, etc. by
@@ -100,6 +103,18 @@ data PrimAction
   --   use what works for its destination.
   | MidiCC { device :: String, channel :: Int, cc :: Int }
   -- ^ Sends a MIDI CC. Numeric tokens 0..1 scale to 0..127.
+  | Fh2Trigger { voice :: Int, defaultNote :: Int }
+  -- ^ Fires an FH-2 envelope trigger. The MIDI channel is resolved at
+  --   dispatch time from the dispatcher's `fh2VoiceChannels` map
+  --   (populated by the `fh2-envelope` verb), so the same FH-2
+  --   destination can be reconfigured live without rebinding voices.
+  --   Note name in the token (e.g. `c4`) overrides defaultNote;
+  --   bare tokens (`bd`, `1`, `x`) fall back to defaultNote.
+  --   Always uses the `fh2` device alias.
+  --
+  --   *Server-only*: not constructable via `bind` (the user-facing
+  --   verb is `fh2-trigger <voice> <pattern>`). Wire-format clients
+  --   like tidal-protocol's Binding.purs don't need to mirror it.
 
 derive instance eqPrimAction :: Eq PrimAction
 
@@ -287,3 +302,48 @@ parseMapping = case _ of
   "literal" -> Just LiteralValue
   "voct"    -> Just NoteNameVoct
   _         -> Nothing
+
+-- ---------------------------------------------------------------------------
+-- Continuous-voice destination (server-only — no wire-protocol mirror).
+-- ---------------------------------------------------------------------------
+
+-- | Where a continuous (LFO-style) voice sends its sampled value.
+-- |
+-- | A continuous voice runs at the scheduler tick rate (one sample per
+-- | tick) and emits one MIDI CC or CV update per sample.
+-- |
+-- | **Server-only**: ContDest is dispatch state, not part of the wire
+-- | protocol. Do NOT mirror in tidal-protocol's Binding.purs — clients
+-- | send the spec text (`midi-cc-cont …` / `cv-cont …`) and the server
+-- | parses it via `parseContBinding`.
+data ContDest
+  = ContMidiCC { device :: String, channel :: Int, cc :: Int }
+  | ContCV     { bus :: Int, transforms :: Array Transform }
+
+derive instance eqContDest :: Eq ContDest
+
+-- | Try to parse a binding spec as a continuous-voice declaration.
+-- | Recognised shapes:
+-- |
+-- |   `midi-cc-cont <device> <channel> <cc>`
+-- |     Each scheduler tick the voice's pattern is sampled and the
+-- |     resulting 0..1 value is scaled to a 0..127 MIDI CC.
+-- |
+-- |   `cv-cont <bus>`
+-- |     Each tick samples the pattern and emits the raw value as a
+-- |     CV update on the given bus (cv-router OSC). No scaling — the
+-- |     user controls the range via `range` in the expression.
+-- |
+-- | Returns `Nothing` for any other shape, letting the caller fall
+-- | through to the discrete binding parser.
+parseContBinding :: String -> Maybe ContDest
+parseContBinding s =
+  case Array.filter (_ /= "") (String.split (Pattern " ") (trim s)) of
+    ["midi-cc-cont", device, chStr, ccStr] -> do
+      ch <- Int.fromString chStr
+      cc <- Int.fromString ccStr
+      Just (ContMidiCC { device, channel: ch, cc })
+    ["cv-cont", busStr] -> do
+      bus <- Int.fromString busStr
+      Just (ContCV { bus, transforms: [] })
+    _ -> Nothing

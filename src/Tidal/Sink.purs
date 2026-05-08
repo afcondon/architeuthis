@@ -160,6 +160,10 @@ data SinkType
   | SinkContCV
       { bus :: Int
       }
+  | SinkFh2Trigger
+      { voice :: Int
+      , defaultNote :: Int
+      }
 
 derive instance eqSinkType :: Eq SinkType
 
@@ -179,6 +183,7 @@ inferPrimSinkType = case _ of
   ES5Gate r -> SinkES5Gate r
   MidiNote r -> SinkMidiNote r
   MidiCC r -> SinkMidiCC r
+  Fh2Trigger r -> SinkFh2Trigger r
 
 -- | A `Binding` is `Array PrimAction` — the per-event dispatch list.
 -- | Its overall type is the array of per-action sink types; for
@@ -214,6 +219,7 @@ sinkElement = case _ of
   SinkES5Gate _ -> Trigger
   SinkContMidiCC _ -> Number
   SinkContCV _ -> Number
+  SinkFh2Trigger _ -> SampleOrNote
 
 sinkDestKind :: SinkType -> DestKind
 sinkDestKind = case _ of
@@ -227,6 +233,7 @@ sinkDestKind = case _ of
   SinkContCV _ -> ToCV
   SinkESX _ -> ToESX
   SinkES5Gate _ -> ToES5
+  SinkFh2Trigger _ -> ToMidi
 
 -- ---------------------------------------------------------------------------
 -- Pattern classification
@@ -453,6 +460,11 @@ checkPattern sink pat = case sink of
       Left $ "cv-cont voice expects a continuous numeric pattern \
              \(oscillator or numeric expression), got a discrete token pattern"
 
+  SinkFh2Trigger _ -> case pat of
+    PatNumber ->
+      Left $ "fh2-trigger voice expects sample/note tokens, got a numeric pattern"
+    PatString _ -> Right unit  -- defaultNote fallback handles unknowns
+
 -- ---------------------------------------------------------------------------
 -- Rendering — for state snapshot and Voices pane
 -- ---------------------------------------------------------------------------
@@ -494,6 +506,9 @@ renderSinkType st =
       SinkES5Gate r ->
         "ToES5 bit=" <> show r.bit
           <> " lat=" <> show r.latencyMs
+      SinkFh2Trigger r ->
+        "ToMidi device=\"fh2\" voice=" <> show r.voice
+          <> " note=" <> show r.defaultNote
 
 -- | JSON object representation for the state snapshot.  Stable shape:
 -- | { kind, element, destKind, detail }.  Calypso reads this to render
@@ -534,6 +549,9 @@ renderSinkTypeJSON st =
       SinkES5Gate r ->
         "{\"bit\":" <> show r.bit
           <> ",\"latencyMs\":" <> show r.latencyMs <> "}"
+      SinkFh2Trigger r ->
+        "{\"voice\":" <> show r.voice
+          <> ",\"defaultNote\":" <> show r.defaultNote <> "}"
 
     jsStr :: String -> String
     jsStr s = "\"" <> escape s <> "\""

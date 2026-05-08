@@ -52,6 +52,18 @@ erl: ps
 	@# Standalone Erlang utility modules (no PureScript counterpart, not foreign).
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_log.erl
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_link_anchor.erl
+	@# OTP application + top-level supervisor.
+	@erlc -disable-feature maybe_expr -o ebin src/purerl_tidal_app.erl
+	@erlc -disable-feature maybe_expr -o ebin src/purerl_tidal_sup.erl
+	@cp src/purerl_tidal.app.src ebin/purerl_tidal.app
+	@# Voice gen_server + supervisor (per-voice supervision tree).
+	@erlc -disable-feature maybe_expr -o ebin src/tidal_voice.erl
+	@erlc -disable-feature maybe_expr -o ebin src/tidal_voice_sup.erl
+	@# Clock (gen_statem) and Dispatcher (gen_server).
+	@erlc -disable-feature maybe_expr -o ebin src/tidal_clock.erl
+	@erlc -disable-feature maybe_expr -o ebin src/tidal_dispatcher.erl
+	@# State publisher (gen_server) — replaces MIDIScheduler.publishState.
+	@erlc -disable-feature maybe_expr -o ebin src/tidal_state_pub.erl
 	@echo "==> Build complete. BEAM files in ebin/"
 
 # Run tests

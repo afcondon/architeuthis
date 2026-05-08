@@ -5,7 +5,6 @@
 -export([init/2, websocket_init/1, websocket_handle/2, websocket_info/2]).
 
 %% Sets directory relative to working directory
--define(SETS_DIR, "sets").
 -define(SETUP_DIR, "setup").
 
 %% Convert binary to string (UTF-8)
@@ -15,98 +14,14 @@ binaryToString(Other) ->
     %% Already a string or other type
     Other.
 
-%% Parse message and extract tracks with their channels
-%% JSON format: {"tracks":[{"pattern":"...","channel":10},...],"combined":"..."}
-%% Returns {tracks, [{Pattern, Channel}, ...]} or {pattern, Pattern} for legacy
-parse_message(Text) when is_binary(Text) ->
-    case Text of
-        <<"{", _/binary>> ->
-            %% Looks like JSON - try to extract tracks array
-            case extract_tracks(Text) of
-                [] ->
-                    %% No tracks found, fall back to combined pattern
-                    Pattern = extract_json_field(Text, <<"\"combined\":\"">>, <<"~">>),
-                    {pattern, Pattern};
-                Tracks ->
-                    {tracks, Tracks}
-            end;
-        _ ->
-            %% Plain pattern string
-            {pattern, Text}
-    end.
-
-%% Extract all tracks from JSON tracks array
-%% Returns list of {Pattern, Channel} tuples
-extract_tracks(Text) ->
-    extract_tracks_loop(Text, []).
-
-extract_tracks_loop(Text, Acc) ->
-    %% Find next {"pattern":" occurrence
-    case binary:match(Text, <<"{\"pattern\":\"">> ) of
-        {Pos, _Len} ->
-            %% Extract this track
-            AfterBrace = binary:part(Text, Pos + 12, byte_size(Text) - Pos - 12),
-            %% Find pattern value (until next quote)
-            case binary:match(AfterBrace, <<"\"">> ) of
-                {PatEnd, _} ->
-                    Pattern = binary:part(AfterBrace, 0, PatEnd),
-                    %% Find channel in this track object
-                    AfterPattern = binary:part(AfterBrace, PatEnd, byte_size(AfterBrace) - PatEnd),
-                    Channel = extract_channel_from_track(AfterPattern),
-                    %% Continue searching for more tracks
-                    Remaining = binary:part(Text, Pos + 12 + PatEnd, byte_size(Text) - Pos - 12 - PatEnd),
-                    extract_tracks_loop(Remaining, [{Pattern, Channel} | Acc]);
-                nomatch ->
-                    lists:reverse(Acc)
-            end;
-        nomatch ->
-            lists:reverse(Acc)
-    end.
-
-%% Extract channel value from within a track object
-extract_channel_from_track(Text) ->
-    case binary:match(Text, <<"\"channel\":">> ) of
-        {Pos, Len} ->
-            Start = Pos + Len,
-            AfterKey = binary:part(Text, Start, byte_size(Text) - Start),
-            extract_number(AfterKey, <<>>);
-        nomatch ->
-            10  % Default to channel 10
-    end.
-
-%% Extract a string field value from JSON (simple extraction)
-extract_json_field(Text, FieldPattern, Default) ->
-    case binary:match(Text, FieldPattern) of
-        {Pos, Len} ->
-            Start = Pos + Len,
-            AfterKey = binary:part(Text, Start, byte_size(Text) - Start),
-            case binary:match(AfterKey, <<"\"">> ) of
-                {EndPos, _} ->
-                    binary:part(AfterKey, 0, EndPos);
-                nomatch ->
-                    Default
-            end;
-        nomatch ->
-            Default
-    end.
-
-%% Extract leading digits from binary and convert to integer
-extract_number(<<C, Rest/binary>>, Acc) when C >= $0, C =< $9 ->
-    extract_number(Rest, <<Acc/binary, C>>);
-extract_number(_, <<>>) ->
-    10;  % No digits found, default
-extract_number(_, Acc) ->
-    binary_to_integer(Acc).
-
-%% Convert list of {Pattern, Channel} to list of maps for PureScript
-tracks_to_ps_format(Tracks) ->
-    [#{pattern => P, channel => C} || {P, C} <- Tracks].
-
 %% Cowboy callbacks - delegate to PureScript
-init(Req, Config) ->
-    SchedulerPid = maps:get(schedulerPid, Config),
-    State = #{schedulerPid => SchedulerPid, connected => true},
-    io:format("WebSocket: New connection (handler v2 - channel support)~n"),
+init(Req, _Config) ->
+    %% After PR1.7d the WS handler no longer holds a scheduler pid;
+    %% all dispatch goes through registered names (tidal_dispatcher,
+    %% tidal_voice_sup, tidal_clock). State just tracks connection
+    %% liveness for hypothetical disconnect cleanup.
+    State = #{connected => true},
+    io:format("WebSocket: New connection~n"),
     %% Default cowboy idle_timeout is 60_000ms — too aggressive for a
     %% live-coding session (the user routinely sits looking at the
     %% modular for >1 minute between commands). Bump to 30 minutes.
@@ -118,22 +33,7 @@ websocket_init(State) ->
 
 websocket_handle({text, Text}, State) ->
     tidal_log:debug("WebSocket: Received message: ~s~n", [Text]),
-    SchedulerPid = maps:get(schedulerPid, State),
-
-    %% First check for set management actions
-    case extract_action(Text) of
-        <<"list_sets">> ->
-            handle_list_sets(State);
-        <<"save_set">> ->
-            handle_save_set(Text, State);
-        <<"load_set">> ->
-            handle_load_set(Text, SchedulerPid, State);
-        <<"delete_set">> ->
-            handle_delete_set(Text, State);
-        _ ->
-            %% Not a set action, handle as pattern message
-            handle_pattern_message(Text, SchedulerPid, State)
-    end;
+    handle_pattern_message(Text, State);
 websocket_handle({binary, Bin}, State) ->
     %% Treat binary as text
     websocket_handle({text, Bin}, State);
@@ -142,17 +42,13 @@ websocket_handle(_Frame, State) ->
 
 %% Try to parse one of the built-in verb prefixes.
 %% Returns one of:
-%%   {gate, Ch, Pattern}                       — fire gates on cv-router
-%%   {cv, Bus, Pattern}                        — emit /cv updates
-%%   {esx, Slot, Pattern}                      — emit /esx updates (Silent Way → ESX-8CV)
 %%   {fh2_envelope, Voice, Output, Channel}    — register an FH-2 envelope voice
 %%   {fh2_trigger, Voice, Pattern}             — pattern fires MIDI notes to FH-2 voice
 %%   {fh2_shape, Voice, A, D, S, R}            — live ADSR via CCs 70/71/72/73
 %%   {bind, Name, ActionSpec}                  — register a named binding
 %%   {unbind, Name}                            — remove a named binding
-%%   {slot, Name, Value}                       — set an input slot value (manual)
 %%   {hush}                                    — silence everything (Tidal-compat)
-%%   none                                      — try named-binding dispatch via play_or_legacy
+%%   none                                      — try named-binding dispatch
 try_parse_prefixed(<<"hush">>) -> {hush};
 try_parse_prefixed(<<"hush ", _/binary>>) -> {hush};
 try_parse_prefixed(<<"silence">>) -> {hush};
@@ -181,12 +77,6 @@ try_parse_prefixed(<<"midi-device ", Rest/binary>>) ->
             {midi_device, Alias, DeviceName, Latency};
         _ -> none
     end;
-try_parse_prefixed(<<"gate ", Rest/binary>>) ->
-    try_parse_num_pattern(gate, Rest);
-try_parse_prefixed(<<"cv ", Rest/binary>>) ->
-    try_parse_num_pattern(cv, Rest);
-try_parse_prefixed(<<"esx ", Rest/binary>>) ->
-    try_parse_num_pattern(esx, Rest);
 try_parse_prefixed(<<"fh2-envelope ", Rest/binary>>) ->
     %% fh2-envelope <voice> <output> <channel>
     case binary:split(Rest, <<" ">>, [global]) of
@@ -249,16 +139,6 @@ try_parse_prefixed(<<"unbind ", Rest/binary>>) ->
         nomatch -> {unbind, Name};
         _ -> none
     end;
-try_parse_prefixed(<<"slot ", Rest/binary>>) ->
-    %% slot <name> <value>
-    case binary:split(Rest, <<" ">>) of
-        [Name, ValueBin] ->
-            case parse_number(ValueBin) of
-                {ok, Value} -> {slot, Name, Value};
-                error -> none
-            end;
-        _ -> none
-    end;
 try_parse_prefixed(<<"load ", Rest/binary>>) ->
     %% load <name>  — read setup/<name>.tidal and evaluate each line
     Name = binary_part(Rest, 0, byte_size(Rest)),
@@ -283,21 +163,6 @@ try_parse_prefixed(<<"bpm ", Rest/binary>>) ->
 try_parse_prefixed(<<"config bpm ", Rest/binary>>) ->
     case parse_number(trim_binary(Rest)) of
         {ok, N} -> {set_bpm, N};
-        error -> none
-    end;
-try_parse_prefixed(<<"config midi-device ", Rest/binary>>) ->
-    %% Device name may be quoted ("AUDIO4c USB2"); strip surrounding
-    %% quotes idempotently.  Per-line trailing whitespace also goes.
-    {set_default_midi_device, strip_surrounding_quotes(trim_binary(Rest))};
-try_parse_prefixed(<<"config gate-enabled ", Rest/binary>>) ->
-    case trim_binary(Rest) of
-        <<"true">> -> {set_gate_enabled, true};
-        <<"false">> -> {set_gate_enabled, false};
-        _ -> none
-    end;
-try_parse_prefixed(<<"config look-ahead-ms ", Rest/binary>>) ->
-    case parse_number(trim_binary(Rest)) of
-        {ok, N} -> {set_look_ahead_ms, N};
         error -> none
     end;
 try_parse_prefixed(_) ->
@@ -399,59 +264,6 @@ strip_quotes(Bin) ->
         false -> Bin
     end.
 
-%% Split a pattern body on " | " into {Pattern, Transforms}.
-%% Each transform segment is parsed via parse_transform_spec/1 and
-%% becomes one of:  {specOffset, N} | specInvert | {specScale, Lo, Hi}
-%% These match the PureScript `TransformSpec` ADT shape that
-%% MIDIScheduler converts to typed `Transform` values.
-%%
-%% Examples:
-%%   `0.3 1.0 0.6 0.0`                      → {<<"0.3 1.0 0.6 0.0">>, []}
-%%   `0.3 1.0 0.6 0.0 | offset -0.5`        → {<<"0.3 1.0 ...">>, [{specOffset, -0.5}]}
-%%   `0.3 1.0 | scale -1 1 | offset 0.1`    → {<<"0.3 1.0">>, [{specScale, -1, 1}, {specOffset, 0.1}]}
-split_transforms(Body) ->
-    Parts = binary:split(Body, <<" | ">>, [global]),
-    case Parts of
-        [Pattern] -> {strip_quotes(Pattern), []};
-        [Pattern | TformBins] ->
-            Specs = lists:foldl(
-                fun(Bin, Acc) ->
-                    case parse_transform_spec(Bin) of
-                        {ok, Spec} -> Acc ++ [Spec];
-                        error -> Acc  %% silently drop malformed; log via reply if useful
-                    end
-                end,
-                [],
-                TformBins),
-            {strip_quotes(Pattern), Specs}
-    end.
-
-%% Parse one transform-spec segment. Recognized:
-%%   "offset <n>"     → {specOffset, N}
-%%   "invert"         → specInvert
-%%   "scale <lo> <hi>"→ {specScale, Lo, Hi}
-%% Note on tuple shapes: purs-backend-erl wraps EVERY ADT constructor
-%% as a tuple, including nullary ones. So `SpecInvert` (no args) is
-%% `{specInvert}` (1-tuple), not bare atom `specInvert`. Bare atoms
-%% trigger a "Failed pattern match" crash in the generated decoder.
-parse_transform_spec(Bin) ->
-    Trimmed = trim_binary(Bin),
-    case binary:split(Trimmed, <<" ">>, [global]) of
-        [<<"invert">>] ->
-            {ok, {specInvert}};
-        [<<"offset">>, NBin] ->
-            case parse_number(NBin) of
-                {ok, N} -> {ok, {specOffset, N}};
-                error -> error
-            end;
-        [<<"scale">>, LoBin, HiBin] ->
-            case {parse_number(LoBin), parse_number(HiBin)} of
-                {{ok, Lo}, {ok, Hi}} -> {ok, {specScale, Lo, Hi}};
-                _ -> error
-            end;
-        _ -> error
-    end.
-
 %% Trim leading/trailing whitespace from a binary.
 trim_binary(Bin) ->
     list_to_binary(string:trim(binary_to_list(Bin))).
@@ -491,66 +303,18 @@ split_lat_suffix(Bin) ->
 %% Handle pattern messages. New path: recognise "gate <ch>" / "cv <bus>"
 %% prefixes for per-track replacement (live-coding shape). Otherwise
 %% fall through to the legacy single-pattern / multi-track JSON parser.
-handle_pattern_message(Text, SchedulerPid, State) ->
+handle_pattern_message(Text, State) ->
     case try_parse_prefixed(Text) of
-        {gate, Ch, Pattern} ->
-            case Pattern of
-                <<":", ExprSrc/binary>> ->
-                    %% Host-language expression form: `gate <ch> :<expr>`.
-                    %% Calls `Tidal.Expr.eval`, which returns either a
-                    %% pre-built Pattern closure or an error string.
-                    handle_gate_expr(Ch, ExprSrc, SchedulerPid, State);
-                _ ->
-                    case safe_parse(Pattern) of
-                        {ok, _} ->
-                            SchedulerPid ! {updateGateTrack, Ch, Pattern},
-                            Reply = {text, <<"OK: gate ", (integer_to_binary(Ch))/binary, " ", Pattern/binary>>},
-                            {reply, Reply, State};
-                        {parse_err, ErrBin} ->
-                            Reply = {text, <<"ERROR: gate parse: ", ErrBin/binary>>},
-                            {reply, Reply, State}
-                    end
-            end;
-        {cv, Bus, RawPattern} ->
-            {Pattern, Specs} = split_transforms(RawPattern),
-            case safe_parse(Pattern) of
-                {ok, _} ->
-                    %% PureScript Array becomes Erlang array module shape.
-                    SpecsArray = array:from_list(Specs),
-                    SchedulerPid ! {updateCVTrack, Bus, Pattern, SpecsArray},
-                    Reply = {text, <<"OK: cv ", (integer_to_binary(Bus))/binary, " ", RawPattern/binary>>},
-                    {reply, Reply, State};
-                {parse_err, ErrBin} ->
-                    Reply = {text, <<"ERROR: cv parse: ", ErrBin/binary>>},
-                    {reply, Reply, State}
-            end;
-        {esx, Slot, RawPattern} ->
-            {Pattern, Specs} = split_transforms(RawPattern),
-            case safe_parse(Pattern) of
-                {ok, _} ->
-                    SpecsArray = array:from_list(Specs),
-                    SchedulerPid ! {updateESXTrack, Slot, Pattern, SpecsArray},
-                    Reply = {text, <<"OK: esx ", (integer_to_binary(Slot))/binary, " ", RawPattern/binary>>},
-                    {reply, Reply, State};
-                {parse_err, ErrBin} ->
-                    Reply = {text, <<"ERROR: esx parse: ", ErrBin/binary>>},
-                    {reply, Reply, State}
-            end;
         {bind, Name, ActionSpec} ->
-            SchedulerPid ! {addBinding, Name, ActionSpec},
+            tidal_dispatcher:set_binding_from_spec(Name, ActionSpec),
             Reply = {text, <<"OK: bind ", Name/binary, " ", ActionSpec/binary>>},
             {reply, Reply, State};
         {unbind, Name} ->
-            SchedulerPid ! {removeBinding, Name},
+            tidal_dispatcher:remove_binding(Name),
             Reply = {text, <<"OK: unbind ", Name/binary>>},
             {reply, Reply, State};
-        {slot, Name, Value} ->
-            SchedulerPid ! {setSlot, Name, Value},
-            ValueBin = list_to_binary(io_lib:format("~p", [Value])),
-            Reply = {text, <<"OK: slot ", Name/binary, " ", ValueBin/binary>>},
-            {reply, Reply, State};
         {hush} ->
-            SchedulerPid ! {hush},
+            tidal_voice_sup:hush_all(),
             Reply = {text, <<"OK: hush">>},
             {reply, Reply, State};
         {log_level, N} ->
@@ -559,9 +323,9 @@ handle_pattern_message(Text, SchedulerPid, State) ->
             Reply = {text, <<"OK: log-level ", NBin/binary>>},
             {reply, Reply, State};
         {load, Name} ->
-            handle_load_setup(Name, SchedulerPid, State);
+            handle_load_setup(Name, State);
         {midi_device, Alias, DeviceName, Latency} ->
-            SchedulerPid ! {registerMidiDevice, Alias, DeviceName, Latency},
+            tidal_dispatcher:register_midi_device(Alias, DeviceName, Latency),
             LatBin = list_to_binary(io_lib:format("~p", [Latency])),
             Reply = {text, <<"OK: midi-device ", Alias/binary,
                              " = ", DeviceName/binary,
@@ -580,13 +344,13 @@ handle_pattern_message(Text, SchedulerPid, State) ->
                              " (SysEx push in flight)">>},
             {reply, Reply, State};
         {fh2_envelope, Voice, Output, Channel} ->
-            %% Update scheduler state immediately (so fh2-trigger can resolve
-            %% voice→channel right away) AND fire the SysEx push to the FH-2
-            %% in the background so the WS handler returns instantly. The
-            %% push takes ~5–10s (spago boot + read live config + write back);
-            %% any subsequent fh2-trigger note that lands during the push
-            %% just hits the still-old envelope routing for a moment.
-            SchedulerPid ! {fh2Envelope, Voice, Output, Channel},
+            %% Dispatcher owns the voice→channel mapping (PR1.6 +
+            %% PR1.7b). setFh2VoiceChannel auto-registers the `fh2`
+            %% MIDI device alias if the user hasn't done it manually.
+            %% The FH-2 SysEx push runs in the background (5–10s);
+            %% any fh2-trigger note that lands during the push just
+            %% hits the still-old routing for a moment.
+            tidal_dispatcher:set_fh2_voice_channel(Voice, Channel),
             spawn(fun() -> fh2_set_envelope(Voice, Output, Channel) end),
             Reply = {text, <<"OK: fh2-envelope voice ",
                              (integer_to_binary(Voice))/binary,
@@ -595,19 +359,54 @@ handle_pattern_message(Text, SchedulerPid, State) ->
                              " (SysEx push in flight)">>},
             {reply, Reply, State};
         {fh2_trigger, Voice, Pattern} ->
-            case safe_parse(Pattern) of
-                {ok, _} ->
-                    SchedulerPid ! {updateFh2TriggerTrack, Voice, Pattern},
-                    Reply = {text, <<"OK: fh2-trigger v",
-                                     (integer_to_binary(Voice))/binary,
-                                     " ", Pattern/binary>>},
-                    {reply, Reply, State};
-                {parse_err, ErrBin} ->
-                    Reply = {text, <<"ERROR: fh2-trigger parse: ", ErrBin/binary>>},
+            %% After PR1.6: install a Discrete voice in the new tree
+            %% with name `fh2-v<N>` and a single Fh2Trigger PrimAction.
+            %% defaultNote = 60 (C4) matches MIDIScheduler's previous
+            %% fallback for non-note-name tokens. Channel is resolved
+            %% at dispatch time from the dispatcher's
+            %% fh2VoiceChannels map (populated via fh2-envelope above).
+            case ('tidal_expr@ps':parseMiniPattern())(Pattern) of
+                {right, Pat} ->
+                    VoiceName = <<"fh2-v",
+                                  (integer_to_binary(Voice))/binary>>,
+                    Binding = array:from_list(
+                        [{fh2Trigger, #{voice => Voice,
+                                        defaultNote => 60}}]),
+                    %% Dispatcher needs the binding for dispatch-time
+                    %% lookup; voice_sup needs it for the voice's
+                    %% State. Set dispatcher first (synchronous call)
+                    %% so the voice can never emit an event before
+                    %% the dispatcher knows about the name.
+                    tidal_dispatcher:set_binding(VoiceName, Binding),
+                    case tidal_voice_sup:set_voice_pat(
+                           VoiceName, Binding, Pat) of
+                        ok ->
+                            Reply = {text,
+                                     <<"OK: fh2-trigger v",
+                                       (integer_to_binary(Voice))/binary,
+                                       " ", Pattern/binary>>},
+                            {reply, Reply, State};
+                        {error, Err} ->
+                            ErrBin = list_to_binary(
+                                       io_lib:format("~p", [Err])),
+                            {reply,
+                             {text, <<"ERROR: fh2-trigger: ",
+                                      ErrBin/binary>>},
+                             State}
+                    end;
+                {left, ErrBin0} ->
+                    ErrBin = case ErrBin0 of
+                        B when is_binary(B) -> B;
+                        Other -> list_to_binary(
+                                   io_lib:format("~p", [Other]))
+                    end,
+                    Reply = {text,
+                             <<"ERROR: fh2-trigger parse: ",
+                               ErrBin/binary>>},
                     {reply, Reply, State}
             end;
         {fh2_shape, Voice, A, D, S, R} ->
-            SchedulerPid ! {fh2Shape, Voice, A, D, S, R},
+            tidal_dispatcher:dispatch_fh2_shape(Voice, A, D, S, R),
             Reply = {text, <<"OK: fh2-shape v",
                              (integer_to_binary(Voice))/binary,
                              " A=", (integer_to_binary(A))/binary,
@@ -621,34 +420,28 @@ handle_pattern_message(Text, SchedulerPid, State) ->
             Json = (tidal_stateBus@foreign:read())(),
             {reply, {text, Json}, State};
         {set_bpm, N} ->
-            SchedulerPid ! {setBpm, N},
+            %% Clock owns the BPM value; dispatcher broadcasts to
+            %% link-spike. Both fire in parallel — clock's set_bpm is
+            %% synchronous (so the snapshot picks up the new value on
+            %% the next publisher tick), dispatcher's set_link_tempo
+            %% is fire-and-forget OSC.
+            tidal_clock:set_bpm(N),
+            tidal_dispatcher:set_link_tempo(N),
             NumBin = list_to_binary(io_lib:format("~p", [N])),
             {reply, {text, <<"OK: bpm = ", NumBin/binary>>}, State};
-        {set_default_midi_device, Name} ->
-            SchedulerPid ! {setDefaultMidiDevice, Name},
-            {reply, {text, <<"OK: midi-device = ", Name/binary>>}, State};
-        {set_gate_enabled, B} ->
-            SchedulerPid ! {setGateEnabled, B},
-            BBin = case B of true -> <<"true">>; false -> <<"false">> end,
-            {reply, {text, <<"OK: gate-enabled = ", BBin/binary>>}, State};
-        {set_look_ahead_ms, N} ->
-            SchedulerPid ! {setLookAheadMs, N},
-            NumBin = list_to_binary(io_lib:format("~p", [N])),
-            {reply, {text, <<"OK: look-ahead-ms = ", NumBin/binary>>}, State};
         none ->
-            %% Not a built-in verb. Try named-binding dispatch, falling back
-            %% to legacy whole-text pattern if the name isn't registered.
-            %% JSON messages (`{...}`) bypass this path; they're legacy.
+            %% Not a built-in verb. Try named-binding dispatch.
+            %% Unbound names produce an error reply (the legacy whole-
+            %% text fallback that lived in MIDIScheduler is gone as of
+            %% PR1.7a).
             case Text of
-                <<"{", _/binary>> ->
-                    handle_legacy_pattern_message(Text, SchedulerPid, State);
                 <<":", ExprSrc/binary>> ->
                     %% Bare `:<expr>` form. Voice tags inside the
                     %% expression's fan-out spec name bindings
                     %% directly, so each voice flows to its own
                     %% destination. Distinct from `<binding> :<expr>`
                     %% which fans-out-then-merges through one channel.
-                    handle_multi_expr(ExprSrc, Text, SchedulerPid, State);
+                    handle_multi_expr(ExprSrc, Text, State);
                 _ ->
                     {Word, Rest, ParamSpecs} = parse_with_join(Text),
                     case Rest of
@@ -661,7 +454,7 @@ handle_pattern_message(Text, SchedulerPid, State) ->
                             %% segments are ignored on this path in v1;
                             %% the expression already produces a
                             %% complete Pattern.
-                            handle_play_by_name_expr(Word, ExprSrc, Text, SchedulerPid, State);
+                            handle_play_by_name_expr(Word, ExprSrc, Text, State);
                         _ ->
                             %% Pre-flight parse so malformed input
                             %% (non-ASCII chars reaching the upstream
@@ -679,15 +472,32 @@ handle_pattern_message(Text, SchedulerPid, State) ->
                             %% quote chars the parser doesn't understand.
                             case safe_parse(Rest) of
                                 {ok, _} ->
-                                    %% PureScript Array a is encoded as
-                                    %% Erlang `array` (sparse-array
-                                    %% module), not list — sending a
-                                    %% plain list here makes array:size
-                                    %% crash with badarg in the scheduler.
-                                    ParamSpecsArray = array:from_list(ParamSpecs),
-                                    SchedulerPid ! {playByName, Word, Rest, Text, ParamSpecsArray},
-                                    Reply = {text, <<"OK: dispatched '", Word/binary, "'">>},
-                                    {reply, Reply, State};
+                                    %% Route through new tree if Word
+                                    %% is a registered binding; otherwise
+                                    %% return an error (legacy whole-text
+                                    %% fallback removed in PR1.7a).
+                                    case tidal_dispatcher:lookup_binding(Word) of
+                                        {just, Binding} ->
+                                            case tidal_voice_sup:set_voice(
+                                                   Word, Binding, Rest, ParamSpecs) of
+                                                ok ->
+                                                    Reply = {text, <<"OK: dispatched '",
+                                                                     Word/binary, "'">>},
+                                                    {reply, Reply, State};
+                                                {error, Err} ->
+                                                    ErrBin = list_to_binary(
+                                                               io_lib:format("~p", [Err])),
+                                                    Reply = {text, <<"ERROR: ",
+                                                                     ErrBin/binary>>},
+                                                    {reply, Reply, State}
+                                            end;
+                                        {nothing} ->
+                                            Reply = {text,
+                                                     <<"ERROR: no binding '",
+                                                       Word/binary,
+                                                       "' (use `bind` first)">>},
+                                            {reply, Reply, State}
+                                    end;
                                 {parse_err, ErrBin} ->
                                     Reply = {text, <<"ERROR: parse: ", ErrBin/binary>>},
                                     {reply, Reply, State}
@@ -713,66 +523,97 @@ safe_parse(Text) ->
             {parse_err, list_to_binary(io_lib:format("~p:~p", [Class, Reason]))}
     end.
 
-%% Run a host-language expression against `Tidal.Expr.eval` and ship the
-%% resulting Pattern closure to the scheduler. Errors come back as a
-%% Left whose payload is a binary explanation string.
-handle_gate_expr(Ch, ExprSrc, SchedulerPid, State) ->
-    Result = try ('tidal_expr@ps':eval())(ExprSrc)
-             catch Class:Reason ->
-                 {crash, list_to_binary(io_lib:format("~p:~p", [Class, Reason]))}
-             end,
-    case Result of
-        {right, Pat} ->
-            SchedulerPid ! {updateGateTrackP, Ch, Pat},
-            {reply,
-             {text, <<"OK: gate ",
-                      (integer_to_binary(Ch))/binary,
-                      " :", ExprSrc/binary>>},
-             State};
-        {left, Err} ->
-            ErrBin = to_binary(Err),
-            {reply, {text, <<"ERROR: expr: ", ErrBin/binary>>}, State};
-        {crash, CrashBin} ->
-            {reply, {text, <<"ERROR: expr crash: ", CrashBin/binary>>}, State}
-    end.
-
 to_binary(B) when is_binary(B) -> B;
 to_binary(L) when is_list(L) -> list_to_binary(L);
 to_binary(Other) -> list_to_binary(io_lib:format("~p", [Other])).
 
-%% Mirror of handle_gate_expr for the bound-name path. Sends the raw
-%% expression source to the scheduler, which evaluates it against the
-%% binding registry — `Tidal.Expr.eval` (string-typed pattern, BoundTrack)
-%% if the name is a discrete binding, or as `VNumPattern`
-%% (number-typed, ContinuousTrack) if the name is a continuous-voice
-%% binding (`midi-cc-cont`/`cv-cont`).  The scheduler-side dispatch lets
-%% the same `<name> :<expr>` syntax serve both kinds without the WS
-%% handler needing to consult the registry.  Errors surface in the BEAM
-%% logs rather than as a reply payload — the cell stays running and
-%% the user notices via missing audio + log.
-handle_play_by_name_expr(Word, ExprSrc, FullText, SchedulerPid, State) ->
-    SchedulerPid ! {playByNameExpr, Word, ExprSrc, FullText},
-    {reply,
-     {text, <<"OK: dispatched '", Word/binary, "' :", ExprSrc/binary>>},
-     State}.
+%% Named-binding `<name> :<expr>` path. Three-way routing:
+%%   * discrete binding   → new voice tree, parseEvalPattern.
+%%   * continuous binding → new voice tree, parseEvalNumPattern.
+%%   * neither            → ERROR reply (legacy fallback gone).
+%%
+%% Parse failures inside either bound branch surface as ERROR
+%% replies too — the user sees the message in Calypso instead of
+%% buried in the BEAM log (the MIDIScheduler-side typed-error
+%% diagnostic was retired with PR1.7d).
+handle_play_by_name_expr(Word, ExprSrc, _FullText, State) ->
+    OkReply = {reply,
+               {text, <<"OK: dispatched '", Word/binary,
+                        "' :", ExprSrc/binary>>},
+               State},
+    case tidal_dispatcher:lookup_binding(Word) of
+        {just, Binding} ->
+            case ('tidal_expr@ps':parseEvalPattern())(ExprSrc) of
+                {right, Pattern} ->
+                    case tidal_voice_sup:set_voice_pat(Word, Binding, Pattern) of
+                        ok -> OkReply;
+                        {error, Err} ->
+                            ErrBin = list_to_binary(io_lib:format("~p", [Err])),
+                            {reply,
+                             {text, <<"ERROR: ", ErrBin/binary>>},
+                             State}
+                    end;
+                {left, Err} ->
+                    ErrBin = to_binary(Err),
+                    {reply,
+                     {text, <<"ERROR: ", Word/binary, " :expr: ",
+                              ErrBin/binary>>},
+                     State}
+            end;
+        {nothing} ->
+            case tidal_dispatcher:lookup_continuous_binding(Word) of
+                {just, Dest} ->
+                    case ('tidal_expr@ps':parseEvalNumPattern())(ExprSrc) of
+                        {right, NumPattern} ->
+                            case tidal_voice_sup:set_voice_cont_pat(
+                                   Word, Dest, NumPattern) of
+                                ok -> OkReply;
+                                {error, Err} ->
+                                    ErrBin = list_to_binary(
+                                               io_lib:format("~p", [Err])),
+                                    {reply,
+                                     {text, <<"ERROR: ", ErrBin/binary>>},
+                                     State}
+                            end;
+                        {left, Err} ->
+                            ErrBin = to_binary(Err),
+                            {reply,
+                             {text, <<"ERROR: ", Word/binary, " :expr: ",
+                                      ErrBin/binary>>},
+                             State}
+                    end;
+                {nothing} ->
+                    {reply,
+                     {text, <<"ERROR: no binding '", Word/binary,
+                              "' (use `bind` first)">>},
+                     State}
+            end
+    end.
 
 %% Bare `:<expr>` form: voice tags name bindings, each voice flows to
 %% its own destination. Tidal.Expr.evalMulti returns the per-voice
 %% (name, Pattern) pairs as an Erlang array of `{tuple, Name, Pat}`
-%% (PureScript Array (Tuple String (Pattern String))). We pass the
-%% array through unchanged — the scheduler handler iterates it.
-handle_multi_expr(ExprSrc, FullText, SchedulerPid, State) ->
+%% (PureScript Array (Tuple String (Pattern String))). For each entry
+%% we look up the binding on the dispatcher; entries with a discrete
+%% binding install on the new voice tree, entries without log the
+%% same "voice skipped" message MIDIScheduler.PlayMultiByName used to.
+%%
+%% After this commit MIDIScheduler is no longer in this path —
+%% PlayMultiByName migrates entirely to the new tree. The reply still
+%% lists only the names that actually got installed (skipped entries
+%% don't appear in the bracketed list).
+handle_multi_expr(ExprSrc, _FullText, State) ->
     Result = try ('tidal_expr@ps':evalMulti())(ExprSrc)
              catch Class:Reason ->
                  {crash, list_to_binary(io_lib:format("~p:~p", [Class, Reason]))}
              end,
     case Result of
         {right, Entries} ->
-            SchedulerPid ! {playMultiByName, Entries, FullText},
-            Names = entries_names(Entries),
-            NamesBin = case Names of
-                <<>> -> <<"(no voices)">>;
-                _    -> Names
+            EntryList = array:to_list(Entries),
+            InstalledNames = install_multi_entries(EntryList),
+            NamesBin = case InstalledNames of
+                [] -> <<"(no voices)">>;
+                _  -> join_binary(InstalledNames, <<", ">>)
             end,
             {reply,
              {text, <<"OK: dispatched multi [", NamesBin/binary, "] :",
@@ -785,12 +626,23 @@ handle_multi_expr(ExprSrc, FullText, SchedulerPid, State) ->
             {reply, {text, <<"ERROR: expr crash: ", CrashBin/binary>>}, State}
     end.
 
-%% Pull the binding-names out of an Array of {tuple, Name, _Pat} for
-%% the WS reply text. Comma-separated. Names is whatever Tidal.Expr
-%% put in the first slot of each Tuple — bare String, so a binary.
-entries_names(Entries) ->
-    Names = [Name || {tuple, Name, _Pat} <- array:to_list(Entries)],
-    join_binary(Names, <<", ">>).
+%% Walk the entries list, installing each on the new tree if its name
+%% has a discrete binding. Returns the list of installed names in
+%% original order (for the WS reply text).
+install_multi_entries(Entries) ->
+    install_multi_entries(Entries, []).
+
+install_multi_entries([], Acc) ->
+    lists:reverse(Acc);
+install_multi_entries([{tuple, Name, Pat} | Rest], Acc) ->
+    case tidal_dispatcher:lookup_binding(Name) of
+        {just, Binding} ->
+            tidal_voice_sup:set_voice_pat(Name, Binding, Pat),
+            install_multi_entries(Rest, [Name | Acc]);
+        {nothing} ->
+            io:format("(no binding '~s', voice skipped)~n", [Name]),
+            install_multi_entries(Rest, Acc)
+    end.
 
 join_binary([], _Sep) -> <<>>;
 join_binary([X], _Sep) -> X;
@@ -798,71 +650,13 @@ join_binary([X | Rest], Sep) ->
     RestJoined = join_binary(Rest, Sep),
     <<X/binary, Sep/binary, RestJoined/binary>>.
 
-handle_legacy_pattern_message(Text, SchedulerPid, State) ->
-    case parse_message(Text) of
-        {tracks, Tracks} ->
-            %% Multiple tracks with individual channels
-            io:format("WebSocket: Parsed ~B tracks~n", [length(Tracks)]),
-            lists:foreach(fun({P, C}) ->
-                io:format("  - ch~B: ~s~n", [C, P])
-            end, Tracks),
-
-            %% Validate all patterns parse correctly
-            AllValid = lists:all(fun({P, _C}) ->
-                case ('tidal_parse_parser@ps':parse())(P) of
-                    {right, _} -> true;
-                    {left, _} -> false
-                end
-            end, Tracks),
-
-            case AllValid of
-                true ->
-                    %% Send tracks to scheduler as array of maps (PureScript Array = Erlang array module)
-                    TracksList = tracks_to_ps_format(Tracks),
-                    TracksArray = array:from_list(TracksList),
-                    SchedulerPid ! {updateTracks, TracksArray},
-                    Reply = {text, <<"OK: ", (integer_to_binary(length(Tracks)))/binary, " tracks">>},
-                    {reply, Reply, State};
-                false ->
-                    io:format("WebSocket: Some tracks failed to parse~n"),
-                    Reply = {text, <<"ERROR: Some tracks failed to parse">>},
-                    {reply, Reply, State}
-            end;
-
-        {pattern, Pattern} ->
-            %% Legacy: single pattern
-            io:format("WebSocket: Extracted pattern: ~s~n", [Pattern]),
-            case ('tidal_parse_parser@ps':parse())(Pattern) of
-                {right, _} ->
-                    SchedulerPid ! {updatePattern, Pattern},
-                    Reply = {text, <<"OK: ", Pattern/binary>>},
-                    {reply, Reply, State};
-                {left, Err} ->
-                    io:format("WebSocket: Parse error: ~p~n", [Err]),
-                    ErrBin = list_to_binary(io_lib:format("~p", [Err])),
-                    Reply = {text, <<"ERROR: ", ErrBin/binary>>},
-                    {reply, Reply, State}
-            end
-    end.
-
 websocket_info(Info, State) ->
     io:format("WebSocket: Info: ~p~n", [Info]),
     {ok, State}.
 
-%% ============================================================================
-%% Set Management Functions
-%% ============================================================================
-
-%% Extract "action" field from JSON message
-extract_action(Text) when is_binary(Text) ->
-    extract_json_field(Text, <<"\"action\":\"">>, <<>>).
-
-%% Extract "name" field from JSON message
-extract_set_name(Text) when is_binary(Text) ->
-    extract_json_field(Text, <<"\"name\":\"">>, <<>>).
-
-%% Sanitize set name to prevent path traversal attacks
-%% Only allows alphanumeric, dash, underscore
+%% Sanitize a name from a WS verb argument to prevent path traversal
+%% on filesystem operations (e.g. `load <name>` reads
+%% `setup/<name>.tidal`). Only allows alphanumeric, dash, underscore.
 sanitize_name(Name) when is_binary(Name) ->
     sanitize_name_loop(Name, <<>>).
 
@@ -876,154 +670,6 @@ sanitize_name_loop(<<C, Rest/binary>>, Acc) when
 sanitize_name_loop(<<_, Rest/binary>>, Acc) ->
     sanitize_name_loop(Rest, Acc).
 
-%% Ensure sets directory exists
-ensure_sets_dir() ->
-    case filelib:is_dir(?SETS_DIR) of
-        true -> ok;
-        false ->
-            io:format("Creating sets directory: ~s~n", [?SETS_DIR]),
-            file:make_dir(?SETS_DIR)
-    end.
-
-%% Get full path for a set file
-set_file_path(Name) ->
-    filename:join(?SETS_DIR, <<Name/binary, ".json">>).
-
-%% ============================================================================
-%% List Sets Handler
-%% ============================================================================
-
-handle_list_sets(State) ->
-    io:format("WebSocket: Listing sets~n"),
-    ensure_sets_dir(),
-    Pattern = filename:join(?SETS_DIR, "*.json"),
-    Files = filelib:wildcard(binary_to_list(iolist_to_binary(Pattern))),
-    SetNames = [extract_set_name_from_path(F) || F <- Files],
-    Response = encode_sets_list(SetNames),
-    io:format("WebSocket: Found ~B sets: ~p~n", [length(SetNames), SetNames]),
-    {reply, {text, Response}, State}.
-
-%% Extract set name from file path (remove directory and .json extension)
-extract_set_name_from_path(Path) ->
-    Basename = filename:basename(Path, ".json"),
-    list_to_binary(Basename).
-
-%% Encode sets_list response
-encode_sets_list(SetNames) ->
-    SetsJson = encode_string_array(SetNames),
-    <<"{\"action\":\"sets_list\",\"sets\":", SetsJson/binary, "}">>.
-
-%% ============================================================================
-%% Save Set Handler
-%% ============================================================================
-
-handle_save_set(Text, State) ->
-    Name = extract_set_name(Text),
-    case sanitize_name(Name) of
-        <<>> ->
-            io:format("WebSocket: Invalid set name~n"),
-            Response = encode_error(<<"Invalid or empty set name">>),
-            {reply, {text, Response}, State};
-        SafeName ->
-            io:format("WebSocket: Saving set '~s'~n", [SafeName]),
-            ensure_sets_dir(),
-            FilePath = set_file_path(SafeName),
-            %% Extract the full set data (name + tracks) from the original message
-            SetData = extract_set_data_for_save(Text, SafeName),
-            case file:write_file(FilePath, SetData) of
-                ok ->
-                    io:format("WebSocket: Saved set to ~s~n", [FilePath]),
-                    Response = <<"{\"action\":\"set_saved\",\"name\":\"", SafeName/binary, "\"}">>,
-                    {reply, {text, Response}, State};
-                {error, Reason} ->
-                    io:format("WebSocket: Failed to save set: ~p~n", [Reason]),
-                    ErrMsg = iolist_to_binary(io_lib:format("Failed to save set: ~p", [Reason])),
-                    Response = encode_error(ErrMsg),
-                    {reply, {text, Response}, State}
-            end
-    end.
-
-%% Extract set data for saving (preserves the full JSON with tracks)
-extract_set_data_for_save(Text, Name) ->
-    %% Find the tracks array in the original message
-    TracksJson = extract_tracks_json(Text),
-    %% Build the file content with name and tracks
-    <<"{\"name\":\"", Name/binary, "\",\"tracks\":", TracksJson/binary, "}">>.
-
-%% Extract the raw tracks JSON array from the message
-extract_tracks_json(Text) ->
-    case binary:match(Text, <<"\"tracks\":">>) of
-        {Pos, Len} ->
-            Start = Pos + Len,
-            AfterKey = binary:part(Text, Start, byte_size(Text) - Start),
-            %% Skip whitespace
-            AfterWs = skip_whitespace(AfterKey),
-            %% Find matching bracket
-            extract_json_array(AfterWs);
-        nomatch ->
-            <<"[]">>
-    end.
-
-%% Skip leading whitespace
-skip_whitespace(<<" ", Rest/binary>>) -> skip_whitespace(Rest);
-skip_whitespace(<<"\t", Rest/binary>>) -> skip_whitespace(Rest);
-skip_whitespace(<<"\n", Rest/binary>>) -> skip_whitespace(Rest);
-skip_whitespace(<<"\r", Rest/binary>>) -> skip_whitespace(Rest);
-skip_whitespace(Bin) -> Bin.
-
-%% Extract JSON array (handling nested brackets)
-extract_json_array(<<"[", Rest/binary>>) ->
-    {ArrayContent, _} = extract_until_matching_bracket(Rest, 1, <<>>),
-    <<"[", ArrayContent/binary, "]">>;
-extract_json_array(_) ->
-    <<"[]">>.
-
-%% Extract content until matching closing bracket
-extract_until_matching_bracket(<<>>, _, Acc) ->
-    {Acc, <<>>};
-extract_until_matching_bracket(<<"]", Rest/binary>>, 1, Acc) ->
-    {Acc, Rest};
-extract_until_matching_bracket(<<"]", Rest/binary>>, Depth, Acc) ->
-    extract_until_matching_bracket(Rest, Depth - 1, <<Acc/binary, "]">>);
-extract_until_matching_bracket(<<"[", Rest/binary>>, Depth, Acc) ->
-    extract_until_matching_bracket(Rest, Depth + 1, <<Acc/binary, "[">>);
-extract_until_matching_bracket(<<"{", Rest/binary>>, Depth, Acc) ->
-    %% Handle nested objects - need to skip to matching }
-    {ObjContent, AfterObj} = extract_until_matching_brace(Rest, 1, <<>>),
-    extract_until_matching_bracket(AfterObj, Depth, <<Acc/binary, "{", ObjContent/binary, "}">>);
-extract_until_matching_bracket(<<"\"", Rest/binary>>, Depth, Acc) ->
-    %% Handle strings (skip escaped content)
-    {StrContent, AfterStr} = extract_json_string(Rest, <<>>),
-    extract_until_matching_bracket(AfterStr, Depth, <<Acc/binary, "\"", StrContent/binary, "\"">>);
-extract_until_matching_bracket(<<C, Rest/binary>>, Depth, Acc) ->
-    extract_until_matching_bracket(Rest, Depth, <<Acc/binary, C>>).
-
-%% Extract until matching closing brace
-extract_until_matching_brace(<<>>, _, Acc) ->
-    {Acc, <<>>};
-extract_until_matching_brace(<<"}", Rest/binary>>, 1, Acc) ->
-    {Acc, Rest};
-extract_until_matching_brace(<<"}", Rest/binary>>, Depth, Acc) ->
-    extract_until_matching_brace(Rest, Depth - 1, <<Acc/binary, "}">>);
-extract_until_matching_brace(<<"{", Rest/binary>>, Depth, Acc) ->
-    extract_until_matching_brace(Rest, Depth + 1, <<Acc/binary, "{">>);
-extract_until_matching_brace(<<"\"", Rest/binary>>, Depth, Acc) ->
-    {StrContent, AfterStr} = extract_json_string(Rest, <<>>),
-    extract_until_matching_brace(AfterStr, Depth, <<Acc/binary, "\"", StrContent/binary, "\"">>);
-extract_until_matching_brace(<<C, Rest/binary>>, Depth, Acc) ->
-    extract_until_matching_brace(Rest, Depth, <<Acc/binary, C>>).
-
-%% Extract JSON string content (handling escapes)
-extract_json_string(<<>>, Acc) ->
-    {Acc, <<>>};
-extract_json_string(<<"\\", C, Rest/binary>>, Acc) ->
-    %% Escaped character
-    extract_json_string(Rest, <<Acc/binary, "\\", C>>);
-extract_json_string(<<"\"", Rest/binary>>, Acc) ->
-    %% End of string
-    {Acc, Rest};
-extract_json_string(<<C, Rest/binary>>, Acc) ->
-    extract_json_string(Rest, <<Acc/binary, C>>).
 
 %% ============================================================================
 %% Load Setup File Handler
@@ -1045,7 +691,7 @@ extract_json_string(<<C, Rest/binary>>, Acc) ->
 %% setup files. Errors on individual lines are logged but don't abort
 %% the load (best-effort — partial setup is more useful than none).
 
-handle_load_setup(Name, SchedulerPid, State) ->
+handle_load_setup(Name, State) ->
     case sanitize_name(Name) of
         <<>> ->
             Reply = {text, <<"ERROR: load - invalid name (alphanum/dash/underscore only)">>},
@@ -1062,7 +708,7 @@ handle_load_setup(Name, SchedulerPid, State) ->
                                 blank   -> {T, S + 1, E};
                                 comment -> {T, S + 1, E};
                                 code    ->
-                                    case dispatch_setup_line(Trimmed, SchedulerPid) of
+                                    case dispatch_setup_line(Trimmed) of
                                         ok    -> {T + 1, S, E};
                                         error -> {T + 1, S, E + 1}
                                     end
@@ -1104,11 +750,10 @@ classify_line(<<>>) -> blank;
 classify_line(<<"--", _/binary>>) -> comment;
 classify_line(_) -> code.
 
-%% Dispatch one line through the same parsing as a direct WS message.
-%% We pattern-match on try_parse_prefixed's result and fire the matching
-%% scheduler message. For unrecognized lines we fall back to named-binding
-%% dispatch (so calling `bd "1 ~ 1 1"` inside a setup file plays through).
-dispatch_setup_line(Line, SchedulerPid) ->
+%% Dispatch one line from a setup file. Mirrors handle_pattern_message
+%% minus the WS replies, plus a "name + pattern" path for unprefixed
+%% lines.
+dispatch_setup_line(Line) ->
     case try_parse_prefixed(Line) of
         none ->
             %% Unprefixed line — treat as named-binding dispatch with
@@ -1116,37 +761,51 @@ dispatch_setup_line(Line, SchedulerPid) ->
             {Word, Rest, ParamSpecs} = parse_with_join(Line),
             case safe_parse(Rest) of
                 {ok, _} ->
-                    ParamSpecsArray = array:from_list(ParamSpecs),
-                    SchedulerPid ! {playByName, Word, Rest, Line, ParamSpecsArray},
-                    ok;
+                    case tidal_dispatcher:lookup_binding(Word) of
+                        {just, Binding} ->
+                            case tidal_voice_sup:set_voice(
+                                   Word, Binding, Rest, ParamSpecs) of
+                                ok -> ok;
+                                {error, Err} ->
+                                    io:format("[load] install error on line ~s: ~p~n",
+                                              [Line, Err]),
+                                    error
+                            end;
+                        {nothing} ->
+                            io:format("[load] no binding for '~s' on line: ~s~n",
+                                      [Word, Line]),
+                            error
+                    end;
                 {parse_err, _} ->
                     io:format("[load] parse error on line: ~s~n", [Line]),
                     error
             end;
         Action ->
-            dispatch_setup_action(Action, SchedulerPid)
+            dispatch_setup_action(Action)
     end.
 
-%% Send the matching scheduler message for a parsed action.  This mirrors
-%% handle_pattern_message's case arms minus the WS replies. Add a clause
-%% here whenever a new verb is added to handle_pattern_message that should
-%% also work inside setup files.
-dispatch_setup_action(Action, SchedulerPid) ->
+%% Run a parsed action against the same destinations
+%% handle_pattern_message uses, minus the WS reply side. Add a clause
+%% here whenever a new verb is added to handle_pattern_message that
+%% should also work inside setup files.
+dispatch_setup_action(Action) ->
     case Action of
         {midi_device, Alias, DeviceName, Latency} ->
-            SchedulerPid ! {registerMidiDevice, Alias, DeviceName, Latency}, ok;
+            tidal_dispatcher:register_midi_device(Alias, DeviceName, Latency),
+            ok;
         {bind, Name, ActionSpec} ->
-            SchedulerPid ! {addBinding, Name, ActionSpec}, ok;
+            tidal_dispatcher:set_binding_from_spec(Name, ActionSpec),
+            ok;
         {unbind, Name} ->
-            SchedulerPid ! {removeBinding, Name}, ok;
-        {slot, Name, Value} ->
-            SchedulerPid ! {setSlot, Name, Value}, ok;
+            tidal_dispatcher:remove_binding(Name),
+            ok;
         {hush} ->
-            SchedulerPid ! {hush}, ok;
+            tidal_voice_sup:hush_all(),
+            ok;
         {load, Name} ->
             %% Recursive load — common pattern: a "scene" file that
             %% loads device packs first, then defines patterns.
-            handle_load_setup(Name, SchedulerPid, #{}),
+            handle_load_setup(Name, #{}),
             ok;
         {fh2_gate, Voice, Output, Channel} ->
             %% Synchronous on the load path. fh2-config does a read-
@@ -1159,178 +818,17 @@ dispatch_setup_action(Action, SchedulerPid) ->
             fh2_set_gate(Voice, Output, Channel),
             ok;
         {fh2_envelope, Voice, Output, Channel} ->
-            SchedulerPid ! {fh2Envelope, Voice, Output, Channel},
+            tidal_dispatcher:set_fh2_voice_channel(Voice, Channel),
             fh2_set_envelope(Voice, Output, Channel),
+            ok;
+        {set_bpm, N} ->
+            tidal_clock:set_bpm(N),
+            tidal_dispatcher:set_link_tempo(N),
             ok;
         Other ->
             io:format("[load] verb not yet supported in setup files: ~p~n", [Other]),
             error
     end.
-
-handle_load_set(Text, SchedulerPid, State) ->
-    Name = extract_set_name(Text),
-    case sanitize_name(Name) of
-        <<>> ->
-            io:format("WebSocket: Invalid set name~n"),
-            Response = encode_error(<<"Invalid or empty set name">>),
-            {reply, {text, Response}, State};
-        SafeName ->
-            io:format("WebSocket: Loading set '~s'~n", [SafeName]),
-            FilePath = set_file_path(SafeName),
-            case file:read_file(FilePath) of
-                {ok, Content} ->
-                    io:format("WebSocket: Loaded set from ~s~n", [FilePath]),
-                    %% Parse and send active tracks to Tidal
-                    send_set_to_tidal(Content, SchedulerPid),
-                    %% Respond with full set data
-                    TracksJson = extract_tracks_json(Content),
-                    Response = <<"{\"action\":\"set_loaded\",\"name\":\"", SafeName/binary, "\",\"tracks\":", TracksJson/binary, "}">>,
-                    {reply, {text, Response}, State};
-                {error, enoent} ->
-                    io:format("WebSocket: Set not found: ~s~n", [SafeName]),
-                    Response = encode_error(<<"Set not found">>),
-                    {reply, {text, Response}, State};
-                {error, Reason} ->
-                    io:format("WebSocket: Failed to load set: ~p~n", [Reason]),
-                    ErrMsg = iolist_to_binary(io_lib:format("Failed to load set: ~p", [Reason])),
-                    Response = encode_error(ErrMsg),
-                    {reply, {text, Response}, State}
-            end
-    end.
-
-%% Send active tracks from a set to the Tidal scheduler
-send_set_to_tidal(SetContent, SchedulerPid) ->
-    %% Extract all tracks
-    AllTracks = extract_tracks_from_set(SetContent),
-    %% Filter to only active tracks
-    ActiveTracks = [T || T <- AllTracks, is_track_active(T)],
-    io:format("WebSocket: Sending ~B active tracks to Tidal~n", [length(ActiveTracks)]),
-    case ActiveTracks of
-        [] ->
-            %% No active tracks, send silence
-            SchedulerPid ! {updatePattern, <<"~">>};
-        _ ->
-            %% Send tracks to scheduler
-            TracksList = [#{pattern => P, channel => C} || {P, C, _Active} <- ActiveTracks],
-            TracksArray = array:from_list(TracksList),
-            SchedulerPid ! {updateTracks, TracksArray}
-    end.
-
-%% Extract tracks from saved set content (returns list of {Pattern, Channel, Active})
-extract_tracks_from_set(Content) ->
-    extract_tracks_from_set_loop(Content, []).
-
-extract_tracks_from_set_loop(Content, Acc) ->
-    %% Find next track object
-    case binary:match(Content, <<"{\"name\":">>) of
-        {Pos, _Len} ->
-            AfterStart = binary:part(Content, Pos, byte_size(Content) - Pos),
-            %% Extract this track's data
-            Pattern = extract_json_field(AfterStart, <<"\"pattern\":\"">>, <<>>),
-            Channel = extract_channel_from_track(AfterStart),
-            Active = extract_active_from_track(AfterStart),
-            %% Continue with remaining content
-            case binary:match(AfterStart, <<"}">>) of
-                {EndPos, _} ->
-                    Remaining = binary:part(AfterStart, EndPos + 1, byte_size(AfterStart) - EndPos - 1),
-                    extract_tracks_from_set_loop(Remaining, [{Pattern, Channel, Active} | Acc]);
-                nomatch ->
-                    lists:reverse(Acc)
-            end;
-        nomatch ->
-            lists:reverse(Acc)
-    end.
-
-%% Extract "active" boolean from track object
-extract_active_from_track(Text) ->
-    case binary:match(Text, <<"\"active\":">>) of
-        {Pos, Len} ->
-            Start = Pos + Len,
-            AfterKey = binary:part(Text, Start, byte_size(Text) - Start),
-            AfterWs = skip_whitespace(AfterKey),
-            case AfterWs of
-                <<"true", _/binary>> -> true;
-                <<"false", _/binary>> -> false;
-                _ -> true  % Default to active
-            end;
-        nomatch ->
-            true  % Default to active
-    end.
-
-%% Check if track is active
-is_track_active({_Pattern, _Channel, Active}) -> Active.
-
-%% ============================================================================
-%% Delete Set Handler
-%% ============================================================================
-
-handle_delete_set(Text, State) ->
-    Name = extract_set_name(Text),
-    case sanitize_name(Name) of
-        <<>> ->
-            io:format("WebSocket: Invalid set name~n"),
-            Response = encode_error(<<"Invalid or empty set name">>),
-            {reply, {text, Response}, State};
-        SafeName ->
-            io:format("WebSocket: Deleting set '~s'~n", [SafeName]),
-            FilePath = set_file_path(SafeName),
-            case file:delete(FilePath) of
-                ok ->
-                    io:format("WebSocket: Deleted set ~s~n", [FilePath]),
-                    Response = <<"{\"action\":\"set_deleted\",\"name\":\"", SafeName/binary, "\"}">>,
-                    {reply, {text, Response}, State};
-                {error, enoent} ->
-                    io:format("WebSocket: Set not found: ~s~n", [SafeName]),
-                    Response = encode_error(<<"Set not found">>),
-                    {reply, {text, Response}, State};
-                {error, Reason} ->
-                    io:format("WebSocket: Failed to delete set: ~p~n", [Reason]),
-                    ErrMsg = iolist_to_binary(io_lib:format("Failed to delete set: ~p", [Reason])),
-                    Response = encode_error(ErrMsg),
-                    {reply, {text, Response}, State}
-            end
-    end.
-
-%% ============================================================================
-%% JSON Encoding Helpers
-%% ============================================================================
-
-%% Encode error response
-encode_error(Message) ->
-    EscapedMsg = escape_json_string(Message),
-    <<"{\"action\":\"error\",\"message\":\"", EscapedMsg/binary, "\"}">>.
-
-%% Encode array of strings as JSON array
-encode_string_array(Strings) ->
-    Encoded = [<<"\"", (escape_json_string(S))/binary, "\"">> || S <- Strings],
-    Joined = join_with_comma(Encoded),
-    <<"[", Joined/binary, "]">>.
-
-%% Join list of binaries with comma
-join_with_comma([]) -> <<>>;
-join_with_comma([H]) -> H;
-join_with_comma([H|T]) ->
-    lists:foldl(fun(E, Acc) -> <<Acc/binary, ",", E/binary>> end, H, T).
-
-%% Escape special characters in JSON string
-escape_json_string(Bin) when is_binary(Bin) ->
-    escape_json_string_loop(Bin, <<>>);
-escape_json_string(List) when is_list(List) ->
-    escape_json_string(list_to_binary(List)).
-
-escape_json_string_loop(<<>>, Acc) -> Acc;
-escape_json_string_loop(<<"\"", Rest/binary>>, Acc) ->
-    escape_json_string_loop(Rest, <<Acc/binary, "\\\"">>);
-escape_json_string_loop(<<"\\", Rest/binary>>, Acc) ->
-    escape_json_string_loop(Rest, <<Acc/binary, "\\\\">>);
-escape_json_string_loop(<<"\n", Rest/binary>>, Acc) ->
-    escape_json_string_loop(Rest, <<Acc/binary, "\\n">>);
-escape_json_string_loop(<<"\r", Rest/binary>>, Acc) ->
-    escape_json_string_loop(Rest, <<Acc/binary, "\\r">>);
-escape_json_string_loop(<<"\t", Rest/binary>>, Acc) ->
-    escape_json_string_loop(Rest, <<Acc/binary, "\\t">>);
-escape_json_string_loop(<<C, Rest/binary>>, Acc) ->
-    escape_json_string_loop(Rest, <<Acc/binary, C>>).
 
 %% Shell out to fh2-config to push the per-MCV envelope routing to the
 %% real FH-2 hardware. Synchronous within the spawned process (caller

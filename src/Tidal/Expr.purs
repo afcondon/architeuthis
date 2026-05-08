@@ -38,6 +38,9 @@ module Tidal.Expr
   , asPattern
   , eval
   , evalMulti
+  , parseEvalPattern
+  , parseEvalNumPattern
+  , parseMiniPattern
   ) where
 
 import Prelude
@@ -61,7 +64,7 @@ import Text.Parsing.Parser.Combinators as PC
 import Text.Parsing.Parser.String (char, satisfy)
 import Text.Parsing.Parser.Token (alphaNum, digit, letter)
 import Tidal.Eval.Interpret (tpatToPattern)
-import Tidal.Parse.Parser (parseTPat)
+import Tidal.Parse.Parser (parse, parseTPat)
 import Tidal.Pattern.Branched (Voice(..))
 import Tidal.Pattern.Branched as Branched
 import Tidal.Pattern.Core
@@ -775,6 +778,39 @@ asPattern :: EvalResult -> Either String (Pattern String)
 asPattern = case _ of
   VPattern p -> Right p
   _ -> Left "expected a pattern"
+
+-- | Convenience: parse an expression source, evaluate it, and coerce
+-- | the result to a `Pattern String`. Used by the WS handler's
+-- | PlayByNameExpr migration to install single-voice patterns through
+-- | the new tree without surfacing intermediate value types to Erlang.
+-- |
+-- | Returns `Left` for any of: parse failure, eval failure, or eval
+-- | success with a non-`VPattern` result (e.g. `VNumPattern` from a
+-- | continuous expression — those are routed to MIDIScheduler by the
+-- | caller, which has continuousBindings).
+parseEvalPattern :: String -> Either String (Pattern String)
+parseEvalPattern src = parseExpr src >>= evalExpr >>= asPattern
+
+-- | Sister of `parseEvalPattern` for continuous voices: parse, eval,
+-- | coerce to `Pattern Number`. Used by the PR1.5-b WS handler when
+-- | the play target is a continuous-bound name and the expression
+-- | source represents an oscillator / numeric pattern.
+-- |
+-- | Returns `Left` for any of: parse failure, eval failure, or eval
+-- | success with a non-numeric result (e.g. `VPattern` String). The
+-- | scalar promotions (`VInt`, `VRat` → constant Analog Pattern) come
+-- | from `asNumPattern`.
+parseEvalNumPattern :: String -> Either String (Pattern Number)
+parseEvalNumPattern src =
+  parseExpr src >>= evalExpr >>= asNumPattern "parseEvalNumPattern"
+
+-- | Parse a raw mini-notation string (no expression layer) and
+-- | convert to a `Pattern String`. Used by the WS handler's
+-- | `fh2-trigger` verb where the body is bare mini-notation.
+parseMiniPattern :: String -> Either String (Pattern String)
+parseMiniPattern src = case parse src of
+  Right tpat -> Right (tpatToPattern tpat)
+  Left err -> Left (show err)
 
 -- A list of functions is treated as left-to-right composition:
 -- `[rev, (slow 2)]` means "apply rev, then slow 2" — i.e. the

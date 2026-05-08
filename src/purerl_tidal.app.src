@@ -1,0 +1,8 @@
+{application, purerl_tidal,
+ [{description, "TidalCycles for BEAM via PureScript - per-voice supervision tree"},
+  {vsn, "0.1.0"},
+  {modules, []},
+  {registered, [purerl_tidal_sup]},
+  {applications, [kernel, stdlib, cowboy, ranch]},
+  {mod, {purerl_tidal_app, []}},
+  {env, []}]}.
