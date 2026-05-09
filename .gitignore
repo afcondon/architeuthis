@@ -29,3 +29,6 @@ Thumbs.db
 
 # Spago lock (generated)
 spago.lock
+
+# Generated cell modules (hash-named; kept Mtest.purs as reference)
+src/Tidal/Generated/M[0-9a-f]*.purs

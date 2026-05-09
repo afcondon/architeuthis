@@ -64,6 +64,8 @@ erl: ps
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_dispatcher.erl
 	@# State publisher (gen_server) — replaces MIDIScheduler.publishState.
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_state_pub.erl
+	@# Per-cell compile + hot-load pipeline (PR1 spike).
+	@erlc -disable-feature maybe_expr -o ebin src/tidal_compiler.erl
 	@echo "==> Build complete. BEAM files in ebin/"
 
 # Run tests
