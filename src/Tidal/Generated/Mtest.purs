@@ -1,20 +1,21 @@
 -- | Spike — hand-written cell module for the per-cell-compile pipeline.
 -- |
--- | This file MUST round-trip through:
+-- | Round-trips through:
 -- |   spago build → output-erl/Tidal.Generated.Mtest/...erl
 -- |   erlc        → ebin/tidal_generated_mtest@ps.beam
 -- |   code:load_file('tidal_generated_mtest@ps')
--- |   ('tidal_generated_mtest@ps':result())  — returns an Int
+-- |   ('tidal_generated_mtest@ps':pattern())  — returns a Pattern String
 -- |
--- | When the compile_and_load API in tidal_compiler.erl renders a real
--- | generated cell, it uses this same template (Int result, for the
--- | PR2 integrated-test phase).  PR3 will flip the template back to
--- | `pattern :: Pattern String` and wire voice install.
+-- | Mirrors the template tidal_compiler renders for real cells (Phase 1):
+-- | imports Tidal.Cell.Prelude which exposes Pattern, silence,
+-- | combinators (fast, slow, rev, fastCat, stack, every, …), and
+-- | mini-notation parsing via `mini`.
 -- |
 -- | See docs/per-cell-compile-plan.md.
 module Tidal.Generated.Mtest where
 
 import Prelude
+import Tidal.Cell.Prelude
 
-result :: Int
-result = 2 + 2
+pattern :: Pattern String
+pattern = mini "bd sn cp"

@@ -173,12 +173,14 @@ try_parse_prefixed(<<"cue ", Rest/binary>>) ->
     %% docs/per-cell-compile-plan.md.
     {cue, Rest};
 try_parse_prefixed(<<"play-armed ", Rest/binary>>) ->
-    %% play-armed <module> — invoke a previously-cued module's
-    %% result/0 export.  Module must already be loaded (the cue verb
-    %% loaded it).  Reply contains the integer result.
-    Module = trim_binary(Rest),
-    case binary:match(Module, <<" ">>) of
-        nomatch -> {play_armed, Module};
+    %% play-armed <mvoiceName> <moduleName> — install a previously-cued
+    %% module's pattern/0 export into the named voice.  The mvoice name
+    %% must already have a binding registered (via `bind <name> <spec>`);
+    %% the loaded module's pattern is handed to tidal_voice_sup:set_voice_pat.
+    %% PR3.  See docs/per-cell-compile-plan.md.
+    case binary:split(trim_binary(Rest), <<" ">>) of
+        [MvoiceName, Module] when MvoiceName =/= <<>>, Module =/= <<>> ->
+            {play_armed, MvoiceName, Module};
         _ -> none
     end;
 try_parse_prefixed(_) ->
@@ -486,26 +488,56 @@ handle_pattern_message(Text, State) ->
                           DetailBin/binary>>},
                     {reply, Reply, State}
             end;
-        {play_armed, Module} ->
-            %% Invoke a previously-cued module's result/0.  Module is
-            %% the bare name (e.g. <<"Mfeed1234">>); we prepend the
-            %% generated-namespace prefix to get the Erlang atom.
+        {play_armed, MvoiceName, Module} ->
+            %% Install a previously-cued module's pattern into the
+            %% named mvoice's voice gen_server.  Pre-condition: the
+            %% user has registered a binding for MvoiceName via
+            %% `bind` (in the composition pane).  We look it up,
+            %% call Module:pattern/0 to get the Pattern String value,
+            %% and hand both to tidal_voice_sup:set_voice_pat which
+            %% upserts the voice and replaces its current pattern.
+            %% Phase preserved across replacement (see Tidal.Voice).
             ErlAtom = list_to_atom(
                 "tidal_generated_" ++
                 string:lowercase(binary_to_list(Module)) ++ "@ps"),
-            try ErlAtom:result() of
-                Value ->
-                    ValBin = list_to_binary(io_lib:format("~p", [Value])),
-                    Reply = {text, <<"OK: play-armed ", Module/binary,
-                                     " = ", ValBin/binary>>},
-                    {reply, Reply, State}
-            catch
-                Class:What ->
-                    ClassBin = atom_to_binary(Class, utf8),
-                    WhatBin = list_to_binary(io_lib:format("~p", [What])),
-                    Reply = {text, <<"ERR play-armed: ", ClassBin/binary,
-                                     ": ", WhatBin/binary>>},
-                    {reply, Reply, State}
+            case tidal_dispatcher:lookup_binding(MvoiceName) of
+                {nothing} ->
+                    Reply = {text,
+                             <<"ERR play-armed: no binding for '",
+                               MvoiceName/binary,
+                               "'.  Register one first via `bind ",
+                               MvoiceName/binary, " <action-spec>`.">>},
+                    {reply, Reply, State};
+                {just, Binding} ->
+                    try ErlAtom:pattern() of
+                        Pat ->
+                            case tidal_voice_sup:set_voice_pat(
+                                   MvoiceName, Binding, Pat) of
+                                ok ->
+                                    Reply = {text,
+                                             <<"OK: play-armed ",
+                                               MvoiceName/binary, " ",
+                                               Module/binary>>},
+                                    {reply, Reply, State};
+                                {error, InstallErr} ->
+                                    InstallBin = list_to_binary(
+                                        io_lib:format("~p", [InstallErr])),
+                                    Reply = {text,
+                                             <<"ERR play-armed: install: ",
+                                               InstallBin/binary>>},
+                                    {reply, Reply, State}
+                            end
+                    catch
+                        Class:What ->
+                            ClassBin = atom_to_binary(Class, utf8),
+                            WhatBin = list_to_binary(
+                                io_lib:format("~p", [What])),
+                            Reply = {text,
+                                     <<"ERR play-armed: ",
+                                       ClassBin/binary, ": ",
+                                       WhatBin/binary>>},
+                            {reply, Reply, State}
+                    end
             end;
         none ->
             %% Not a built-in verb. Try named-binding dispatch.
