@@ -165,6 +165,24 @@ try_parse_prefixed(<<"config bpm ", Rest/binary>>) ->
         {ok, N} -> {set_bpm, N};
         error -> none
     end;
+try_parse_prefixed(<<"cue ", Rest/binary>>) ->
+    %% cue <body> — compile a cell containing <body> into a generated
+    %% PureScript module and hot-load it.  Reply identifies the loaded
+    %% module by name so the frontend can fire it later via play-armed.
+    %% PR2 integrated-test phase: cells export `result :: Int`.  See
+    %% docs/per-cell-compile-plan.md.
+    {cue, Rest};
+try_parse_prefixed(<<"play-armed ", Rest/binary>>) ->
+    %% play-armed <mvoiceName> <moduleName> — install a previously-cued
+    %% module's pattern/0 export into the named voice.  The mvoice name
+    %% must already have a binding registered (via `bind <name> <spec>`);
+    %% the loaded module's pattern is handed to tidal_voice_sup:set_voice_pat.
+    %% PR3.  See docs/per-cell-compile-plan.md.
+    case binary:split(trim_binary(Rest), <<" ">>) of
+        [MvoiceName, Module] when MvoiceName =/= <<>>, Module =/= <<>> ->
+            {play_armed, MvoiceName, Module};
+        _ -> none
+    end;
 try_parse_prefixed(_) ->
     none.
 
@@ -267,6 +285,28 @@ strip_quotes(Bin) ->
 %% Trim leading/trailing whitespace from a binary.
 trim_binary(Bin) ->
     list_to_binary(string:trim(binary_to_list(Bin))).
+
+%% Lowercase-hex SHA-256 prefix of a source binary, truncated to N hex
+%% chars.  Used by the `cue` verb to produce stable module names.
+%% PureScript module names disallow underscores so we keep the result
+%% hex-only; the generated module is `Tidal.Generated.M<Hash>`.
+source_hash(Source, N) ->
+    Digest = crypto:hash(sha256, Source),
+    Hex = list_to_binary(
+        [io_lib:format("~2.16.0b", [B]) || <<B>> <= Digest]),
+    binary:part(Hex, 0, N).
+
+%% Render the Detail half of a compile_and_load error tuple as a
+%% binary suitable for the WS reply.  Detail can be:
+%%   - a binary (purs/erlc stderr already captured)
+%%   - {ExitCode, Output} where Output is a binary
+%%   - any other Erlang term (rare; fallback via io_lib:format)
+compile_error_detail({_ExitCode, Output}) when is_binary(Output) ->
+    Output;
+compile_error_detail(B) when is_binary(B) ->
+    B;
+compile_error_detail(Other) ->
+    list_to_binary(io_lib:format("~p", [Other])).
 
 %% Strip a trailing " lat <ms>" suffix from a device-name binary.
 %% Returns {DeviceName, Latency} where Latency is a float (default 0.0
@@ -429,6 +469,76 @@ handle_pattern_message(Text, State) ->
             tidal_dispatcher:set_link_tempo(N),
             NumBin = list_to_binary(io_lib:format("~p", [N])),
             {reply, {text, <<"OK: bpm = ", NumBin/binary>>}, State};
+        {cue, Body} ->
+            %% Hash the cell body to a stable hex prefix and route to
+            %% tidal_compiler.  See docs/per-cell-compile-plan.md.
+            %% Hash window is 12 hex chars — cheap, near-zero collision
+            %% risk for a session's worth of cells.
+            Hash = source_hash(Body, 12),
+            ModBin = <<"M", Hash/binary>>,
+            case tidal_compiler:compile_and_load(Body, Hash) of
+                {ok, _Module} ->
+                    Reply = {text, <<"OK: cue ", ModBin/binary>>},
+                    {reply, Reply, State};
+                {error, {Stage, Detail}} ->
+                    DetailBin = compile_error_detail(Detail),
+                    StageBin = atom_to_binary(Stage, utf8),
+                    Reply = {text,
+                        <<"ERR cue: [", StageBin/binary, "] ",
+                          DetailBin/binary>>},
+                    {reply, Reply, State}
+            end;
+        {play_armed, MvoiceName, Module} ->
+            %% Install a previously-cued module's pattern into the
+            %% named mvoice's voice gen_server.  Pre-condition: the
+            %% user has registered a binding for MvoiceName via
+            %% `bind` (in the composition pane).  We look it up,
+            %% call Module:pattern/0 to get the Pattern String value,
+            %% and hand both to tidal_voice_sup:set_voice_pat which
+            %% upserts the voice and replaces its current pattern.
+            %% Phase preserved across replacement (see Tidal.Voice).
+            ErlAtom = list_to_atom(
+                "tidal_generated_" ++
+                string:lowercase(binary_to_list(Module)) ++ "@ps"),
+            case tidal_dispatcher:lookup_binding(MvoiceName) of
+                {nothing} ->
+                    Reply = {text,
+                             <<"ERR play-armed: no binding for '",
+                               MvoiceName/binary,
+                               "'.  Register one first via `bind ",
+                               MvoiceName/binary, " <action-spec>`.">>},
+                    {reply, Reply, State};
+                {just, Binding} ->
+                    try ErlAtom:pattern() of
+                        Pat ->
+                            case tidal_voice_sup:set_voice_pat(
+                                   MvoiceName, Binding, Pat) of
+                                ok ->
+                                    Reply = {text,
+                                             <<"OK: play-armed ",
+                                               MvoiceName/binary, " ",
+                                               Module/binary>>},
+                                    {reply, Reply, State};
+                                {error, InstallErr} ->
+                                    InstallBin = list_to_binary(
+                                        io_lib:format("~p", [InstallErr])),
+                                    Reply = {text,
+                                             <<"ERR play-armed: install: ",
+                                               InstallBin/binary>>},
+                                    {reply, Reply, State}
+                            end
+                    catch
+                        Class:What ->
+                            ClassBin = atom_to_binary(Class, utf8),
+                            WhatBin = list_to_binary(
+                                io_lib:format("~p", [What])),
+                            Reply = {text,
+                                     <<"ERR play-armed: ",
+                                       ClassBin/binary, ": ",
+                                       WhatBin/binary>>},
+                            {reply, Reply, State}
+                    end
+            end;
         none ->
             %% Not a built-in verb. Try named-binding dispatch.
             %% Unbound names produce an error reply (the legacy whole-
