@@ -13,6 +13,7 @@ module Tidal.Dispatch.Helpers
   , param7bit
   , voctValue
   , samplePatternAt
+  , samplePatternAtWith
   ) where
 
 import Prelude
@@ -27,8 +28,8 @@ import Data.Rational (Rational, fromInt)
 import Data.String.CodeUnits as SCU
 import Data.Tuple (Tuple(..))
 import Tidal.Binding as Binding
-import Tidal.Pattern.Core (queryArc)
-import Tidal.Pattern.Types (Event(..), Pattern)
+import Tidal.Pattern.Core (queryArc, queryArcWith)
+import Tidal.Pattern.Types (ControlMap, Event(..), Pattern)
 
 -- | Convert a MIDI note number to a digital CV value at 1V/octave on
 -- | the ES-9's ±10V → digital ±1.0 scale: `value = midiNote / 120.0`.
@@ -124,10 +125,17 @@ param7bit tok = case Number.fromString tok of
 -- | Epsilon must be positive — a zero-width query at the arc start
 -- | would return [] for digital events.
 samplePatternAt :: forall a. Rational -> Pattern a -> Maybe a
-samplePatternAt cycleAt pat =
+samplePatternAt = samplePatternAtWith Map.empty
+
+-- | Like `samplePatternAt`, but threads a caller-supplied ControlMap
+-- | into the pattern query — used by the voice scheduler to make
+-- | `Tidal.LiveControl.live` reads see the current control bus
+-- | snapshot.  The empty-map case is identical to `samplePatternAt`.
+samplePatternAtWith :: forall a. ControlMap -> Rational -> Pattern a -> Maybe a
+samplePatternAtWith controls cycleAt pat =
   let
     epsilon = fromInt 1 / fromInt 1000000
-    events = queryArc pat cycleAt (cycleAt + epsilon)
+    events = queryArcWith controls pat cycleAt (cycleAt + epsilon)
   in case Array.head events of
     Just (Digital ev) -> Just ev.value
     Just (Analog ev) -> Just ev.value

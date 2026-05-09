@@ -7,6 +7,7 @@ import Effect (Effect)
 import Effect.Console (log)
 import Test.BranchedSpec (runBranchedTests)
 import Test.ControlSpec (runControlTests)
+import Test.DejaVuSpec (runDejaVuTests)
 import Test.ExprSpec (runExprTests)
 import Test.LawSpec (runLawTests)
 import Test.PatternSpec (runPatternTests)
@@ -171,6 +172,9 @@ main = do
 
   -- Run Tidal.Sink (typed voices) tests
   runSinkTests
+
+  -- Run DejaVu / LiveControl / Random tests
+  runDejaVuTests
 
   log ""
   log "=== All tests completed ==="

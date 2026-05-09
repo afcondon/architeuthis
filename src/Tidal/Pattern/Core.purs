@@ -67,6 +67,7 @@ module Tidal.Pattern.Core
     -- * Pattern queries
   , firstCycle
   , queryArc
+  , queryArcWith
     -- * Time utilities
   , sam
   , nextSam
@@ -88,6 +89,7 @@ import Math (cos, floor, pi, sin, sqrt)
 import Tidal.Core.Types (Time)
 import Tidal.Pattern.Types
   ( Arc(..)
+  , ControlMap
   , Event(..)
   , Pattern(..)
   , State(..)
@@ -107,6 +109,7 @@ import Tidal.Pattern.Types
   ) as ArcExports
 import Tidal.Pattern.Types
   ( Arc(..)
+  , ControlMap
   , Context
   , Event(..)
   , Pattern
@@ -814,10 +817,17 @@ firstCycle pat = queryArc pat zero one
 
 -- | Query a pattern for a specific time range
 queryArc :: forall a. Pattern a -> Time -> Time -> Array (Event a)
-queryArc pat start stop =
+queryArc = queryArcWith Map.empty
+
+-- | Query a pattern for a specific time range, with a caller-supplied
+-- | ControlMap.  Used by the voice scheduler to thread the live
+-- | control bus snapshot into pattern queries — `Tidal.LiveControl.live`
+-- | reads from this map.
+queryArcWith :: forall a. ControlMap -> Pattern a -> Time -> Time -> Array (Event a)
+queryArcWith controls pat start stop =
   let
     arc = Arc { start, stop }
-    st = State { arc, controls: Map.empty }
+    st = State { arc, controls }
   in
     query pat st
 

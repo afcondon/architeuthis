@@ -76,10 +76,23 @@ running(state_timeout, tick, State) ->
     CycleDur = maps:get(cycleDurationMs, Clock),
     LookAhead = maps:get(lookAheadMs, Info),
     NowUs = erlang:system_time(microsecond),
+    %% Snapshot the live control bus.  PureScript's Window expects
+    %% `Array { name :: String, value :: Number }` — and `Array a`
+    %% in purs-backend-erl is the stdlib `array` module's
+    %% representation, NOT a plain Erlang list.  Build the list of
+    %% record-maps first, then wrap with `array:from_list/1` so the
+    %% PureScript-side `Array.foldl` over `controlPairs` finds what
+    %% it expects.  Reading on the clock's tick (rather than per
+    %% voice) keeps the snapshot consistent across all voices in
+    %% this scheduling pass.
+    ControlPairsList = [#{name => K, value => V}
+                        || {K, V} <- tidal_control_bus:snapshot()],
+    ControlPairs = array:from_list(ControlPairsList),
     Window = #{currentCycle => ElapsedMs / CycleDur,
                lookAheadCycle => (ElapsedMs + LookAhead) / CycleDur,
                cycleDurationMs => CycleDur,
-               nowUnixUs => float(NowUs)},
+               nowUnixUs => float(NowUs),
+               controlPairs => ControlPairs},
     broadcast_compute_window(Window),
     Tick = maps:get(tickIntervalMs, Info),
     {keep_state_and_data, [{state_timeout, Tick, tick}]};

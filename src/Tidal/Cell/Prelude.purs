@@ -21,6 +21,9 @@ module Tidal.Cell.Prelude
   ( module Tidal.Pattern.Types
   , module Tidal.Pattern.Core
   , module DataRational
+  , module Tidal.DejaVu
+  , module Tidal.LiveControl
+  , module Tidal.Random
   , mini
   , r
   ) where
@@ -34,6 +37,9 @@ import Data.Rational (Rational, fromInt)
 import Data.Rational (fromInt) as DataRational
 import Tidal.Pattern.Types
 import Tidal.Pattern.Core
+import Tidal.DejaVu
+import Tidal.LiveControl
+import Tidal.Random
 import Tidal.Expr (parseMiniPattern)
 
 -- | Parse a mini-notation string into a `Pattern String`.  Failed

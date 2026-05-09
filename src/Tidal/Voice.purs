@@ -58,11 +58,11 @@ import Data.Rational (Rational, fromInt)
 import Data.Rational as R
 import Data.Tuple (Tuple(..))
 import Tidal.Binding (Binding, ContDest)
-import Tidal.Dispatch.Helpers (samplePatternAt)
+import Tidal.Dispatch.Helpers (samplePatternAtWith)
 import Tidal.Eval.Interpret (tpatToPattern)
 import Tidal.Parse.Parser (parse)
-import Tidal.Pattern.Core (queryArc)
-import Tidal.Pattern.Types (Arc(..), Event(..), Pattern)
+import Tidal.Pattern.Core (queryArcWith)
+import Tidal.Pattern.Types (Arc(..), ControlMap, Event(..), Pattern, Value(..))
 
 -- ---------------------------------------------------------------------------
 -- VoiceKind — discrete vs continuous voice payload (private).
@@ -243,6 +243,12 @@ type Window =
   , lookAheadCycle :: Number
   , cycleDurationMs :: Number
   , nowUnixUs :: Number
+  , controlPairs :: Array { name :: String, value :: Number }
+  -- ^ Snapshot of the live control bus at the start of this tick.
+  --   Erlang side: list of #{name => binary, value => float} maps,
+  --   which purerl decodes to this array-of-records shape.  Each
+  --   tick gets a fresh snapshot, so all voices in this pass see
+  --   the same controls — no cross-voice inconsistency.
   }
 
 -- | One event the voice wants the dispatcher to send.
@@ -292,19 +298,32 @@ type ComputeResult =
 -- |
 -- | Pure function — no side effects. The cast loop happens in Erlang.
 computeUntil :: Window -> State -> ComputeResult
-computeUntil w (State s) = case s.kind of
-  Discrete d -> computeDiscrete w (State s) d
-  Continuous c -> computeContinuous w (State s) c
+computeUntil w (State s) =
+  let controls = pairsToControlMap w.controlPairs
+  in case s.kind of
+    Discrete d -> computeDiscrete w controls (State s) d
+    Continuous c -> computeContinuous w controls (State s) c
+
+-- | Materialise the Window's control-bus snapshot as a ControlMap
+-- | the pattern query machinery understands.  Erlang ships the bus
+-- | as `Array { name :: String, value :: Number }`; pattern queries
+-- | want `Map String Value` with `VNumber` payloads.  Cheap conversion
+-- | per tick; the alternative (Erlang building the Map directly) is
+-- | tangled in purs-backend-erl's tree-of-Tuples representation.
+pairsToControlMap :: Array { name :: String, value :: Number } -> ControlMap
+pairsToControlMap = Map.fromFoldable
+  <<< map (\p -> Tuple p.name (VNumber p.value))
 
 computeDiscrete
   :: Window
+  -> ControlMap
   -> State
   -> { pattern :: Maybe (Pattern String)
      , params :: Map String (Pattern String)
      , binding :: Binding
      }
   -> ComputeResult
-computeDiscrete w (State s) d = case d.pattern of
+computeDiscrete w controls (State s) d = case d.pattern of
   Nothing -> { newState: State s, events: [] }
   Just pat ->
     let
@@ -322,7 +341,7 @@ computeDiscrete w (State s) d = case d.pattern of
           -- toCycle; subsequent ticks short-circuit until the next
           -- integer boundary. (Earlier sub-cycle filters dropped
           -- events at non-zero positions — see PR1.4e+1 fix.)
-          queryEvents = queryArc pat fromCycle toCycle
+          queryEvents = queryArcWith controls pat fromCycle toCycle
           -- Sample each param pattern at this event's cycle position.
           -- Params with no event at this point (e.g. a rest token) are
           -- absent from the map; the dispatcher treats absence as
@@ -331,7 +350,7 @@ computeDiscrete w (State s) d = case d.pattern of
             Map.fromFoldable
               $ Array.mapMaybe
                   (\(Tuple paramName paramPat) ->
-                    case samplePatternAt cyc paramPat of
+                    case samplePatternAtWith controls cyc paramPat of
                       Just v -> Just (Tuple paramName v)
                       Nothing -> Nothing)
                   (Map.toUnfoldable d.params :: Array (Tuple String (Pattern String)))
@@ -355,15 +374,16 @@ computeDiscrete w (State s) d = case d.pattern of
 
 computeContinuous
   :: Window
+  -> ControlMap
   -> State
   -> { pattern :: Maybe (Pattern Number), dest :: ContDest }
   -> ComputeResult
-computeContinuous w (State s) c = case c.pattern of
+computeContinuous w controls (State s) c = case c.pattern of
   Nothing -> { newState: State s, events: [] }
   Just pat ->
     let
       cyc = numberToCycleRat w.currentCycle
-      mValue = samplePatternAt cyc pat
+      mValue = samplePatternAtWith controls cyc pat
       evs = case mValue of
         Just v
           | not s.muted ->

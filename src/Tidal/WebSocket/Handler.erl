@@ -172,6 +172,20 @@ try_parse_prefixed(<<"cue ", Rest/binary>>) ->
     %% PR2 integrated-test phase: cells export `result :: Int`.  See
     %% docs/per-cell-compile-plan.md.
     {cue, Rest};
+try_parse_prefixed(<<"set-control ", Rest/binary>>) ->
+    %% set-control <name> <value> — write a single named scalar to
+    %% the live control bus (tidal_control_bus).  Cells reading
+    %% via `Tidal.LiveControl.live "<name>"` see the new value
+    %% from the next scheduler tick onward.  Used by Calypso UI
+    %% knobs and (future) Midifighter Twister CCs.
+    case binary:split(trim_binary(Rest), <<" ">>) of
+        [NameBin, ValueBin] when NameBin =/= <<>>, ValueBin =/= <<>> ->
+            case parse_number(trim_binary(ValueBin)) of
+                {ok, V} -> {set_control, NameBin, V};
+                error -> none
+            end;
+        _ -> none
+    end;
 try_parse_prefixed(<<"play-armed ", Rest/binary>>) ->
     %% play-armed <mvoiceName> <moduleName> — install a previously-cued
     %% module's pattern/0 export into the named voice.  The mvoice name
@@ -469,6 +483,15 @@ handle_pattern_message(Text, State) ->
             tidal_dispatcher:set_link_tempo(N),
             NumBin = list_to_binary(io_lib:format("~p", [N])),
             {reply, {text, <<"OK: bpm = ", NumBin/binary>>}, State};
+        {set_control, Name, Value} ->
+            %% Live control bus: writes are O(1) ETS inserts.
+            %% Voices pick up the new value on their next compute
+            %% tick (every ~50ms per current clock config), via the
+            %% snapshot threaded through Window.controlPairs and
+            %% materialised as State.controls in pattern queries.
+            tidal_control_bus:set(Name, Value),
+            ValBin = list_to_binary(io_lib:format("~p", [Value])),
+            {reply, {text, <<"OK: ", Name/binary, " = ", ValBin/binary>>}, State};
         {cue, Body} ->
             %% Hash the cell body to a stable hex prefix and route to
             %% tidal_compiler.  See docs/per-cell-compile-plan.md.

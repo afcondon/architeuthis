@@ -66,6 +66,8 @@ erl: ps
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_state_pub.erl
 	@# Per-cell compile + hot-load pipeline (PR1 spike).
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_compiler.erl
+	@# Live control bus (knob → ETS → State.controls).
+	@erlc -disable-feature maybe_expr -o ebin src/tidal_control_bus.erl
 	@echo "==> Build complete. BEAM files in ebin/"
 
 # Run tests
