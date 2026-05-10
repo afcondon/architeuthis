@@ -1,6 +1,6 @@
 -module(tidal_oSC@foreign).
 -export([startClient/1, stopClient/1, sendNote/3, sendSample/4]).
--export([sendCV/3, sendCVSlew/4, sendGate/3, sendGateTrig/3, sendGateTrigAt/4, sendGateTrigAfter/4, sendCVAfter/4, sendESXAfter/4, sendES5GateTrigAfter/4]).
+-export([sendCV/3, sendCVSlew/4, sendGate/3, sendGateTrig/3, sendGateTrigAt/4, sendGateTrigAfter/4, sendCVAfter/4, sendCVTrigAfter/4, sendESXAfter/4, sendES5GateTrigAfter/4]).
 
 %% Start UDP socket for OSC
 startClient(Config) ->
@@ -133,6 +133,32 @@ sendCVAfter(Client, Bus, Value, DelayMs) ->
             case gen_udp:open(0, [binary]) of
                 {ok, Socket} ->
                     Msg = encode_osc(<<"/cv">>, [Bus, Value]),
+                    gen_udp:send(Socket, Host, Port, Msg),
+                    gen_udp:close(Socket);
+                _ ->
+                    ok
+            end
+        end),
+        unit
+    end.
+
+%% BEAM-side delayed CV trigger. Direct-bus counterpart to
+%% sendGateTrigAfter — emits `/cv/trig <bus> 1.0 <duration_ms>` to
+%% cv-router after `DelayMs`.  cv-router responds by setting the bus
+%% high for the duration and auto-clearing via its deadline machinery.
+%% Use this for percussive gates on absolute cv-router buses (panel
+%% jacks 1-8 are buses 8-15 per the cpal channel mapping).
+sendCVTrigAfter(Client, Bus, DurationMs, DelayMs) ->
+    fun() ->
+        {_StoredSocket, Host, Port} = Client,
+        DelayInt = max(0, round(DelayMs)),
+        DurFloat = float(DurationMs),
+        spawn(fun() ->
+            timer:sleep(DelayInt),
+            case gen_udp:open(0, [binary]) of
+                {ok, Socket} ->
+                    Msg = encode_osc(<<"/cv/trig">>,
+                                     [Bus, 1.0, DurFloat]),
                     gen_udp:send(Socket, Host, Port, Msg),
                     gen_udp:close(Socket);
                 _ ->

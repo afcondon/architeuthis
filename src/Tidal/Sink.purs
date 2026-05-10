@@ -144,6 +144,10 @@ data SinkType
   | SinkCVSampleMap
       { bus :: Int
       }
+  | SinkCVTrig
+      { bus :: Int
+      , latencyMs :: Int
+      }
   | SinkESX
       { slot :: Int
       , latencyMs :: Int
@@ -179,6 +183,7 @@ inferPrimSinkType = case _ of
   CV bus LiteralValue -> SinkCVLiteral { bus }
   CV bus NoteNameVoct -> SinkCVVoct { bus }
   CV bus (SampleNameMap _) -> SinkCVSampleMap { bus }
+  CVTrig r -> SinkCVTrig r
   ESX r -> SinkESX r
   ES5Gate r -> SinkES5Gate r
   MidiNote r -> SinkMidiNote r
@@ -215,6 +220,7 @@ sinkElement = case _ of
   SinkCVLiteral _ -> Number
   SinkCVVoct _ -> Note
   SinkCVSampleMap _ -> Sample
+  SinkCVTrig _ -> Trigger
   SinkESX _ -> Number
   SinkES5Gate _ -> Trigger
   SinkContMidiCC _ -> Number
@@ -230,6 +236,7 @@ sinkDestKind = case _ of
   SinkCVLiteral _ -> ToCV
   SinkCVVoct _ -> ToCV
   SinkCVSampleMap _ -> ToCV
+  SinkCVTrig _ -> ToCV
   SinkContCV _ -> ToCV
   SinkESX _ -> ToESX
   SinkES5Gate _ -> ToES5
@@ -434,6 +441,12 @@ checkPattern sink pat = case sink of
       Left $ "cv (sample-map) expects sample-name tokens, got numeric pattern"
     PatString _ -> Right unit  -- mapped via lookup, unknowns skip
 
+  SinkCVTrig _ -> case pat of
+    PatNumber ->
+      Left $ "cv-trig voice expects discrete tokens, got a continuous numeric pattern \
+             \(use a cv-cont voice for continuous output)"
+    PatString _ -> Right unit  -- any token fires the trigger
+
   SinkESX _ -> case pat of
     PatNumber -> Right unit
     PatString ContentNumeric -> Right unit
@@ -499,6 +512,9 @@ renderSinkType st =
       SinkCVLiteral r -> "ToCV bus=" <> show r.bus <> " mode=literal"
       SinkCVVoct r -> "ToCV bus=" <> show r.bus <> " mode=voct"
       SinkCVSampleMap r -> "ToCV bus=" <> show r.bus <> " mode=sample-map"
+      SinkCVTrig r ->
+        "ToCV bus=" <> show r.bus <> " mode=trig"
+          <> " lat=" <> show r.latencyMs
       SinkContCV r -> "ToCV bus=" <> show r.bus
       SinkESX r ->
         "ToESX slot=" <> show r.slot
@@ -542,6 +558,10 @@ renderSinkTypeJSON st =
       SinkCVLiteral r -> "{\"bus\":" <> show r.bus <> ",\"mode\":\"literal\"}"
       SinkCVVoct r -> "{\"bus\":" <> show r.bus <> ",\"mode\":\"voct\"}"
       SinkCVSampleMap r -> "{\"bus\":" <> show r.bus <> ",\"mode\":\"sample-map\"}"
+      SinkCVTrig r ->
+        "{\"bus\":" <> show r.bus
+          <> ",\"mode\":\"trig\""
+          <> ",\"latencyMs\":" <> show r.latencyMs <> "}"
       SinkContCV r -> "{\"bus\":" <> show r.bus <> "}"
       SinkESX r ->
         "{\"slot\":" <> show r.slot

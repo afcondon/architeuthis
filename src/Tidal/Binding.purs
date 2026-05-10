@@ -85,8 +85,9 @@ derive instance eqCVMapping :: Eq CVMapping
 -- | adding a constructor here and a dispatcher branch — no change to the
 -- | binding registry shape, no churn for existing actions.
 data PrimAction
-  = Gate     { channel :: Int, latencyMs :: Int }     -- → cv-router /tidal/gate
-  | CV       Int CVMapping                            -- bus 0..15 → cv-router /cv
+  = Gate     { channel :: Int, latencyMs :: Int }     -- → cv-router /tidal/gate (legacy, GATE_BASE+ch)
+  | CV       Int CVMapping                            -- bus 0..15 → cv-router /cv (sustained)
+  | CVTrig   { bus :: Int, latencyMs :: Int }         -- bus 0..15 → cv-router /cv/trig (pulse)
   | ESX      { slot :: Int, latencyMs :: Int }        -- ESX-8CV slot 0..7 → /esx
   | ES5Gate  { bit :: Int,   latencyMs :: Int }       -- ES-5 panel gate 0..7 → /esx5gate
   -- MIDI primitives — device-aware. The `device` field is an alias
@@ -238,6 +239,11 @@ parseAction s =
     ["es5gate", bitStr, "lat", latStr] ->
       mkES5Gate bitStr latStr
 
+    ["cv-trig", busStr] ->
+      mkCVTrig busStr "0"
+    ["cv-trig", busStr, "lat", latStr] ->
+      mkCVTrig busStr latStr
+
     -- midi-note <alias> <ch> <note> [velocity [duration-ms]]
     ["midi-note", device, chStr, noteStr] ->
       parseMidiNote device chStr noteStr "100" "50"
@@ -280,6 +286,13 @@ mkES5Gate bitStr latStr =
     Just bit, Just lat -> Right (ES5Gate { bit, latencyMs: lat })
     Nothing, _ -> Left ("es5gate: expected integer bit, got '" <> bitStr <> "'")
     _, Nothing -> Left ("es5gate: expected integer lat, got '" <> latStr <> "'")
+
+mkCVTrig :: String -> String -> Either String PrimAction
+mkCVTrig busStr latStr =
+  case Int.fromString busStr, Int.fromString latStr of
+    Just bus, Just lat -> Right (CVTrig { bus, latencyMs: lat })
+    Nothing, _ -> Left ("cv-trig: expected integer bus, got '" <> busStr <> "'")
+    _, Nothing -> Left ("cv-trig: expected integer lat, got '" <> latStr <> "'")
 
 -- | Helper for the midi-note variants — packs a typed Int validation
 -- | and emits a sensible error message per missing field.

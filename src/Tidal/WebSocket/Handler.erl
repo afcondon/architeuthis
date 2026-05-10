@@ -1351,8 +1351,13 @@ parse_binding_gate_verb(Rest) ->
                         <<"es5gate">>, [integer_to_binary(Bus)], Lat),
                     {bind, Name, ActionSpec};
                 {{ok, es9, _Parent, _Detail}, {ok, Bus}} ->
+                    %% es9 alias on the gate verb fires a *trigger* on
+                    %% the cv-router direct bus.  cv-trig holds the bus
+                    %% high for gateDuration ms then auto-clears (vs
+                    %% the legacy `cv` action which sets a sustained
+                    %% value that never decays).
                     ActionSpec = build_action_spec(
-                        <<"cv">>, [integer_to_binary(Bus)], Lat),
+                        <<"cv-trig">>, [integer_to_binary(Bus)], Lat),
                     {bind, Name, ActionSpec};
                 {{ok, fh2, _Parent, _Detail}, {ok, Voice}} ->
                     case ets:lookup(tidal_fh2_voices, {Dev, Voice}) of

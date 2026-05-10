@@ -20,6 +20,7 @@ module Tidal.OSC
   , sendGateTrigAt
   , sendGateTrigAfter
   , sendCVAfter
+  , sendCVTrigAfter
   , sendESXAfter
   , sendES5GateTrigAfter
   ) where
@@ -119,6 +120,15 @@ foreign import sendGateTrigAfter :: OSCClient -> Int -> Number -> Number -> Effe
 -- | corresponding gate trigger fires, so the receiving module sees the
 -- | new pitch settled by the time it samples the trigger.
 foreign import sendCVAfter :: OSCClient -> Int -> Number -> Number -> Effect Unit
+
+-- | BEAM-side delayed CV trigger: spawns a process that sleeps `delay_ms`
+-- | then sends `/cv/trig <bus> 1.0 <duration_ms>` to fire a pulse on the
+-- | named bus for the duration, after which cv-router auto-clears.  This
+-- | is the direct-bus counterpart to `sendGateTrigAfter` (which uses the
+-- | legacy /tidal/gate/trig channel-based path).  Use this when the
+-- | binding's bus number is meant as cv-router's absolute bus 0..15.
+-- | /cv/trig <bus> <value> <duration_ms>
+foreign import sendCVTrigAfter :: OSCClient -> Int -> Number -> Number -> Effect Unit
 
 -- | BEAM-side delayed ESX-8CV update. Same shape as `sendCVAfter` but
 -- | targets `/esx <slot 0..7> <value>` for cv-router's Silent Way encoder

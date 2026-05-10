@@ -71,7 +71,7 @@ import Tidal.Log as Log
 import Tidal.MIDIBridge (BridgeClient, scheduleCCAt, scheduleNoteAt)
 import Tidal.MIDIBridge as MIDIBridge
 import Tidal.Dispatch.Helpers (clamp7bit, interpretCV, noteNameMidi, param7bit)
-import Tidal.OSC (OSCClient, sendCVAfter, sendES5GateTrigAfter, sendESXAfter, sendGateTrigAfter)
+import Tidal.OSC (OSCClient, sendCVAfter, sendCVTrigAfter, sendES5GateTrigAfter, sendESXAfter, sendGateTrigAfter)
 import Tidal.Transform (applyTransforms)
 
 -- ---------------------------------------------------------------------------
@@ -281,6 +281,15 @@ dispatchPrimAction (State s) name token wallUs delayMs _delayInt params = case _
           let adjusted = max 0.0 (delayMs - Int.toNumber g.latencyMs)
           Log.debug $ "⚡ [" <> name <> "] gate " <> show g.channel <> " in " <> show (Int.floor adjusted) <> "ms"
           sendGateTrigAfter osc g.channel s.config.gateDuration adjusted
+        Nothing -> pure unit
+
+  CVTrig g ->
+    when (token /= "~") do
+      case s.oscClient of
+        Just osc -> do
+          let adjusted = max 0.0 (delayMs - Int.toNumber g.latencyMs)
+          Log.debug $ "⚡ [" <> name <> "] cv-trig bus " <> show g.bus <> " in " <> show (Int.floor adjusted) <> "ms"
+          sendCVTrigAfter osc g.bus s.config.gateDuration adjusted
         Nothing -> pure unit
 
   ES5Gate g ->
