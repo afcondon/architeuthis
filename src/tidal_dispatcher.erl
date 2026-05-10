@@ -150,6 +150,26 @@ stop() ->
 %% =========================================================================
 
 init([]) ->
+    %% Alias-type registry for the routing-grammar (Calypso composition
+    %% grammar) device declarations.  Keyed by alias binary; value is
+    %% {Alias, Type, Parent, Detail} where Type ∈ {midi, fh2, yarns,
+    %% es9, es5, esx_8gt, esx_8cv, fhx_8gt, osc}, Parent is the parent
+    %% alias binary for expanders (or `undefined`), and Detail is a map
+    %% with type-specific extras (port, host, etc).  Read by Handler.erl
+    %% to resolve `gate`/`cv` bindings against their device's type.
+    case ets:info(tidal_alias_types) of
+        undefined ->
+            ets:new(tidal_alias_types, [set, public, named_table]);
+        _ -> ok
+    end,
+    %% FH-2 voice → channel/output/mode mapping populated by `fh2-config`,
+    %% read by the `gate` verb when its target is an FH-2 alias.  Keyed
+    %% by {AliasBin, Voice}.
+    case ets:info(tidal_fh2_voices) of
+        undefined ->
+            ets:new(tidal_fh2_voices, [set, public, named_table]);
+        _ -> ok
+    end,
     %% Configurable via the purerl_tidal application env. Defaults
     %% match Main.purs's existing GateConfig.
     GateEnabled  = application:get_env(purerl_tidal, gateEnabled, true),

@@ -197,6 +197,46 @@ try_parse_prefixed(<<"play-armed ", Rest/binary>>) ->
             {play_armed, MvoiceName, Module};
         _ -> none
     end;
+%% --- Calypso composition-grammar verbs (routing-only) ---------------
+%% See calypso/docs/composition-grammar.md for the spec.  Each verb
+%% lowers into one of the existing tuple shapes (midi_device,
+%% fh2_gate, fh2_envelope, bind) so the existing dispatch arms keep
+%% working; device-only verbs (es9 / es5 / etc.) emit an
+%% {alias_recorded, ...} tuple handled by a dedicated arm below.
+%% A side-effect on tidal_alias_types (ETS) records the alias's type
+%% so subsequent gate/cv bindings can route by alias-type.
+
+try_parse_prefixed(<<"midi ", Rest/binary>>) ->
+    parse_root_device_verb(midi, Rest);
+try_parse_prefixed(<<"fh2 ", Rest/binary>>) ->
+    parse_root_device_verb(fh2, Rest);
+try_parse_prefixed(<<"yarns ", Rest/binary>>) ->
+    parse_root_device_verb(yarns, Rest);
+try_parse_prefixed(<<"es9 ", Rest/binary>>) ->
+    parse_es9_verb(Rest);
+try_parse_prefixed(<<"es5 ", Rest/binary>>) ->
+    parse_expander_verb(es5, <<"es5">>, Rest);
+try_parse_prefixed(<<"esx-8gt ", Rest/binary>>) ->
+    parse_expander_verb(esx_8gt, <<"esx-8gt">>, Rest);
+try_parse_prefixed(<<"esx-8cv ", Rest/binary>>) ->
+    parse_expander_verb(esx_8cv, <<"esx-8cv">>, Rest);
+try_parse_prefixed(<<"fhx-8gt ", Rest/binary>>) ->
+    parse_expander_verb(fhx_8gt, <<"fhx-8gt">>, Rest);
+try_parse_prefixed(<<"osc ", Rest/binary>>) ->
+    parse_osc_verb(Rest);
+try_parse_prefixed(<<"fh2-config ", Rest/binary>>) ->
+    parse_fh2_config_verb(Rest);
+try_parse_prefixed(<<"midi-note ", Rest/binary>>) ->
+    parse_binding_midi_note_verb(Rest);
+try_parse_prefixed(<<"midi-cc-cont ", Rest/binary>>) ->
+    parse_binding_midi_cc_verb(<<"midi-cc-cont">>, Rest);
+try_parse_prefixed(<<"midi-cc ", Rest/binary>>) ->
+    parse_binding_midi_cc_verb(<<"midi-cc">>, Rest);
+try_parse_prefixed(<<"gate ", Rest/binary>>) ->
+    parse_binding_gate_verb(Rest);
+try_parse_prefixed(<<"cv ", Rest/binary>>) ->
+    parse_binding_cv_verb(Rest);
+
 try_parse_prefixed(_) ->
     none.
 
@@ -562,6 +602,18 @@ handle_pattern_message(Text, State) ->
                             {reply, Reply, State}
                     end
             end;
+        {alias_recorded, Verb, Alias, Detail} ->
+            %% Composition-grammar device verbs that don't back a
+            %% legacy MIDI device (es9 / es5 / esx-* / fhx-* / osc).
+            %% The ETS write happened in try_parse_prefixed; this
+            %% arm only crafts the OK reply.
+            DetailBin = format_alias_detail(Detail),
+            Reply = {text, <<"OK: ", Verb/binary, " ", Alias/binary,
+                             " ", DetailBin/binary>>},
+            {reply, Reply, State};
+        {routing_error, Verb, Reason} ->
+            Reply = {text, <<"ERR: ", Verb/binary, ": ", Reason/binary>>},
+            {reply, Reply, State};
         none ->
             %% Not a built-in verb. Try named-binding dispatch.
             %% Unbound names produce an error reply (the legacy whole-
@@ -1025,6 +1077,388 @@ fh2_set_gate_standalone(Voice, Output, Channel) ->
 %% protocol: send one line, read one newline-terminated reply, close.
 %% Returns {ok, ReplyBinary} on success, {error, Reason} on failure
 %% (including ENOENT when no daemon is listening).
+
+%% =========================================================================
+%% Composition-grammar verb helpers (Calypso routing grammar).
+%% =========================================================================
+
+%% Tokenize a binary into whitespace-separated tokens, with `"..."`
+%% blocks treated as single tokens (quotes stripped).  Powers all the
+%% new-grammar verb parsers since legacy `binary:split <" ">` doesn't
+%% cope with the multi-space alignment users will write
+%% (`midi      live    "IAC Driver Tidal"`).
+ws_tokens(Bin) -> ws_tokens(Bin, []).
+
+ws_tokens(<<>>, Acc) -> lists:reverse(Acc);
+ws_tokens(<<C, Rest/binary>>, Acc) when C =:= $\s; C =:= $\t;
+                                          C =:= $\r; C =:= $\n ->
+    ws_tokens(Rest, Acc);
+ws_tokens(<<$", Rest/binary>>, Acc) ->
+    {Tok, Rest2} = ws_read_quoted(Rest, <<>>),
+    ws_tokens(Rest2, [Tok | Acc]);
+ws_tokens(Bin, Acc) ->
+    {Tok, Rest} = ws_read_bare(Bin, <<>>),
+    ws_tokens(Rest, [Tok | Acc]).
+
+ws_read_quoted(<<>>, Acc) -> {Acc, <<>>};
+ws_read_quoted(<<$", Rest/binary>>, Acc) -> {Acc, Rest};
+ws_read_quoted(<<C, Rest/binary>>, Acc) ->
+    ws_read_quoted(Rest, <<Acc/binary, C>>).
+
+ws_read_bare(<<>>, Acc) -> {Acc, <<>>};
+ws_read_bare(<<C, _/binary>> = Bin, Acc) when C =:= $\s; C =:= $\t;
+                                                C =:= $\r; C =:= $\n ->
+    {Acc, Bin};
+ws_read_bare(<<C, Rest/binary>>, Acc) ->
+    ws_read_bare(Rest, <<Acc/binary, C>>).
+
+%% Try to parse an integer-valued binary.  Uses the same approach as
+%% parse_number above but constrained to integers.
+parse_int(Bin) ->
+    try {ok, binary_to_integer(trim_binary(Bin))}
+    catch error:badarg -> error end.
+
+%% Strip an optional trailing `latency N` from a token list, returning
+%% {LeadingTokens, LatFloat}.  Lat default 0.0.
+peel_latency_suffix(Tokens) ->
+    case lists:reverse(Tokens) of
+        [LatVal, <<"latency">> | Rest] ->
+            case parse_number(LatVal) of
+                {ok, N} -> {lists:reverse(Rest), N};
+                error -> {Tokens, 0.0}
+            end;
+        _ -> {Tokens, 0.0}
+    end.
+
+%% Insert / overwrite an alias-type record.
+register_alias(Alias, Type, Parent, Detail) ->
+    ets:insert(tidal_alias_types, {Alias, Type, Parent, Detail}).
+
+%% Look up an alias-type record.  Returns `{ok, Type, Parent, Detail}`
+%% or `not_found`.
+alias_type(Alias) ->
+    case ets:lookup(tidal_alias_types, Alias) of
+        [{Alias, Type, Parent, Detail}] -> {ok, Type, Parent, Detail};
+        [] -> not_found
+    end.
+
+%% Format a Detail map for the {alias_recorded, ...} reply text.
+format_alias_detail(Detail) when is_map(Detail) ->
+    Pairs = [io_lib:format("~s=~s",
+                           [atom_to_list(K), format_detail_value(V)])
+             || {K, V} <- maps:to_list(Detail)],
+    list_to_binary(string:join(Pairs, " "));
+format_alias_detail(_) -> <<>>.
+
+format_detail_value(V) when is_binary(V) -> binary_to_list(V);
+format_detail_value(V) when is_integer(V) -> integer_to_list(V);
+format_detail_value(V) when is_atom(V) -> atom_to_list(V);
+format_detail_value(V) -> io_lib:format("~p", [V]).
+
+%% --- Device verb parsers --------------------------------------------
+
+%% Root device with a MIDI port: `<verb> <alias> "<port>" [latency N]`.
+%% Records the alias type in ETS and returns a `{midi_device, ...}`
+%% tuple so the existing dispatch arm registers the underlying MIDI
+%% device alias for sendmidi.
+parse_root_device_verb(Type, Rest) ->
+    Tokens = ws_tokens(Rest),
+    {Lead, Lat} = peel_latency_suffix(Tokens),
+    case Lead of
+        [Alias, Port] when Alias =/= <<>>, Port =/= <<>> ->
+            register_alias(Alias, Type, undefined, #{port => Port}),
+            {midi_device, Alias, Port, Lat};
+        _ -> none
+    end.
+
+%% es9: alias only — cv-router talks to the ES-9 directly via
+%% CoreAudio, not MIDI, so no midi-device backing.  Form:
+%% `es9 <alias> "<port-name>"`.
+parse_es9_verb(Rest) ->
+    case ws_tokens(Rest) of
+        [Alias, Port] when Alias =/= <<>>, Port =/= <<>> ->
+            register_alias(Alias, es9, undefined, #{port => Port}),
+            {alias_recorded, <<"es9">>, Alias, #{port => Port}};
+        _ -> none
+    end.
+
+%% Expander: `<type> <alias> on <parent>`.  Just records the alias →
+%% parent relationship; later gate/cv bindings consult it to figure
+%% out the legacy output / channel they should fire.
+parse_expander_verb(TypeAtom, VerbBin, Rest) ->
+    case ws_tokens(Rest) of
+        [Alias, <<"on">>, Parent] when Alias =/= <<>>, Parent =/= <<>> ->
+            register_alias(Alias, TypeAtom, Parent, #{}),
+            {alias_recorded, VerbBin, Alias, #{parent => Parent}};
+        _ -> none
+    end.
+
+%% osc: `osc <alias> host=<host> port=<int>`.  Recorded for
+%% completeness; current dispatch doesn't use OSC devices yet.
+parse_osc_verb(Rest) ->
+    case ws_tokens(Rest) of
+        [Alias, HostKv, PortKv] ->
+            case {parse_kv_string(<<"host">>, HostKv),
+                  parse_kv_int(<<"port">>, PortKv)} of
+                {{ok, Host}, {ok, Port}} ->
+                    Detail = #{host => Host, port => Port},
+                    register_alias(Alias, osc, undefined, Detail),
+                    {alias_recorded, <<"osc">>, Alias, Detail};
+                _ -> none
+            end;
+        _ -> none
+    end.
+
+%% Parse a `key=value` token where value is a string.  Returns
+%% `{ok, ValueBin}` or `error`.
+parse_kv_string(Key, Bin) ->
+    Prefix = <<Key/binary, "=">>,
+    case binary:split(Bin, Prefix) of
+        [<<>>, Val] when Val =/= <<>> -> {ok, Val};
+        _ -> error
+    end.
+
+parse_kv_int(Key, Bin) ->
+    case parse_kv_string(Key, Bin) of
+        {ok, Val} -> parse_int(Val);
+        error -> error
+    end.
+
+%% --- Device-internal config: fh2-config -----------------------------
+
+%% `fh2-config <alias>:<mode> voice=<N> out=<O> ch=<K>`.  Mode is
+%% `gate` or `envelope`; `out=N` is a literal local FH-2 output
+%% (1-8), `out=<expander-alias>:<slot>` resolves through the
+%% expander's type to a legacy output number (FHX-8GT slots map to
+%% legacy outputs 65+).
+parse_fh2_config_verb(Rest) ->
+    case ws_tokens(Rest) of
+        [DevModeBin | KVTokens] ->
+            case binary:split(DevModeBin, <<":">>) of
+                [DevAlias, ModeBin] ->
+                    parse_fh2_config_kvs(DevAlias, ModeBin, KVTokens);
+                _ -> none
+            end;
+        _ -> none
+    end.
+
+parse_fh2_config_kvs(DevAlias, ModeBin, KVTokens) ->
+    Map = maps:from_list(
+        [{K, V} ||
+            T <- KVTokens,
+            {K, V} <- [case binary:split(T, <<"=">>) of
+                           [Ka, Va] -> {Ka, Va};
+                           _ -> {<<>>, <<>>}
+                       end],
+            K =/= <<>>]),
+    case {maps:get(<<"voice">>, Map, undefined),
+          maps:get(<<"out">>, Map, undefined),
+          maps:get(<<"ch">>, Map, undefined)} of
+        {VoiceBin, OutBin, ChBin} when VoiceBin =/= undefined,
+                                         OutBin =/= undefined,
+                                         ChBin =/= undefined ->
+            case {parse_int(VoiceBin),
+                  resolve_fh2_out(OutBin),
+                  parse_int(ChBin)} of
+                {{ok, V}, {ok, Out}, {ok, Ch}} ->
+                    case ModeBin of
+                        <<"gate">> ->
+                            ets:insert(tidal_fh2_voices,
+                                       {{DevAlias, V},
+                                        #{channel => Ch,
+                                          output => Out,
+                                          mode => gate}}),
+                            {fh2_gate, V, Out, Ch};
+                        <<"envelope">> ->
+                            ets:insert(tidal_fh2_voices,
+                                       {{DevAlias, V},
+                                        #{channel => Ch,
+                                          output => Out,
+                                          mode => envelope}}),
+                            {fh2_envelope, V, Out, Ch};
+                        _ ->
+                            {routing_error, <<"fh2-config">>,
+                             <<"mode must be 'gate' or 'envelope', got '",
+                               ModeBin/binary, "'">>}
+                    end;
+                _ ->
+                    {routing_error, <<"fh2-config">>,
+                     <<"could not parse voice/out/ch as integers">>}
+            end;
+        _ ->
+            {routing_error, <<"fh2-config">>,
+             <<"missing one of voice= / out= / ch=">>}
+    end.
+
+%% Resolve `out=<value>` into the legacy fh2 output number.
+%%   bare int N        → N (FH-2 local output 1..8)
+%%   <alias>:<slot>    → look up alias type:
+%%                         fhx_8gt → 65 + slot  (FHX-8GT outputs 1..8)
+%%                         (other expanders not supported yet)
+resolve_fh2_out(Bin) ->
+    case binary:split(Bin, <<":">>) of
+        [Alias, SlotBin] ->
+            case {alias_type(Alias), parse_int(SlotBin)} of
+                {{ok, fhx_8gt, _Parent, _Detail}, {ok, Slot}} ->
+                    {ok, 65 + Slot};
+                _ ->
+                    error
+            end;
+        [_] -> parse_int(Bin)
+    end.
+
+%% --- Binding verb parsers --------------------------------------------
+
+%% `midi-note <name> <dev> <ch> <note> <vel> <dur> [latency N]`
+%%   → bind <name> midi-note <dev> <ch> <note> <vel> <dur> [lat N]
+parse_binding_midi_note_verb(Rest) ->
+    Tokens = ws_tokens(Rest),
+    {Lead, Lat} = peel_latency_suffix(Tokens),
+    case Lead of
+        [Name, Dev, Ch, Note, Vel, Dur] ->
+            ActionSpec = build_action_spec(
+                <<"midi-note">>, [Dev, Ch, Note, Vel, Dur], Lat),
+            {bind, Name, ActionSpec};
+        _ -> none
+    end.
+
+%% `midi-cc <name> <dev> <ch> <cc> [latency N]` and `midi-cc-cont` ditto.
+parse_binding_midi_cc_verb(Verb, Rest) ->
+    Tokens = ws_tokens(Rest),
+    {Lead, Lat} = peel_latency_suffix(Tokens),
+    case Lead of
+        [Name, Dev, Ch, Cc] ->
+            ActionSpec = build_action_spec(Verb, [Dev, Ch, Cc], Lat),
+            {bind, Name, ActionSpec};
+        _ -> none
+    end.
+
+%% `gate <name> <dev> <bus> [latency N]` — alias-type-dependent dispatch.
+%%   es5 alias  → bind <name> es5gate <bus>
+%%   es9 alias  → bind <name> cv      <bus>   (cv-router /cv path; gate-style)
+%%   fh2 alias  → bind <name> midi-note <dev> <ch> 60 100 50  where <ch> is
+%%                resolved from the `fh2-config <dev>:gate|envelope voice=<bus> ch=<ch>`
+%%                that the user must have fired earlier.
+%%   esx_8gt    → not yet supported (cv-router has no chained-expander gate addressing)
+parse_binding_gate_verb(Rest) ->
+    Tokens = ws_tokens(Rest),
+    {Lead, Lat} = peel_latency_suffix(Tokens),
+    case Lead of
+        [Name, Dev, BusBin] ->
+            case {alias_type(Dev), parse_int(BusBin)} of
+                {{ok, es5, _Parent, _Detail}, {ok, Bus}} ->
+                    ActionSpec = build_action_spec(
+                        <<"es5gate">>, [integer_to_binary(Bus)], Lat),
+                    {bind, Name, ActionSpec};
+                {{ok, es9, _Parent, _Detail}, {ok, Bus}} ->
+                    ActionSpec = build_action_spec(
+                        <<"cv">>, [integer_to_binary(Bus)], Lat),
+                    {bind, Name, ActionSpec};
+                {{ok, fh2, _Parent, _Detail}, {ok, Voice}} ->
+                    case ets:lookup(tidal_fh2_voices, {Dev, Voice}) of
+                        [{_, #{channel := Ch}}] ->
+                            ActionSpec = build_action_spec(
+                                <<"midi-note">>,
+                                [Dev, integer_to_binary(Ch),
+                                 <<"60">>, <<"100">>, <<"50">>], Lat),
+                            {bind, Name, ActionSpec};
+                        [] ->
+                            VoiceBin = integer_to_binary(Voice),
+                            {routing_error, <<"gate">>,
+                             <<"fh2 voice ", VoiceBin/binary,
+                               " on '", Dev/binary,
+                               "' not configured; "
+                               "declare with `fh2-config ", Dev/binary,
+                               ":gate voice=", VoiceBin/binary,
+                               " out=… ch=…` first">>}
+                    end;
+                {{ok, esx_8gt, _Parent, _Detail}, _} ->
+                    {routing_error, <<"gate">>,
+                     <<"esx-8gt chained gate addressing isn't in cv-router yet; "
+                       "for ES-5's own panel gates use the es5 alias directly">>};
+                {{ok, OtherType, _, _}, _} ->
+                    TypeBin = atom_to_binary(OtherType, utf8),
+                    {routing_error, <<"gate">>,
+                     <<"alias '", Dev/binary, "' is type ",
+                       TypeBin/binary,
+                       "; gate verb supports es5/es9/fh2 today">>};
+                {not_found, _} ->
+                    {routing_error, <<"gate">>,
+                     <<"unknown device alias '", Dev/binary,
+                       "'; declare it first">>};
+                {_, error} -> none
+            end;
+        _ -> none
+    end.
+
+%% `cv <name> <dev> <bus> <mode> [latency N]`.
+%%   es9     alias → bind <name> cv  <bus> <mode>   (mode threaded; legacy
+%%                   cv action accepts voct/literal; sample-map → literal + warn)
+%%   esx_8cv alias → bind <name> esx <slot>          (mode dropped — esx
+%%                   action is literal-only)
+%%   yarns         → not yet (Yarns CV requires a MIDI dispatch path that
+%%                   doesn't exist as a legacy action atom)
+parse_binding_cv_verb(Rest) ->
+    Tokens = ws_tokens(Rest),
+    {Lead, Lat} = peel_latency_suffix(Tokens),
+    case Lead of
+        [Name, Dev, BusBin, ModeBin] ->
+            case {alias_type(Dev), parse_int(BusBin)} of
+                {{ok, es9, _Parent, _Detail}, {ok, Bus}} ->
+                    LegacyMode = legacy_cv_mode(ModeBin),
+                    ActionSpec = build_action_spec(
+                        <<"cv">>,
+                        [integer_to_binary(Bus), LegacyMode], Lat),
+                    {bind, Name, ActionSpec};
+                {{ok, esx_8cv, _Parent, _Detail}, {ok, Slot}} ->
+                    ActionSpec = build_action_spec(
+                        <<"esx">>, [integer_to_binary(Slot)], Lat),
+                    {bind, Name, ActionSpec};
+                {{ok, yarns, _Parent, _Detail}, _} ->
+                    {routing_error, <<"cv">>,
+                     <<"yarns CV outputs aren't wired through purerl-tidal yet; "
+                       "drive Yarns via `midi-note` on its MIDI port for now">>};
+                {{ok, OtherType, _, _}, _} ->
+                    TypeBin = atom_to_binary(OtherType, utf8),
+                    {routing_error, <<"cv">>,
+                     <<"alias '", Dev/binary, "' is type ",
+                       TypeBin/binary,
+                       "; cv verb supports es9/esx-8cv today">>};
+                {not_found, _} ->
+                    {routing_error, <<"cv">>,
+                     <<"unknown device alias '", Dev/binary,
+                       "'; declare it first">>};
+                {_, error} -> none
+            end;
+        _ -> none
+    end.
+
+%% Map a new-grammar cv mode word to the legacy `cv` action's accepted
+%% modes.  voct + literal pass through; sample-map collapses to literal
+%% (the cv-router doesn't have a sample-map encoder; pattern values are
+%% already in 0..1 ish range and end up the same shape on the wire).
+legacy_cv_mode(<<"voct">>)        -> <<"voct">>;
+legacy_cv_mode(<<"literal">>)     -> <<"literal">>;
+legacy_cv_mode(<<"sample-map">>) -> <<"literal">>;
+legacy_cv_mode(_)                 -> <<"literal">>.
+
+%% Build a `<verb> <a> <b> ...` ActionSpec binary for set_binding_from_spec,
+%% optionally appending ` lat <ms>`.  Latency is only emitted when > 0
+%% (matches legacy convention where omission means "no compensation").
+build_action_spec(Verb, Args, Lat) ->
+    Joined = list_to_binary(string:join([binary_to_list(A) ||
+                                            A <- [Verb | Args]], " ")),
+    case Lat > 0.0 of
+        true ->
+            LatBin = list_to_binary(io_lib:format("~p", [Lat])),
+            <<Joined/binary, " lat ", LatBin/binary>>;
+        false ->
+            Joined
+    end.
+
+%% =========================================================================
+%% FH-2 daemon socket (unchanged, original code below).
+%% =========================================================================
 
 fh2_daemon_socket_path() ->
     case os:getenv("HOME") of
