@@ -226,6 +226,11 @@ try_parse_prefixed(<<"osc ", Rest/binary>>) ->
     parse_osc_verb(Rest);
 try_parse_prefixed(<<"fh2-config ", Rest/binary>>) ->
     parse_fh2_config_verb(Rest);
+try_parse_prefixed(<<"polysignal ", Rest/binary>>) ->
+    %% Calypso ships polysignal cell blocks as a single line of the
+    %% form `polysignal <json>`, where the JSON envelope is exactly
+    %% what fh2-config's `--apply-polysignal` reads on stdin.
+    {polysignal, Rest};
 try_parse_prefixed(<<"midi-note ", Rest/binary>>) ->
     parse_binding_midi_note_verb(Rest);
 try_parse_prefixed(<<"midi-cc-cont ", Rest/binary>>) ->
@@ -234,6 +239,8 @@ try_parse_prefixed(<<"midi-cc ", Rest/binary>>) ->
     parse_binding_midi_cc_verb(<<"midi-cc">>, Rest);
 try_parse_prefixed(<<"gate ", Rest/binary>>) ->
     parse_binding_gate_verb(Rest);
+try_parse_prefixed(<<"cv-cont ", Rest/binary>>) ->
+    parse_binding_cv_cont_verb(Rest);
 try_parse_prefixed(<<"cv ", Rest/binary>>) ->
     parse_binding_cv_verb(Rest);
 
@@ -437,6 +444,19 @@ handle_pattern_message(Text, State) ->
                              " on ch ", (integer_to_binary(Channel))/binary,
                              " (SysEx push in flight)">>},
             {reply, Reply, State};
+        {polysignal, Json} ->
+            %% Polysignal: a multi-output autonomous FH-2 panel
+            %% configuration (polylfo / polyclock / polyenv /
+            %% polyeuclid / polyeuclid-pairs / polyrand). The cell
+            %% block has been transposed by Calypso into a single
+            %% line `polysignal <json>`. We shell out to fh2-config
+            %% --apply-polysignal with the JSON on stdin. Fire-and-
+            %% forget reply pattern matches the existing fh2-gate /
+            %% fh2-envelope arms — standalone spago shell-out takes
+            %% ~7s, daemon path (step 7) will bring it under 100ms.
+            spawn(fun() -> fh2_apply_polysignal(Json) end),
+            Reply = {text, <<"OK: polysignal apply in flight">>},
+            {reply, Reply, State};
         {fh2_envelope, Voice, Output, Channel} ->
             %% Dispatcher owns the voice→channel mapping (PR1.6 +
             %% PR1.7b). setFh2VoiceChannel auto-registers the `fh2`
@@ -554,23 +574,25 @@ handle_pattern_message(Text, State) ->
         {play_armed, MvoiceName, Module} ->
             %% Install a previously-cued module's pattern into the
             %% named mvoice's voice gen_server.  Pre-condition: the
-            %% user has registered a binding for MvoiceName via
-            %% `bind` (in the composition pane).  We look it up,
-            %% call Module:pattern/0 to get the Pattern String value,
-            %% and hand both to tidal_voice_sup:set_voice_pat which
-            %% upserts the voice and replaces its current pattern.
+            %% user has registered a binding for MvoiceName via the
+            %% composition pane (any of `midi-note`, `gate`, `cv`,
+            %% `midi-cc-cont`, `cv-cont`, ...).
+            %%
+            %% Two routing paths:
+            %%   - discrete binding (lookup_binding succeeds):
+            %%       hand the loaded Pattern String to set_voice_pat.
+            %%   - continuous binding (lookup_continuous_binding):
+            %%       fmap-parse Pattern String → Pattern Number via
+            %%       Tidal.Pattern.Core.patternStringToNumber, then
+            %%       hand to set_voice_cont_pat.  Tokens that don't
+            %%       parse as a number become 0.0 (silence-equivalent
+            %%       for CC / CV).
+            %%
             %% Phase preserved across replacement (see Tidal.Voice).
             ErlAtom = list_to_atom(
                 "tidal_generated_" ++
                 string:lowercase(binary_to_list(Module)) ++ "@ps"),
             case tidal_dispatcher:lookup_binding(MvoiceName) of
-                {nothing} ->
-                    Reply = {text,
-                             <<"ERR play-armed: no binding for '",
-                               MvoiceName/binary,
-                               "'.  Register one first via `bind ",
-                               MvoiceName/binary, " <action-spec>`.">>},
-                    {reply, Reply, State};
                 {just, Binding} ->
                     try ErlAtom:pattern() of
                         Pat ->
@@ -599,6 +621,52 @@ handle_pattern_message(Text, State) ->
                                      <<"ERR play-armed: ",
                                        ClassBin/binary, ": ",
                                        WhatBin/binary>>},
+                            {reply, Reply, State}
+                    end;
+                {nothing} ->
+                    case tidal_dispatcher:lookup_continuous_binding(
+                           MvoiceName) of
+                        {just, Dest} ->
+                            try ErlAtom:pattern() of
+                                StrPat ->
+                                    NumPat = ('tidal_pattern_core@ps':
+                                                patternStringToNumber())(
+                                                StrPat),
+                                    case tidal_voice_sup:set_voice_cont_pat(
+                                           MvoiceName, Dest, NumPat) of
+                                        ok ->
+                                            Reply = {text,
+                                                     <<"OK: play-armed ",
+                                                       MvoiceName/binary, " ",
+                                                       Module/binary>>},
+                                            {reply, Reply, State};
+                                        {error, InstallErr} ->
+                                            InstallBin = list_to_binary(
+                                                io_lib:format("~p", [InstallErr])),
+                                            Reply = {text,
+                                                     <<"ERR play-armed: install: ",
+                                                       InstallBin/binary>>},
+                                            {reply, Reply, State}
+                                    end
+                            catch
+                                Class:What ->
+                                    ClassBin = atom_to_binary(Class, utf8),
+                                    WhatBin = list_to_binary(
+                                        io_lib:format("~p", [What])),
+                                    Reply = {text,
+                                             <<"ERR play-armed: ",
+                                               ClassBin/binary, ": ",
+                                               WhatBin/binary>>},
+                                    {reply, Reply, State}
+                            end;
+                        {nothing} ->
+                            Reply = {text,
+                                     <<"ERR play-armed: no binding for '",
+                                       MvoiceName/binary,
+                                       "'.  Declare one first in the "
+                                       "composition pane (e.g. `midi-note`, "
+                                       "`gate`, `cv`, `midi-cc-cont`, "
+                                       "`cv-cont`).">>},
                             {reply, Reply, State}
                     end
             end;
@@ -1072,6 +1140,58 @@ fh2_set_gate_standalone(Voice, Output, Channel) ->
     io:format("[fh2-gate shell-out] voice=~B output=~B ch=~B done~n~ts~n",
               [Voice, Output, Channel, Output0]).
 
+%% Apply a polysignal: try the fh2-config daemon first via Unix socket
+%% (sub-100ms); fall back to `spago run -- --apply-polysignal < tempfile`
+%% if no daemon is reachable (~7s spago boot tax). Same `daemon-or-live`
+%% pattern as fh2_set_envelope / fh2_set_gate.
+%%
+%% JsonBinary is what Calypso sent after the `polysignal ` prefix —
+%% exactly the {bank, family, slots} envelope fh2-config expects on stdin
+%% AND the payload the daemon's `apply-polysignal <json>` line accepts.
+fh2_apply_polysignal(JsonBinary) ->
+    %% Daemon line protocol: "apply-polysignal <json>\n". JSON is
+    %% single-line (Calypso's polySignalEnvelopeJson emits it that way),
+    %% so the line splitter on the daemon side won't fragment it.
+    Cmd = iolist_to_binary([<<"apply-polysignal ">>, JsonBinary]),
+    case fh2_daemon_call(Cmd) of
+        {ok, Reply} ->
+            io:format("[polysignal daemon] ~s~n", [Reply]);
+        {error, _Reason} ->
+            io:format("[polysignal] no daemon, falling back to spago shell-out~n"),
+            fh2_apply_polysignal_standalone(JsonBinary)
+    end.
+
+fh2_apply_polysignal_standalone(JsonBinary) ->
+    Path = "/Users/afc/work/afc-work/music/expert-sleepers/fh2-config",
+    %% Unique tempfile per call so concurrent fires don't clobber each
+    %% other. Erlang's monotonic_time gives us nanosecond granularity.
+    TmpFile = lists:flatten(
+        io_lib:format("/tmp/polysignal-~B.json",
+                      [erlang:system_time(microsecond)])),
+    case file:write_file(TmpFile, JsonBinary) of
+        ok -> ok;
+        {error, WriteErr} ->
+            io:format("[polysignal] tempfile write failed: ~p~n", [WriteErr]),
+            erlang:error({polysignal_tempfile, WriteErr})
+    end,
+    Cmd = io_lib:format(
+        "cd ~s && spago run -- --apply-polysignal < ~s 2>&1",
+        [Path, TmpFile]),
+    Output = os:cmd(lists:flatten(Cmd)),
+    file:delete(TmpFile),
+    %% os:cmd returns a codepoint list; fh2-config emits ✓/✗ Unicode
+    %% chars whose codepoints (10003/10007) blow up list_to_binary.
+    %% unicode:characters_to_binary/2 handles UTF-8 encoding properly.
+    case unicode:characters_to_binary(Output, utf8) of
+        Bin when is_binary(Bin) ->
+            case binary:match(Bin, <<"✓"/utf8>>) of
+                nomatch -> io:format("[polysignal] FAILED:~n~ts~n", [Output]);
+                _       -> io:format("[polysignal] applied:~n~ts~n", [Output])
+            end;
+        _ ->
+            io:format("[polysignal] output (undecodable):~n~ts~n", [Output])
+    end.
+
 %% --- fh2-config daemon client ---------------------------------------
 %% Single round-trip Unix-socket client.  Matches fh2-config's daemon
 %% protocol: send one line, read one newline-terminated reply, close.
@@ -1446,6 +1566,47 @@ legacy_cv_mode(<<"voct">>)        -> <<"voct">>;
 legacy_cv_mode(<<"literal">>)     -> <<"literal">>;
 legacy_cv_mode(<<"sample-map">>) -> <<"literal">>;
 legacy_cv_mode(_)                 -> <<"literal">>.
+
+%% `cv-cont <name> <dev> <bus> [latency N]` — declare a continuous-CV
+%% binding on a cv-router direct bus.  Lowers to `bind <name> cv-cont
+%% <bus>` which the dispatcher's `parseContBinding` recognises and
+%% installs in the continuousBindings map.  Useful for host-driven
+%% LFOs / slow modulators where each event sets a sustained value
+%% (no auto-decay deadline, unlike the discrete `cv` action's
+%% sample-accurate per-tick re-emit).
+%%
+%% Today `cv-cont` only supports the es9 alias (cv-router direct
+%% buses).  ESX-8CV continuous would need a `ContESX` ContDest variant
+%% which doesn't exist yet.
+parse_binding_cv_cont_verb(Rest) ->
+    Tokens = ws_tokens(Rest),
+    {Lead, Lat} = peel_latency_suffix(Tokens),
+    case Lead of
+        [Name, Dev, BusBin] ->
+            case {alias_type(Dev), parse_int(BusBin)} of
+                {{ok, es9, _Parent, _Detail}, {ok, Bus}} ->
+                    ActionSpec = build_action_spec(
+                        <<"cv-cont">>, [integer_to_binary(Bus)], Lat),
+                    {bind, Name, ActionSpec};
+                {{ok, esx_8cv, _Parent, _Detail}, _} ->
+                    {routing_error, <<"cv-cont">>,
+                     <<"esx-8cv continuous output isn't wired through "
+                       "purerl-tidal yet; only es9 direct buses are "
+                       "supported on `cv-cont` today">>};
+                {{ok, OtherType, _, _}, _} ->
+                    TypeBin = atom_to_binary(OtherType, utf8),
+                    {routing_error, <<"cv-cont">>,
+                     <<"alias '", Dev/binary, "' is type ",
+                       TypeBin/binary,
+                       "; cv-cont verb supports es9 today">>};
+                {not_found, _} ->
+                    {routing_error, <<"cv-cont">>,
+                     <<"unknown device alias '", Dev/binary,
+                       "'; declare it first">>};
+                {_, error} -> none
+            end;
+        _ -> none
+    end.
 
 %% Build a `<verb> <a> <b> ...` ActionSpec binary for set_binding_from_spec,
 %% optionally appending ` lat <ms>`.  Latency is only emitted when > 0
