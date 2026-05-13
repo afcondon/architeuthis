@@ -1875,7 +1875,19 @@ extract_voices_field(Reply) ->
 %% Silent no-op on any malformed pair so a typo in one entry doesn't
 %% drop the whole kit's installation; the bindings that DO parse
 %% still get installed.
+%%
+%% First ensures the `fh2` MIDI device alias exists — without it the
+%% registered bindings dispatch to a non-existent device and the kit
+%% sounds silent. The `fh2-envelope` arm registers the alias as a
+%% side-effect of `set_fh2_voice_channel`, but drumkit doesn't go
+%% through that path; we make the registration here so a freshly-
+%% restarted purerl-tidal doesn't require the user to fire a code
+%% pane (`midi-device fh2 FH-2`) before the drumkit will sound.
+%% Re-registering when the alias already exists is a no-op on the
+%% PureScript side (`registerMidiDevice` overwrites with the same
+%% record); 0.0 latency matches what `setFh2VoiceChannel` writes.
 register_drumkit_voice_bindings(Reply) ->
+    tidal_dispatcher:register_midi_device(<<"fh2">>, <<"FH-2">>, 0.0),
     case extract_voices_field(Reply) of
         not_found -> ok;
         VoicesBin ->
