@@ -477,8 +477,22 @@ handle_pattern_message(Text, State) ->
             %% unreachable, we surface that as the error rather than
             %% falling through to a slower path — drumkits are tied
             %% to live cells and need the daemon to be up.
+            %%
+            %% On a successful apply, the daemon's reply carries a
+            %% `voices=name:channel,name:channel,...` segment. We
+            %% parse that here and register a `midi-note` binding
+            %% for each voice against the `fh2` device alias — that
+            %% way pattern tokens like `bd` actually fire when the
+            %% next cell runs. Without this step the FH-2 is
+            %% configured but purerl-tidal doesn't know how to route
+            %% to it.
             Reply = case fh2_daemon_call(<<"apply-drumkit ", Json/binary>>) of
                 {ok, ReplyBin} ->
+                    case is_drumkit_ok_reply(ReplyBin) of
+                        true ->
+                            register_drumkit_voice_bindings(ReplyBin);
+                        false -> ok
+                    end,
                     {text, ReplyBin};
                 {error, Reason} ->
                     ReasonBin = list_to_binary(io_lib:format("~p", [Reason])),
@@ -1654,6 +1668,69 @@ build_action_spec(Verb, Args, Lat) ->
 %% =========================================================================
 %% FH-2 daemon socket (unchanged, original code below).
 %% =========================================================================
+
+%% --- Drum-kit reply parsing + binding installation ------------------
+%%
+%% The fh2-config daemon's apply-drumkit OK reply has the shape:
+%%
+%%   OK apply-drumkit <kitName> voices=<v1>:<ch1>,<v2>:<ch2>,... mcv=... size=...
+%%
+%% We extract the `voices=...` segment and, for each name:channel
+%% pair, register a `midi-note <fh2-device> <channel> 60 100 50`
+%% binding on the dispatcher. The MIDI device alias is `fh2` — the
+%% convention purerl-tidal already uses for FH-2 routing.
+
+is_drumkit_ok_reply(Reply) ->
+    case Reply of
+        <<"OK apply-drumkit ", _/binary>> -> true;
+        _ -> false
+    end.
+
+%% Pull the value of the `voices=` field out of a daemon reply line.
+%% Returns the value binary (up to next space) or `not_found`.
+extract_voices_field(Reply) ->
+    case binary:match(Reply, <<" voices=">>) of
+        nomatch -> not_found;
+        {Start, _Len} ->
+            ValStart = Start + byte_size(<<" voices=">>),
+            Tail = binary:part(Reply, ValStart, byte_size(Reply) - ValStart),
+            case binary:match(Tail, <<" ">>) of
+                nomatch -> Tail;
+                {SpaceAt, _} -> binary:part(Tail, 0, SpaceAt)
+            end
+    end.
+
+%% Register a midi-note binding per voice on the `fh2` device alias.
+%% Silent no-op on any malformed pair so a typo in one entry doesn't
+%% drop the whole kit's installation; the bindings that DO parse
+%% still get installed.
+register_drumkit_voice_bindings(Reply) ->
+    case extract_voices_field(Reply) of
+        not_found -> ok;
+        VoicesBin ->
+            Pairs = binary:split(VoicesBin, <<",">>, [global]),
+            lists:foreach(fun register_one_voice_binding/1, Pairs)
+    end.
+
+register_one_voice_binding(Pair) ->
+    case binary:split(Pair, <<":">>) of
+        [Name, ChannelBin] ->
+            case parse_int(ChannelBin) of
+                {ok, Channel} ->
+                    %% midi-note fh2 <ch> 60 100 50 — same shape as the
+                    %% `gate <name> fh2 <jack>` verb's expansion. Default
+                    %% note 60 (C4) — tokens like `c4`, `e4` etc.
+                    %% override it; bare token names (`bd`, `1`, `x`)
+                    %% fall back to default-note, which is the standard
+                    %% drum-machine-trigger behaviour.
+                    Spec = <<"midi-note fh2 ",
+                             ChannelBin/binary,
+                             " 60 100 50">>,
+                    tidal_dispatcher:set_binding_from_spec(Name, Spec);
+                error -> ok
+            end;
+        _ -> ok
+    end.
 
 fh2_daemon_socket_path() ->
     case os:getenv("HOME") of
