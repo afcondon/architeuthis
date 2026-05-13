@@ -232,15 +232,27 @@ try_parse_prefixed(<<"polysignal ", Rest/binary>>) ->
     %% what fh2-config's `--apply-polysignal` reads on stdin.
     {polysignal, Rest};
 try_parse_prefixed(<<"drumkit ", Rest/binary>>) ->
-    %% Drum-kit cell. Calypso pre-formats the kit declaration into a
-    %% single line of the form `drumkit <json>`, where the JSON
-    %% envelope matches FH2.DrumKit.parseDrumKitJson. Synchronous —
-    %% the daemon validates against the ClaimRig, allocates MCV
-    %% slots, and writes the FH-2 config bytes; its OK/ERR reply
-    %% lands in the WS reply pane directly. Unlike polysignal (still
-    %% fire-and-forget), drumkit must surface conflict errors to the
-    %% user before the next cell fires.
-    {drumkit, Rest};
+    %% Drum-kit cell. The user-facing grammar is:
+    %%
+    %%   drumkit <name>
+    %%     gates <bank> <lo>-<hi>
+    %%     pitch <bank> <lo>-<hi>
+    %%     ch <baseChannel>
+    %%     <>
+    %%     <voice>: <offset>
+    %%     ...
+    %%
+    %% Calypso bundles the multi-line block (split on `<>`) into one
+    %% WS frame, so by the time we see it, all of the header tokens
+    %% and the voice list are space-separated on one logical line.
+    %%
+    %% We parse the cell text into the JSON envelope that the
+    %% fh2-config daemon expects on its `apply-drumkit <json>` line
+    %% (which matches FH2.DrumKit.parseDrumKitJson on the daemon
+    %% side). Parsing in Erlang here avoids adding a JSON-parsing
+    %% dependency and keeps Calypso free of FH-2-specific
+    %% transformation rules.
+    parse_drumkit_cell(Rest);
 try_parse_prefixed(<<"midi-note ", Rest/binary>>) ->
     parse_binding_midi_note_verb(Rest);
 try_parse_prefixed(<<"midi-cc-cont ", Rest/binary>>) ->
@@ -1668,6 +1680,165 @@ build_action_spec(Verb, Args, Lat) ->
 %% =========================================================================
 %% FH-2 daemon socket (unchanged, original code below).
 %% =========================================================================
+
+%% --- Drum-kit cell-text parser --------------------------------------
+%%
+%% Translates the user-facing cell text into the JSON envelope the
+%% fh2-config daemon expects. Grammar:
+%%
+%%   drumkit <name>
+%%     gates <bank> <lo>-<hi>
+%%     pitch <bank> <lo>-<hi>
+%%     ch <baseChannel>
+%%     <>
+%%     <voiceName>: <offset>
+%%     ...
+%%
+%% Each voice gets:
+%%   channel   = baseChannel + offset
+%%   gateSlot  = gateLo      + offset
+%%   pitchSlot = pitchLo     + offset
+%%
+%% The whole block arrives as one WS frame (Calypso bundles `<>`
+%% continuation lines). The `<>` separator is optional from this
+%% parser's point of view — it just tokenizes the rest and ignores
+%% it. Whitespace, including newlines, is delimiter.
+
+parse_drumkit_cell(Rest) ->
+    Tokens = ws_tokens(Rest),
+    case Tokens of
+        [Name | T0] ->
+            case parse_drumkit_header(T0) of
+                {ok, Header, T1} ->
+                    VoiceTokens = drop_separator_token(T1),
+                    case parse_drumkit_voices(VoiceTokens, Header, []) of
+                        {ok, []} ->
+                            {routing_error, <<"drumkit">>,
+                             <<"no voices declared (expected `<voice>: <offset>` pairs after `<>`)">>};
+                        {ok, Voices} ->
+                            Json = build_drumkit_json(Name, Voices),
+                            {drumkit, Json};
+                        {error, Msg} ->
+                            {routing_error, <<"drumkit">>, Msg}
+                    end;
+                {error, Msg} ->
+                    {routing_error, <<"drumkit">>, Msg}
+            end;
+        [] ->
+            {routing_error, <<"drumkit">>, <<"empty body">>}
+    end.
+
+parse_drumkit_header([<<"gates">>, GateBank, GateRange,
+                      <<"pitch">>, PitchBank, PitchRange,
+                      <<"ch">>, ChBin | Rest]) ->
+    case {parse_range(GateRange), parse_range(PitchRange), parse_int(ChBin)} of
+        {{ok, GLo, GHi}, {ok, PLo, PHi}, {ok, ChBase}} when GHi - GLo =:= PHi - PLo ->
+            {ok, #{gate_bank  => GateBank,
+                   gate_lo    => GLo,
+                   gate_hi    => GHi,
+                   pitch_bank => PitchBank,
+                   pitch_lo   => PLo,
+                   pitch_hi   => PHi,
+                   ch_base    => ChBase},
+             Rest};
+        {{ok, _, _}, {ok, _, _}, {ok, _}} ->
+            {error, <<"gate range and pitch range must be the same size">>};
+        _ ->
+            {error, <<"malformed header: expected `<bank> <lo>-<hi>` and integer channel">>}
+    end;
+parse_drumkit_header(_) ->
+    {error,
+     <<"expected: <name> gates <bank> <lo>-<hi> pitch <bank> <lo>-<hi> ch <baseChannel> <> <voice>: <offset> ...">>}.
+
+drop_separator_token([<<"<>">> | T]) -> T;
+drop_separator_token(T) -> T.
+
+parse_drumkit_voices([], _Header, Acc) ->
+    {ok, lists:reverse(Acc)};
+parse_drumkit_voices([NameTok, OffsetTok | Rest], Header, Acc) ->
+    case strip_trailing_colon(NameTok) of
+        {ok, VoiceName} ->
+            case parse_int(OffsetTok) of
+                {ok, Offset} ->
+                    case build_voice(VoiceName, Offset, Header) of
+                        {ok, Voice} ->
+                            parse_drumkit_voices(Rest, Header, [Voice | Acc]);
+                        {error, Msg} -> {error, Msg}
+                    end;
+                error ->
+                    {error, <<"voice `", VoiceName/binary,
+                              "`: offset is not an integer (got `",
+                              OffsetTok/binary, "`)">>}
+            end;
+        error ->
+            {error, <<"expected `<voice>:` token, got `", NameTok/binary,
+                      "` — voice names must end with `:`">>}
+    end;
+parse_drumkit_voices([Trail], _Header, _Acc) ->
+    {error, <<"trailing token without offset: `", Trail/binary, "`">>}.
+
+strip_trailing_colon(Bin) ->
+    Size = byte_size(Bin),
+    case Size of
+        0 -> error;
+        _ ->
+            case binary:last(Bin) of
+                $: -> {ok, binary:part(Bin, 0, Size - 1)};
+                _  -> error
+            end
+    end.
+
+build_voice(Name, Offset, H) ->
+    #{gate_lo := GLo, gate_hi := GHi,
+      pitch_lo := PLo, pitch_hi := PHi,
+      gate_bank := GateBank, pitch_bank := PitchBank,
+      ch_base := ChBase} = H,
+    case Offset >= 0 andalso (GLo + Offset) =< GHi
+                     andalso (PLo + Offset) =< PHi of
+        true ->
+            {ok, #{name       => Name,
+                   channel    => ChBase + Offset,
+                   gate_bank  => GateBank,
+                   gate_slot  => GLo + Offset,
+                   pitch_bank => PitchBank,
+                   pitch_slot => PLo + Offset}};
+        false ->
+            OffBin = integer_to_binary(Offset),
+            {error, <<"voice `", Name/binary,
+                      "`: offset ", OffBin/binary,
+                      " falls outside the declared gate/pitch range">>}
+    end.
+
+parse_range(Bin) ->
+    case binary:split(Bin, <<"-">>) of
+        [LoBin, HiBin] ->
+            case {parse_int(LoBin), parse_int(HiBin)} of
+                {{ok, Lo}, {ok, Hi}} when Lo =< Hi -> {ok, Lo, Hi};
+                _ -> error
+            end;
+        _ -> error
+    end.
+
+build_drumkit_json(Name, Voices) ->
+    VoicesJson = lists:map(fun voice_to_json/1, Voices),
+    Joined = bin_join(VoicesJson, <<",">>),
+    <<"{\"name\":\"", Name/binary,
+      "\",\"voices\":[", Joined/binary, "]}">>.
+
+voice_to_json(V) ->
+    iolist_to_binary([
+        "{\"name\":\"",       maps:get(name, V),                "\",",
+        "\"channel\":",       integer_to_binary(maps:get(channel, V)),    ",",
+        "\"gateBank\":\"",    maps:get(gate_bank, V),           "\",",
+        "\"gateSlot\":",      integer_to_binary(maps:get(gate_slot, V)),  ",",
+        "\"pitchBank\":\"",   maps:get(pitch_bank, V),          "\",",
+        "\"pitchSlot\":",     integer_to_binary(maps:get(pitch_slot, V)),
+        "}"]).
+
+bin_join([], _Sep) -> <<>>;
+bin_join([X], _Sep) -> X;
+bin_join([H | T], Sep) ->
+    iolist_to_binary([H, [iolist_to_binary([Sep, X]) || X <- T]]).
 
 %% --- Drum-kit reply parsing + binding installation ------------------
 %%
