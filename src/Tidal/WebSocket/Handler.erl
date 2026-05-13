@@ -231,6 +231,16 @@ try_parse_prefixed(<<"polysignal ", Rest/binary>>) ->
     %% form `polysignal <json>`, where the JSON envelope is exactly
     %% what fh2-config's `--apply-polysignal` reads on stdin.
     {polysignal, Rest};
+try_parse_prefixed(<<"drumkit ", Rest/binary>>) ->
+    %% Drum-kit cell. Calypso pre-formats the kit declaration into a
+    %% single line of the form `drumkit <json>`, where the JSON
+    %% envelope matches FH2.DrumKit.parseDrumKitJson. Synchronous —
+    %% the daemon validates against the ClaimRig, allocates MCV
+    %% slots, and writes the FH-2 config bytes; its OK/ERR reply
+    %% lands in the WS reply pane directly. Unlike polysignal (still
+    %% fire-and-forget), drumkit must surface conflict errors to the
+    %% user before the next cell fires.
+    {drumkit, Rest};
 try_parse_prefixed(<<"midi-note ", Rest/binary>>) ->
     parse_binding_midi_note_verb(Rest);
 try_parse_prefixed(<<"midi-cc-cont ", Rest/binary>>) ->
@@ -456,6 +466,25 @@ handle_pattern_message(Text, State) ->
             %% ~7s, daemon path (step 7) will bring it under 100ms.
             spawn(fun() -> fh2_apply_polysignal(Json) end),
             Reply = {text, <<"OK: polysignal apply in flight">>},
+            {reply, Reply, State};
+        {drumkit, Json} ->
+            %% Drum-kit apply, synchronous through the fh2-config
+            %% daemon. Validation against the ClaimRig + MCV-slot
+            %% allocation + FH-2 byte write happen daemon-side; the
+            %% daemon's reply (OK with allocation info, or ERR with
+            %% a typed error message) goes straight to the WS reply
+            %% pane. ~10ms roundtrip in the happy path. On daemon
+            %% unreachable, we surface that as the error rather than
+            %% falling through to a slower path — drumkits are tied
+            %% to live cells and need the daemon to be up.
+            Reply = case fh2_daemon_call(<<"apply-drumkit ", Json/binary>>) of
+                {ok, ReplyBin} ->
+                    {text, ReplyBin};
+                {error, Reason} ->
+                    ReasonBin = list_to_binary(io_lib:format("~p", [Reason])),
+                    {text, <<"ERR drumkit: fh2-config daemon unreachable (",
+                             ReasonBin/binary, ")">>}
+            end,
             {reply, Reply, State};
         {fh2_envelope, Voice, Output, Channel} ->
             %% Dispatcher owns the voice→channel mapping (PR1.6 +
