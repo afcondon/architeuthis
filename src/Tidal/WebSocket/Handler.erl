@@ -261,36 +261,26 @@ try_parse_prefixed(<<"polysignal ", Rest/binary>>) ->
     %% what fh2-config's `--apply-polysignal` reads on stdin.
     {polysignal, Rest};
 try_parse_prefixed(<<"kit ", Rest/binary>>) ->
-    %% Kit dispatch cell. Two forms:
+    %% Kit dispatch cell. One form:
     %%
-    %%   kit <name> "<pattern>"         -- literal mini-notation
-    %%   kit <name> :<expr>             -- host-language expression
+    %%   kit <name> "<pattern>"   -- literal mini-notation
     %%
-    %% Both install a voice `kit-<name>` whose binding is
-    %% [KitDispatch]. On each event the dispatcher looks up the event
-    %% token in the binding registry and walks that binding's
-    %% PrimActions. Pairs with the `drumkit` verb's per-voice
-    %% bindings (bd / sn / hh / cp / …) so one cell carries the
-    %% rhythmic figure for the whole kit:
+    %% Installs a voice `kit-<name>` whose binding is [KitDispatch].
+    %% On each event the dispatcher looks up the event token in the
+    %% binding registry and walks that binding's PrimActions. Pairs
+    %% with the `drumkit` verb's per-voice bindings (bd / sn / hh / cp
+    %% / …) so one cell carries the rhythmic figure for the whole kit:
     %%
     %%   kit kitA "bd sn bd cp"
-    %%   kit kitA :every 4 (fast 2) "bd sn bd cp"
-    %%
-    %% The expr form lets host-language combinators (every / fast /
-    %% slow / rev / jux / chunk / …) wrap the pattern — they
-    %% transform the Pattern *before* dispatch, so KitDispatch sees
-    %% an already-rewritten token stream.
     %%
     %% Per-voice cells still work alongside (`bd "x*16"` for a fill).
+    %% Host-language combinators on the pattern (rev / every / etc.)
+    %% live in cue cells now — wrap the body in a `cue` and dispatch
+    %% via `play-armed kit-<name> <module>` instead of inlining `:expr`.
     case binary:split(Rest, <<" ">>) of
         [Name, Body0] ->
             Body = trim_binary(Body0),
-            case Body of
-                <<":", ExprSrc/binary>> ->
-                    {kit_expr, trim_binary(Name), ExprSrc};
-                _ ->
-                    {kit, trim_binary(Name), strip_quotes(Body)}
-            end;
+            {kit, trim_binary(Name), strip_quotes(Body)};
         _ ->
             none
     end;
@@ -667,7 +657,7 @@ handle_pattern_message(Text, State) ->
             OkBin = <<"OK: fh2-trigger v", VoiceBin/binary,
                       " ", Pattern/binary>>,
             install_pattern_voice(
-                ('tidal_expr@ps':parseMiniPattern())(Pattern),
+                ('tidal_pattern_mini@ps':parseMiniPattern())(Pattern),
                 VoiceName, Binding, <<"fh2-trigger">>, OkBin, State);
         {kit, KitName, Pattern} ->
             %% Install a voice named `kit-<KitName>` whose binding is
@@ -689,20 +679,7 @@ handle_pattern_message(Text, State) ->
             Binding = array:from_list([{kitDispatch}]),
             OkBin = <<"OK: kit ", KitName/binary, " ", Pattern/binary>>,
             install_pattern_voice(
-                ('tidal_expr@ps':parseMiniPattern())(Pattern),
-                VoiceName, Binding, <<"kit">>, OkBin, State);
-        {kit_expr, KitName, ExprSrc} ->
-            %% Host-language-expression form of the kit verb.
-            %% `kit kitA :every 4 (fast 2) "bd sn bd cp"` routes
-            %% through parseEvalPattern (same machinery as the bare-
-            %% binding `bd :rev "x*4"` form) and produces a Pattern
-            %% with the combinators already applied. Install path is
-            %% otherwise identical to the literal kit arm.
-            VoiceName = <<"kit-", KitName/binary>>,
-            Binding = array:from_list([{kitDispatch}]),
-            OkBin = <<"OK: kit ", KitName/binary, " :", ExprSrc/binary>>,
-            install_pattern_voice(
-                ('tidal_expr@ps':parseEvalPattern())(ExprSrc),
+                ('tidal_pattern_mini@ps':parseMiniPattern())(Pattern),
                 VoiceName, Binding, <<"kit">>, OkBin, State);
         {yarns, YarnsName, Mode, Alloc, GlideMs, VoiceCount,
          BaseChannel, Json} ->
@@ -941,80 +918,17 @@ handle_pattern_message(Text, State) ->
             Reply = {text, <<"ERR: ", Verb/binary, ": ", Reason/binary>>},
             {reply, Reply, State};
         none ->
-            %% Not a built-in verb. Try named-binding dispatch.
-            %% Unbound names produce an error reply (the legacy whole-
-            %% text fallback that lived in MIDIScheduler is gone as of
-            %% PR1.7a).
-            case Text of
-                <<":", ExprSrc/binary>> ->
-                    %% Bare `:<expr>` form. Voice tags inside the
-                    %% expression's fan-out spec name bindings
-                    %% directly, so each voice flows to its own
-                    %% destination. Distinct from `<binding> :<expr>`
-                    %% which fans-out-then-merges through one channel.
-                    handle_multi_expr(ExprSrc, Text, State);
-                _ ->
-                    {Word, Rest, ParamSpecs} = parse_with_join(Text),
-                    case Rest of
-                        <<":", ExprSrc/binary>> ->
-                            %% Named-binding + host-language expression
-                            %% form (`bass :rev "c2*4 g2*4"`). Evaluate
-                            %% via Tidal.Expr and dispatch the result as
-                            %% a BoundTrack so the binding's note
-                            %% resolver applies.  Param specs from `#`
-                            %% segments are ignored on this path in v1;
-                            %% the expression already produces a
-                            %% complete Pattern.
-                            handle_play_by_name_expr(Word, ExprSrc, Text, State);
-                        _ ->
-                            %% Pre-flight parse so malformed input
-                            %% (non-ASCII chars reaching the upstream
-                            %% parser, etc.) returns [err] instead of
-                            %% crashing the scheduler.  Check `Rest`
-                            %% (quote-stripped pattern body) — that's
-                            %% what the scheduler uses for the
-                            %% bound-name case, AND it covers the
-                            %% legacy-fallback case adequately because
-                            %% if Rest contains crash-inducing input,
-                            %% Text will too.  Crucially, checking Text
-                            %% instead would reject valid bound-name
-                            %% dispatches with quoted patterns
-                            %% (`kick "bd*4"`), since Text contains the
-                            %% quote chars the parser doesn't understand.
-                            case safe_parse(Rest) of
-                                {ok, _} ->
-                                    %% Route through new tree if Word
-                                    %% is a registered binding; otherwise
-                                    %% return an error (legacy whole-text
-                                    %% fallback removed in PR1.7a).
-                                    case tidal_dispatcher:lookup_binding(Word) of
-                                        {just, Binding} ->
-                                            case tidal_voice_sup:set_voice(
-                                                   Word, Binding, Rest, ParamSpecs) of
-                                                ok ->
-                                                    Reply = {text, <<"OK: dispatched '",
-                                                                     Word/binary, "'">>},
-                                                    {reply, Reply, State};
-                                                {error, Err} ->
-                                                    ErrBin = list_to_binary(
-                                                               io_lib:format("~p", [Err])),
-                                                    Reply = {text, <<"ERROR: ",
-                                                                     ErrBin/binary>>},
-                                                    {reply, Reply, State}
-                                            end;
-                                        {nothing} ->
-                                            Reply = {text,
-                                                     <<"ERROR: no binding '",
-                                                       Word/binary,
-                                                       "' (use `bind` first)">>},
-                                            {reply, Reply, State}
-                                    end;
-                                {parse_err, ErrBin} ->
-                                    Reply = {text, <<"ERROR: parse: ", ErrBin/binary>>},
-                                    {reply, Reply, State}
-                            end
-                    end
-            end
+            %% Not a built-in verb. Per the architectural-bet doc, the
+            %% bare-binding-name wire-protocol dispatch (path 4) and the
+            %% `:<expr>` host-language operator (path 2) are gone.
+            %% Music cells flow through `cue <body>` + `play-armed
+            %% <tvoice> <module>` instead — Calypso wraps non-verb cells
+            %% at fire time. Unknown input here reaches the user as a
+            %% concrete error rather than a silent swallow.
+            Reply = {text, <<"ERROR: not a verb — wrap the cell in `cue` "
+                             "and dispatch via `play-armed`. (Bare-binding "
+                             "and `:expr` dispatch were retired.)">>},
+            {reply, Reply, State}
     end.
 
 %% Wrap the Tidal parser in try/catch so any uncaught exception
@@ -1034,132 +948,6 @@ safe_parse(Text) ->
             {parse_err, list_to_binary(io_lib:format("~p:~p", [Class, Reason]))}
     end.
 
-to_binary(B) when is_binary(B) -> B;
-to_binary(L) when is_list(L) -> list_to_binary(L);
-to_binary(Other) -> list_to_binary(io_lib:format("~p", [Other])).
-
-%% Named-binding `<name> :<expr>` path. Three-way routing:
-%%   * discrete binding   → new voice tree, parseEvalPattern.
-%%   * continuous binding → new voice tree, parseEvalNumPattern.
-%%   * neither            → ERROR reply (legacy fallback gone).
-%%
-%% Parse failures inside either bound branch surface as ERROR
-%% replies too — the user sees the message in Calypso instead of
-%% buried in the BEAM log (the MIDIScheduler-side typed-error
-%% diagnostic was retired with PR1.7d).
-handle_play_by_name_expr(Word, ExprSrc, _FullText, State) ->
-    OkReply = {reply,
-               {text, <<"OK: dispatched '", Word/binary,
-                        "' :", ExprSrc/binary>>},
-               State},
-    case tidal_dispatcher:lookup_binding(Word) of
-        {just, Binding} ->
-            case ('tidal_expr@ps':parseEvalPattern())(ExprSrc) of
-                {right, Pattern} ->
-                    case tidal_voice_sup:set_voice_pat(Word, Binding, Pattern) of
-                        ok -> OkReply;
-                        {error, Err} ->
-                            ErrBin = list_to_binary(io_lib:format("~p", [Err])),
-                            {reply,
-                             {text, <<"ERROR: ", ErrBin/binary>>},
-                             State}
-                    end;
-                {left, Err} ->
-                    ErrBin = to_binary(Err),
-                    {reply,
-                     {text, <<"ERROR: ", Word/binary, " :expr: ",
-                              ErrBin/binary>>},
-                     State}
-            end;
-        {nothing} ->
-            case tidal_dispatcher:lookup_continuous_binding(Word) of
-                {just, Dest} ->
-                    case ('tidal_expr@ps':parseEvalNumPattern())(ExprSrc) of
-                        {right, NumPattern} ->
-                            case tidal_voice_sup:set_voice_cont_pat(
-                                   Word, Dest, NumPattern) of
-                                ok -> OkReply;
-                                {error, Err} ->
-                                    ErrBin = list_to_binary(
-                                               io_lib:format("~p", [Err])),
-                                    {reply,
-                                     {text, <<"ERROR: ", ErrBin/binary>>},
-                                     State}
-                            end;
-                        {left, Err} ->
-                            ErrBin = to_binary(Err),
-                            {reply,
-                             {text, <<"ERROR: ", Word/binary, " :expr: ",
-                                      ErrBin/binary>>},
-                             State}
-                    end;
-                {nothing} ->
-                    {reply,
-                     {text, <<"ERROR: no binding '", Word/binary,
-                              "' (use `bind` first)">>},
-                     State}
-            end
-    end.
-
-%% Bare `:<expr>` form: voice tags name bindings, each voice flows to
-%% its own destination. Tidal.Expr.evalMulti returns the per-voice
-%% (name, Pattern) pairs as an Erlang array of `{tuple, Name, Pat}`
-%% (PureScript Array (Tuple String (Pattern String))). For each entry
-%% we look up the binding on the dispatcher; entries with a discrete
-%% binding install on the new voice tree, entries without log the
-%% same "voice skipped" message MIDIScheduler.PlayMultiByName used to.
-%%
-%% After this commit MIDIScheduler is no longer in this path —
-%% PlayMultiByName migrates entirely to the new tree. The reply still
-%% lists only the names that actually got installed (skipped entries
-%% don't appear in the bracketed list).
-handle_multi_expr(ExprSrc, _FullText, State) ->
-    Result = try ('tidal_expr@ps':evalMulti())(ExprSrc)
-             catch Class:Reason ->
-                 {crash, list_to_binary(io_lib:format("~p:~p", [Class, Reason]))}
-             end,
-    case Result of
-        {right, Entries} ->
-            EntryList = array:to_list(Entries),
-            InstalledNames = install_multi_entries(EntryList),
-            NamesBin = case InstalledNames of
-                [] -> <<"(no voices)">>;
-                _  -> join_binary(InstalledNames, <<", ">>)
-            end,
-            {reply,
-             {text, <<"OK: dispatched multi [", NamesBin/binary, "] :",
-                      ExprSrc/binary>>},
-             State};
-        {left, Err} ->
-            ErrBin = to_binary(Err),
-            {reply, {text, <<"ERROR: expr: ", ErrBin/binary>>}, State};
-        {crash, CrashBin} ->
-            {reply, {text, <<"ERROR: expr crash: ", CrashBin/binary>>}, State}
-    end.
-
-%% Walk the entries list, installing each on the new tree if its name
-%% has a discrete binding. Returns the list of installed names in
-%% original order (for the WS reply text).
-install_multi_entries(Entries) ->
-    install_multi_entries(Entries, []).
-
-install_multi_entries([], Acc) ->
-    lists:reverse(Acc);
-install_multi_entries([{tuple, Name, Pat} | Rest], Acc) ->
-    case tidal_dispatcher:lookup_binding(Name) of
-        {just, Binding} ->
-            tidal_voice_sup:set_voice_pat(Name, Binding, Pat),
-            install_multi_entries(Rest, [Name | Acc]);
-        {nothing} ->
-            io:format("(no binding '~s', voice skipped)~n", [Name]),
-            install_multi_entries(Rest, Acc)
-    end.
-
-join_binary([], _Sep) -> <<>>;
-join_binary([X], _Sep) -> X;
-join_binary([X | Rest], Sep) ->
-    RestJoined = join_binary(Rest, Sep),
-    <<X/binary, Sep/binary, RestJoined/binary>>.
 
 websocket_info(Info, State) ->
     io:format("WebSocket: Info: ~p~n", [Info]),

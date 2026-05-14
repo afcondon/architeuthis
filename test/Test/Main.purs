@@ -8,7 +8,6 @@ import Effect.Console (log)
 import Test.BranchedSpec (runBranchedTests)
 import Test.ControlSpec (runControlTests)
 import Test.DejaVuSpec (runDejaVuTests)
-import Test.ExprSpec (runExprTests)
 import Test.LawSpec (runLawTests)
 import Test.PatternSpec (runPatternTests)
 import Test.PredictiveSpec (runPredictiveTests)
@@ -166,9 +165,6 @@ main = do
 
   -- Run Branched (fork/merge) tests
   runBranchedTests
-
-  -- Run Tidal.Expr (host-language) tests
-  runExprTests
 
   -- Run Tidal.Sink (typed voices) tests
   runSinkTests

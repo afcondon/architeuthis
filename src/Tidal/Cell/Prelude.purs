@@ -9,14 +9,10 @@
 -- |
 -- | Re-exports `Tidal.Pattern.Types` and `Tidal.Pattern.Core` in
 -- | bulk — anything those modules expose is reachable from a cell.
--- | Future phases:
--- |
--- |   Phase 2 — host language (Tidal.Expr's `:rev`, `:mult`, fanout,
--- |             `jux`, etc.)
--- |   Phase 3 — generalised PureScript (lambdas, user-defined helpers
--- |             promoted from cells into the prelude)
--- |
--- | See docs/per-cell-compile-plan.md.
+-- | Full PureScript-as-cell-language is the long-term direction (see
+-- | the architectural-bet doc in calypso/docs); user-defined helpers
+-- | promoted from cells into the prelude is the natural follow-up
+-- | once cell bodies start sharing structure.
 module Tidal.Cell.Prelude
   ( module Tidal.Pattern.Types
   , module Tidal.Pattern.Core
@@ -40,7 +36,7 @@ import Tidal.Pattern.Core
 import Tidal.DejaVu
 import Tidal.LiveControl
 import Tidal.Random
-import Tidal.Expr (parseMiniPattern)
+import Tidal.Pattern.Mini (parseMiniPattern)
 
 -- | Parse a mini-notation string into a `Pattern String`.  Failed
 -- | parses fall back to `silence` so a typo in a cell doesn't kill
