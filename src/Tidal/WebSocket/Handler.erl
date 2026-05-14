@@ -925,7 +925,7 @@ handle_pattern_message(Text, State) ->
             %% <tvoice> <module>` instead — Calypso wraps non-verb cells
             %% at fire time. Unknown input here reaches the user as a
             %% concrete error rather than a silent swallow.
-            Reply = {text, <<"ERROR: not a verb — wrap the cell in `cue` "
+            Reply = {text, <<"ERROR: not a verb -- wrap the cell in `cue` "
                              "and dispatch via `play-armed`. (Bare-binding "
                              "and `:expr` dispatch were retired.)">>},
             {reply, Reply, State}
