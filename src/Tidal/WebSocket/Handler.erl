@@ -1767,35 +1767,99 @@ build_action_spec(Verb, Args, Lat) ->
 %% Translates the user-facing cell text into the JSON envelope the
 %% fh2-config daemon expects. Grammar:
 %%
+%% Three forms supported, the parser dispatches on whether the first
+%% token after the kit name starts with `[`:
+%%
+%% Form 1 — head-bracket, auto-allocated slots (preferred / minimal):
+%%   drumkit <name> [<v1> <v2> ... <vN>]
+%%     gates <bank>
+%%     pitch <bank>
+%%     ch <baseChannel>
+%%   ⇒ ranges default to 0..(N-1); voices laid out positionally
+%%
+%% Form 2 — head-bracket, explicit ranges (kit on outputs 4-7 etc):
+%%   drumkit <name> [<v1> <v2> ... <vN>]
+%%     gates <bank> <lo>-<hi>
+%%     pitch <bank> <lo>-<hi>
+%%     ch <baseChannel>
+%%   ⇒ voices laid out positionally inside the declared range
+%%
+%% Form 3 — legacy / non-contiguous offsets (escape hatch):
 %%   drumkit <name>
 %%     gates <bank> <lo>-<hi>
 %%     pitch <bank> <lo>-<hi>
 %%     ch <baseChannel>
 %%     <>
-%%     <voiceName>: <offset>
+%%     <voice>: <offset>
 %%     ...
+%%   ⇒ each voice's offset within the bank declared explicitly
 %%
-%% Each voice gets:
+%% All three produce the same JSON envelope; each voice carries:
 %%   channel   = baseChannel + offset
 %%   gateSlot  = gateLo      + offset
 %%   pitchSlot = pitchLo     + offset
 %%
 %% The whole block arrives as one WS frame (Calypso bundles `<>`
-%% continuation lines). The `<>` separator is optional from this
-%% parser's point of view — it just tokenizes the rest and ignores
-%% it. Whitespace, including newlines, is delimiter.
+%% continuation lines). Whitespace, including newlines, is delimiter.
+%% Form 1/2 ignore any trailing `<>` body if present — the bracket
+%% defines the voice list.
 
 parse_drumkit_cell(Rest) ->
-    Tokens = ws_tokens(Rest),
+    %% Filter all `<>` continuation tokens up-front. They're a Calypso
+    %% UI affordance (line-break marker for multi-line cells), not a
+    %% grammar token — neither form depends on them for structure, and
+    %% the legacy form's header/body split happens by token shape
+    %% (`<voice>:` ends with colon). Filtering early means the rest of
+    %% the parser doesn't have to thread `<>`-tolerance through every
+    %% match clause.
+    Tokens = [T || T <- ws_tokens(Rest), T =/= <<"<>">>],
     case Tokens of
         [Name | T0] ->
-            case parse_drumkit_header(T0) of
-                {ok, Header, T1} ->
-                    VoiceTokens = drop_separator_token(T1),
-                    case parse_drumkit_voices(VoiceTokens, Header, []) of
-                        {ok, []} ->
-                            {routing_error, <<"drumkit">>,
-                             <<"no voices declared (expected `<voice>: <offset>` pairs after `<>`)">>};
+            case is_bracket_start(T0) of
+                true ->
+                    parse_drumkit_bracket_form(Name, T0);
+                false ->
+                    parse_drumkit_legacy_form(Name, T0)
+            end;
+        [] ->
+            {routing_error, <<"drumkit">>, <<"empty body">>}
+    end.
+
+%% Does the first token of this list start a `[...]` voice-list head?
+%% Matches both joined-with-content forms (`<<"[bd">>`) and the
+%% bare-bracket form (`<<"[">>` if the user wrote `[ bd sn ]`).
+is_bracket_start([<<$[, _/binary>> | _]) -> true;
+is_bracket_start(_) -> false.
+
+%% Form 3 dispatch — original parser, body-driven offsets.
+parse_drumkit_legacy_form(Name, Tokens) ->
+    case parse_drumkit_header(Tokens) of
+        {ok, Header, T1} ->
+            VoiceTokens = drop_separator_token(T1),
+            case parse_drumkit_voices(VoiceTokens, Header, []) of
+                {ok, []} ->
+                    {routing_error, <<"drumkit">>,
+                     <<"no voices declared (expected `<voice>: <offset>` pairs after `<>`, or use the `[<v1> <v2> ...]` head form)">>};
+                {ok, Voices} ->
+                    Json = build_drumkit_json(Name, Voices),
+                    {drumkit, Json};
+                {error, Msg} ->
+                    {routing_error, <<"drumkit">>, Msg}
+            end;
+        {error, Msg} ->
+            {routing_error, <<"drumkit">>, Msg}
+    end.
+
+%% Form 1/2 dispatch — bracket-head voice list, positional offsets.
+parse_drumkit_bracket_form(Name, Tokens) ->
+    case extract_bracket_tokens(Tokens) of
+        {ok, [], _} ->
+            {routing_error, <<"drumkit">>, <<"empty voice list `[]`">>};
+        {ok, VoiceNames, RestTokens} ->
+            N = length(VoiceNames),
+            case parse_drumkit_header_lenient(RestTokens, N) of
+                {ok, Header} ->
+                    case build_voices_positional(VoiceNames, Header) of
                         {ok, Voices} ->
                             Json = build_drumkit_json(Name, Voices),
                             {drumkit, Json};
@@ -1805,8 +1869,8 @@ parse_drumkit_cell(Rest) ->
                 {error, Msg} ->
                     {routing_error, <<"drumkit">>, Msg}
             end;
-        [] ->
-            {routing_error, <<"drumkit">>, <<"empty body">>}
+        {error, Msg} ->
+            {routing_error, <<"drumkit">>, Msg}
     end.
 
 parse_drumkit_header([<<"gates">>, GateBank, GateRange,
@@ -1898,6 +1962,127 @@ parse_range(Bin) ->
                 _ -> error
             end;
         _ -> error
+    end.
+
+%% Walk tokens collecting names inside a `[...]` head bracket. Handles
+%% three input styles depending on how ws_tokens carved them up:
+%%
+%%   [bd sn hh cp]    → tokens [<<"[bd">>, <<"sn">>, <<"hh">>, <<"cp]">>]
+%%   [bd]             → tokens [<<"[bd]">>]
+%%   [ bd sn ]        → tokens [<<"[">>, <<"bd">>, <<"sn">>, <<"]">>]
+%%
+%% Returns the cleaned name list plus the tokens after the closing
+%% bracket, or {error, Msg} if the bracket is unterminated.
+extract_bracket_tokens([First | Rest]) ->
+    %% First token starts with `[`. Strip the leading byte.
+    FirstStripped = binary:part(First, 1, byte_size(First) - 1),
+    extract_bracket_loop(FirstStripped, Rest, []).
+
+%% Walks the remaining tokens until one ends with `]`. Accumulates
+%% non-empty intermediate tokens as voice names. Tokens that are
+%% empty (degenerate `[` or `]` alone) are dropped silently.
+extract_bracket_loop(Tok, Rest, Acc) ->
+    Size = byte_size(Tok),
+    EndsWithBracket = Size > 0 andalso binary:last(Tok) =:= $],
+    case EndsWithBracket of
+        true ->
+            Cleaned = binary:part(Tok, 0, Size - 1),
+            FinalAcc = case Cleaned of
+                <<>> -> Acc;
+                _ -> [Cleaned | Acc]
+            end,
+            {ok, lists:reverse(FinalAcc), Rest};
+        false ->
+            case Rest of
+                [] ->
+                    {error, <<"missing closing `]` in voice list">>};
+                [Next | Rest2] ->
+                    NewAcc = case Tok of
+                        <<>> -> Acc;
+                        _ -> [Tok | Acc]
+                    end,
+                    extract_bracket_loop(Next, Rest2, NewAcc)
+            end
+    end.
+
+%% Header parser for the bracket-head form. Ranges are optional —
+%% omitted ranges default to 0..(VoiceCount - 1), so a four-voice kit
+%% with `gates gt0` lands on slots 0..3 of bank `gt0` automatically.
+%%
+%% Required keywords in order: gates, pitch, ch. Ranges appear
+%% between bank name and the next keyword when present; absence is
+%% detected by checking whether the next token parses as `lo-hi`.
+parse_drumkit_header_lenient(Tokens, VoiceCount) ->
+    case Tokens of
+        [<<"gates">>, GateBank | T1] ->
+            {GLo, GHi, T2} = peel_optional_range(T1, 0, VoiceCount - 1),
+            case T2 of
+                [<<"pitch">>, PitchBank | T3] ->
+                    {PLo, PHi, T4} = peel_optional_range(T3, 0,
+                                                         VoiceCount - 1),
+                    case T4 of
+                        [<<"ch">>, ChBin | _] ->
+                            case parse_int(ChBin) of
+                                {ok, ChBase} ->
+                                    GateSlots = GHi - GLo + 1,
+                                    PitchSlots = PHi - PLo + 1,
+                                    case GateSlots >= VoiceCount
+                                         andalso PitchSlots >= VoiceCount of
+                                        true ->
+                                            {ok, #{gate_bank  => GateBank,
+                                                   gate_lo    => GLo,
+                                                   gate_hi    => GHi,
+                                                   pitch_bank => PitchBank,
+                                                   pitch_lo   => PLo,
+                                                   pitch_hi   => PHi,
+                                                   ch_base    => ChBase}};
+                                        false ->
+                                            {error,
+                                             <<"gate/pitch range too small "
+                                               "for the voice count in `[...]`">>}
+                                    end;
+                                error ->
+                                    {error, <<"`ch` expects an integer baseChannel">>}
+                            end;
+                        _ ->
+                            {error,
+                             <<"expected `ch <baseChannel>` after pitch declaration">>}
+                    end;
+                _ ->
+                    {error,
+                     <<"expected `pitch <bank> [<lo>-<hi>]` after gates">>}
+            end;
+        _ ->
+            {error,
+             <<"expected `gates <bank> [<lo>-<hi>]` "
+               "`pitch <bank> [<lo>-<hi>]` `ch <baseChannel>` after `[...]`">>}
+    end.
+
+%% If the next token parses as a `lo-hi` range, peel it; otherwise
+%% return the defaults and leave the tokens untouched (the next
+%% keyword stays in place for the outer parser to consume).
+peel_optional_range([RangeTok | T] = Tokens, DefaultLo, DefaultHi) ->
+    case parse_range(RangeTok) of
+        {ok, Lo, Hi} -> {Lo, Hi, T};
+        error -> {DefaultLo, DefaultHi, Tokens}
+    end;
+peel_optional_range([], DefaultLo, DefaultHi) ->
+    {DefaultLo, DefaultHi, []}.
+
+%% Bracket-form voice construction: bracket index = offset.
+%% Reuses build_voice/3 unchanged — bracket position N becomes
+%% offset N from the bank's declared (or default) lo.
+build_voices_positional(Names, Header) ->
+    build_voices_positional(Names, Header, 0, []).
+
+build_voices_positional([], _Header, _Idx, Acc) ->
+    {ok, lists:reverse(Acc)};
+build_voices_positional([Name | Rest], Header, Idx, Acc) ->
+    case build_voice(Name, Idx, Header) of
+        {ok, Voice} ->
+            build_voices_positional(Rest, Header, Idx + 1, [Voice | Acc]);
+        {error, Msg} ->
+            {error, Msg}
     end.
 
 build_drumkit_json(Name, Voices) ->
