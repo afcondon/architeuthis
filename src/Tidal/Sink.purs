@@ -168,6 +168,11 @@ data SinkType
       { voice :: Int
       , defaultNote :: Int
       }
+  | SinkKitDispatch
+  -- ^ Meta-sink for the `kit` cell verb. Forwards tokens to whatever
+  --   bindings the registry contains at dispatch time, so its true
+  --   destination is "wherever the looked-up voice goes". Reported as
+  --   ToMidi (the typical drum-kit case) for snapshot/render purposes.
 
 derive instance eqSinkType :: Eq SinkType
 
@@ -189,6 +194,7 @@ inferPrimSinkType = case _ of
   MidiNote r -> SinkMidiNote r
   MidiCC r -> SinkMidiCC r
   Fh2Trigger r -> SinkFh2Trigger r
+  KitDispatch -> SinkKitDispatch
 
 -- | A `Binding` is `Array PrimAction` — the per-event dispatch list.
 -- | Its overall type is the array of per-action sink types; for
@@ -226,6 +232,7 @@ sinkElement = case _ of
   SinkContMidiCC _ -> Number
   SinkContCV _ -> Number
   SinkFh2Trigger _ -> SampleOrNote
+  SinkKitDispatch -> SampleOrNote
 
 sinkDestKind :: SinkType -> DestKind
 sinkDestKind = case _ of
@@ -241,6 +248,7 @@ sinkDestKind = case _ of
   SinkESX _ -> ToESX
   SinkES5Gate _ -> ToES5
   SinkFh2Trigger _ -> ToMidi
+  SinkKitDispatch -> ToMidi
 
 -- ---------------------------------------------------------------------------
 -- Pattern classification
@@ -478,6 +486,11 @@ checkPattern sink pat = case sink of
       Left $ "fh2-trigger voice expects sample/note tokens, got a numeric pattern"
     PatString _ -> Right unit  -- defaultNote fallback handles unknowns
 
+  SinkKitDispatch -> case pat of
+    PatNumber ->
+      Left $ "kit voice expects voice-name tokens (e.g., \"bd sn bd cp\"), got a numeric pattern"
+    PatString _ -> Right unit  -- tokens dispatch through the binding registry
+
 -- ---------------------------------------------------------------------------
 -- Rendering — for state snapshot and Voices pane
 -- ---------------------------------------------------------------------------
@@ -525,6 +538,8 @@ renderSinkType st =
       SinkFh2Trigger r ->
         "ToMidi device=\"fh2\" voice=" <> show r.voice
           <> " note=" <> show r.defaultNote
+      SinkKitDispatch ->
+        "Kit (dispatches tokens through binding registry)"
 
 -- | JSON object representation for the state snapshot.  Stable shape:
 -- | { kind, element, destKind, detail }.  Calypso reads this to render
@@ -572,6 +587,7 @@ renderSinkTypeJSON st =
       SinkFh2Trigger r ->
         "{\"voice\":" <> show r.voice
           <> ",\"defaultNote\":" <> show r.defaultNote <> "}"
+      SinkKitDispatch -> "{}"
 
     jsStr :: String -> String
     jsStr s = "\"" <> escape s <> "\""

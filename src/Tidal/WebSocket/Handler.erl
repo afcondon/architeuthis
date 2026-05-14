@@ -231,6 +231,40 @@ try_parse_prefixed(<<"polysignal ", Rest/binary>>) ->
     %% form `polysignal <json>`, where the JSON envelope is exactly
     %% what fh2-config's `--apply-polysignal` reads on stdin.
     {polysignal, Rest};
+try_parse_prefixed(<<"kit ", Rest/binary>>) ->
+    %% Kit dispatch cell. Two forms:
+    %%
+    %%   kit <name> "<pattern>"         -- literal mini-notation
+    %%   kit <name> :<expr>             -- host-language expression
+    %%
+    %% Both install a voice `kit-<name>` whose binding is
+    %% [KitDispatch]. On each event the dispatcher looks up the event
+    %% token in the binding registry and walks that binding's
+    %% PrimActions. Pairs with the `drumkit` verb's per-voice
+    %% bindings (bd / sn / hh / cp / …) so one cell carries the
+    %% rhythmic figure for the whole kit:
+    %%
+    %%   kit kitA "bd sn bd cp"
+    %%   kit kitA :every 4 (fast 2) "bd sn bd cp"
+    %%
+    %% The expr form lets host-language combinators (every / fast /
+    %% slow / rev / jux / chunk / …) wrap the pattern — they
+    %% transform the Pattern *before* dispatch, so KitDispatch sees
+    %% an already-rewritten token stream.
+    %%
+    %% Per-voice cells still work alongside (`bd "x*16"` for a fill).
+    case binary:split(Rest, <<" ">>) of
+        [Name, Body0] ->
+            Body = trim_binary(Body0),
+            case Body of
+                <<":", ExprSrc/binary>> ->
+                    {kit_expr, trim_binary(Name), ExprSrc};
+                _ ->
+                    {kit, trim_binary(Name), strip_quotes(Body)}
+            end;
+        _ ->
+            none
+    end;
 try_parse_prefixed(<<"drumkit ", Rest/binary>>) ->
     %% Drum-kit cell. The user-facing grammar is:
     %%
@@ -348,6 +382,49 @@ parse_join_segment(Segment) ->
             #{name => Name, pat => strip_quotes(Body)};
         _ ->
             invalid
+    end.
+
+%% Common install path for verbs that parse to a discrete Pattern and
+%% want to install it as a voice (fh2-trigger, kit, kit-expr). Wraps
+%% the dispatcher set_binding + voice_sup set_voice_pat sequence and
+%% the standard error formatting.
+%%
+%% ParserResult is the {right, Pat} | {left, ErrTerm} envelope from
+%% the parser (parseMiniPattern or parseEvalPattern — same shape).
+%% VerbLabel is used in both error replies: install failure becomes
+%% "ERROR: <VerbLabel>: <err>", parse failure becomes
+%% "ERROR: <VerbLabel> parse: <err>". OkBin is the full OK reply
+%% binary (constructed at the call site since the verb-specific text
+%% varies).
+%%
+%% Returns the cowboy_websocket {reply, ReplyTerm, State} triple.
+%%
+%% set_binding is called before set_voice_pat so the dispatcher can
+%% never see a voice event for a name it hasn't yet recorded.
+install_pattern_voice(ParserResult, VoiceName, Binding, VerbLabel,
+                      OkBin, State) ->
+    case ParserResult of
+        {right, Pat} ->
+            tidal_dispatcher:set_binding(VoiceName, Binding),
+            case tidal_voice_sup:set_voice_pat(VoiceName, Binding, Pat) of
+                ok ->
+                    {reply, {text, OkBin}, State};
+                {error, Err} ->
+                    ErrBin = list_to_binary(io_lib:format("~p", [Err])),
+                    {reply,
+                     {text, <<"ERROR: ", VerbLabel/binary, ": ",
+                              ErrBin/binary>>},
+                     State}
+            end;
+        {left, ErrBin0} ->
+            ErrBin = case ErrBin0 of
+                B when is_binary(B) -> B;
+                Other -> list_to_binary(io_lib:format("~p", [Other]))
+            end,
+            {reply,
+             {text, <<"ERROR: ", VerbLabel/binary, " parse: ",
+                      ErrBin/binary>>},
+             State}
     end.
 
 %% Strip a single pair of surrounding double quotes if present.
@@ -534,46 +611,50 @@ handle_pattern_message(Text, State) ->
             %% fallback for non-note-name tokens. Channel is resolved
             %% at dispatch time from the dispatcher's
             %% fh2VoiceChannels map (populated via fh2-envelope above).
-            case ('tidal_expr@ps':parseMiniPattern())(Pattern) of
-                {right, Pat} ->
-                    VoiceName = <<"fh2-v",
-                                  (integer_to_binary(Voice))/binary>>,
-                    Binding = array:from_list(
-                        [{fh2Trigger, #{voice => Voice,
-                                        defaultNote => 60}}]),
-                    %% Dispatcher needs the binding for dispatch-time
-                    %% lookup; voice_sup needs it for the voice's
-                    %% State. Set dispatcher first (synchronous call)
-                    %% so the voice can never emit an event before
-                    %% the dispatcher knows about the name.
-                    tidal_dispatcher:set_binding(VoiceName, Binding),
-                    case tidal_voice_sup:set_voice_pat(
-                           VoiceName, Binding, Pat) of
-                        ok ->
-                            Reply = {text,
-                                     <<"OK: fh2-trigger v",
-                                       (integer_to_binary(Voice))/binary,
-                                       " ", Pattern/binary>>},
-                            {reply, Reply, State};
-                        {error, Err} ->
-                            ErrBin = list_to_binary(
-                                       io_lib:format("~p", [Err])),
-                            {reply,
-                             {text, <<"ERROR: fh2-trigger: ",
-                                      ErrBin/binary>>},
-                             State}
-                    end;
-                {left, ErrBin0} ->
-                    ErrBin = case ErrBin0 of
-                        B when is_binary(B) -> B;
-                        Other -> list_to_binary(
-                                   io_lib:format("~p", [Other]))
-                    end,
-                    Reply = {text,
-                             <<"ERROR: fh2-trigger parse: ",
-                               ErrBin/binary>>},
-                    {reply, Reply, State}
-            end;
+            VoiceBin = integer_to_binary(Voice),
+            VoiceName = <<"fh2-v", VoiceBin/binary>>,
+            Binding = array:from_list(
+                [{fh2Trigger, #{voice => Voice, defaultNote => 60}}]),
+            OkBin = <<"OK: fh2-trigger v", VoiceBin/binary,
+                      " ", Pattern/binary>>,
+            install_pattern_voice(
+                ('tidal_expr@ps':parseMiniPattern())(Pattern),
+                VoiceName, Binding, <<"fh2-trigger">>, OkBin, State);
+        {kit, KitName, Pattern} ->
+            %% Install a voice named `kit-<KitName>` whose binding is
+            %% a single KitDispatch PrimAction. On each event the
+            %% dispatcher looks up the event TOKEN (not the voice
+            %% name) in the binding registry and walks that
+            %% binding's PrimActions. Pairs with `drumkit`-installed
+            %% per-voice bindings — `kit kitA "bd sn bd cp"`
+            %% dispatches each token through bd / sn / cp's bindings.
+            %%
+            %% Voice name is namespaced `kit-` so multiple kits can
+            %% coexist and can't collide with arbitrary user bindings.
+            %%
+            %% `{kitDispatch}` is the purs-backend-erl encoding of
+            %% the nullary `KitDispatch` PureScript constructor (a
+            %% 1-tuple, per the reference-purs-backend-erl-
+            %% constructor-encoding gotcha).
+            VoiceName = <<"kit-", KitName/binary>>,
+            Binding = array:from_list([{kitDispatch}]),
+            OkBin = <<"OK: kit ", KitName/binary, " ", Pattern/binary>>,
+            install_pattern_voice(
+                ('tidal_expr@ps':parseMiniPattern())(Pattern),
+                VoiceName, Binding, <<"kit">>, OkBin, State);
+        {kit_expr, KitName, ExprSrc} ->
+            %% Host-language-expression form of the kit verb.
+            %% `kit kitA :every 4 (fast 2) "bd sn bd cp"` routes
+            %% through parseEvalPattern (same machinery as the bare-
+            %% binding `bd :rev "x*4"` form) and produces a Pattern
+            %% with the combinators already applied. Install path is
+            %% otherwise identical to the literal kit arm.
+            VoiceName = <<"kit-", KitName/binary>>,
+            Binding = array:from_list([{kitDispatch}]),
+            OkBin = <<"OK: kit ", KitName/binary, " :", ExprSrc/binary>>,
+            install_pattern_voice(
+                ('tidal_expr@ps':parseEvalPattern())(ExprSrc),
+                VoiceName, Binding, <<"kit">>, OkBin, State);
         {fh2_shape, Voice, A, D, S, R} ->
             tidal_dispatcher:dispatch_fh2_shape(Voice, A, D, S, R),
             Reply = {text, <<"OK: fh2-shape v",

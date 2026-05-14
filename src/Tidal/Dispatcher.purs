@@ -365,6 +365,28 @@ dispatchPrimAction (State s) name token wallUs delayMs _delayInt params = case _
             <> " → " <> dev.name <> " ch" <> show channel <> " note " <> show note
           scheduleNoteAt s.bridgeClient dev.name channel note 100 200 adjustedUnixUs
 
+  KitDispatch ->
+    -- Token-as-binding-lookup-key. Used by the `kit` cell verb to
+    -- fire a multi-voice pattern through a single voice gen_server.
+    -- Each event's token names a binding in the registry; we walk
+    -- THAT binding's PrimActions, passing the same token through so
+    -- inner actions (MidiNote / Gate / …) see the voice name as
+    -- their token and apply their usual defaultNote / rest logic.
+    --
+    -- Rests pass through. Unknown tokens are silent no-ops (same
+    -- convention as the outer name lookup). Nested KitDispatch is
+    -- skipped — KitDispatch isn't user-constructable via `bind`, but
+    -- the guard keeps a misbehaving registry from looping forever.
+    when (token /= "~") do
+      case Map.lookup token s.bindings of
+        Nothing -> pure unit
+        Just innerBinding -> do
+          Log.debug $ "→ [" <> name <> "] kit dispatch token=" <> token
+          for_ innerBinding \pa -> case pa of
+            KitDispatch -> pure unit
+            _ -> dispatchPrimAction (State s) (name <> "/" <> token)
+                                    token wallUs delayMs _delayInt params pa
+
 -- | Route one continuous-voice event. Looks up the voice's name in
 -- | `continuousBindings`, applies the recorded `ContDest`, and emits
 -- | one MIDI CC or CV update.

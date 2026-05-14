@@ -116,6 +116,18 @@ data PrimAction
   --   *Server-only*: not constructable via `bind` (the user-facing
   --   verb is `fh2-trigger <voice> <pattern>`). Wire-format clients
   --   like tidal-protocol's Binding.purs don't need to mirror it.
+  | KitDispatch
+  -- ^ Token-as-binding-lookup-key. On each event the dispatcher looks
+  --   up the event's *token* in the binding registry and walks that
+  --   binding's PrimActions. Used by the `kit` cell verb to fire a
+  --   multi-voice pattern through a single card / single voice
+  --   gen_server — `kit kitA "bd sn bd cp"` dispatches each token
+  --   through the per-voice bindings the drum-kit apply installed.
+  --
+  --   *Server-only*: not constructable via `bind` (the user-facing
+  --   verb is `kit <name> <pattern>`). No fields — the meta-action
+  --   carries no per-instance state. Nested KitDispatch is guarded
+  --   against in the dispatcher.
 
 derive instance eqPrimAction :: Eq PrimAction
 
