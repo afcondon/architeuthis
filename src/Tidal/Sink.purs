@@ -173,6 +173,17 @@ data SinkType
   --   bindings the registry contains at dispatch time, so its true
   --   destination is "wherever the looked-up voice goes". Reported as
   --   ToMidi (the typical drum-kit case) for snapshot/render purposes.
+  | SinkChordDispatch
+      { device :: String
+      , baseChannel :: Int
+      , voiceCount :: Int
+      , shape :: String
+      , defaultNote :: Int
+      , velocity :: Int
+      , durationMs :: Int
+      }
+  -- ^ Chord broadcast sink. Mirrors ChordDispatch PrimAction shape.
+  --   Element = Note (token is the chord's root); DestKind = ToMidi.
 
 derive instance eqSinkType :: Eq SinkType
 
@@ -195,6 +206,7 @@ inferPrimSinkType = case _ of
   MidiCC r -> SinkMidiCC r
   Fh2Trigger r -> SinkFh2Trigger r
   KitDispatch -> SinkKitDispatch
+  ChordDispatch r -> SinkChordDispatch r
 
 -- | A `Binding` is `Array PrimAction` — the per-event dispatch list.
 -- | Its overall type is the array of per-action sink types; for
@@ -233,6 +245,7 @@ sinkElement = case _ of
   SinkContCV _ -> Number
   SinkFh2Trigger _ -> SampleOrNote
   SinkKitDispatch -> SampleOrNote
+  SinkChordDispatch _ -> Note
 
 sinkDestKind :: SinkType -> DestKind
 sinkDestKind = case _ of
@@ -249,6 +262,7 @@ sinkDestKind = case _ of
   SinkES5Gate _ -> ToES5
   SinkFh2Trigger _ -> ToMidi
   SinkKitDispatch -> ToMidi
+  SinkChordDispatch _ -> ToMidi
 
 -- ---------------------------------------------------------------------------
 -- Pattern classification
@@ -491,6 +505,11 @@ checkPattern sink pat = case sink of
       Left $ "kit voice expects voice-name tokens (e.g., \"bd sn bd cp\"), got a numeric pattern"
     PatString _ -> Right unit  -- tokens dispatch through the binding registry
 
+  SinkChordDispatch _ -> case pat of
+    PatNumber ->
+      Left $ "chord voice expects note-name tokens (e.g., \"c4 g3 a3\"), got a numeric pattern"
+    PatString _ -> Right unit  -- defaultNote fallback handles non-note tokens
+
 -- ---------------------------------------------------------------------------
 -- Rendering — for state snapshot and Voices pane
 -- ---------------------------------------------------------------------------
@@ -540,6 +559,11 @@ renderSinkType st =
           <> " note=" <> show r.defaultNote
       SinkKitDispatch ->
         "Kit (dispatches tokens through binding registry)"
+      SinkChordDispatch r ->
+        "Chord device=" <> show r.device
+          <> " baseCh=" <> show r.baseChannel
+          <> " voices=" <> show r.voiceCount
+          <> " shape=" <> show r.shape
 
 -- | JSON object representation for the state snapshot.  Stable shape:
 -- | { kind, element, destKind, detail }.  Calypso reads this to render
@@ -588,6 +612,14 @@ renderSinkTypeJSON st =
         "{\"voice\":" <> show r.voice
           <> ",\"defaultNote\":" <> show r.defaultNote <> "}"
       SinkKitDispatch -> "{}"
+      SinkChordDispatch r ->
+        "{\"device\":" <> jsStr r.device
+          <> ",\"baseChannel\":" <> show r.baseChannel
+          <> ",\"voiceCount\":" <> show r.voiceCount
+          <> ",\"shape\":" <> jsStr r.shape
+          <> ",\"defaultNote\":" <> show r.defaultNote
+          <> ",\"velocity\":" <> show r.velocity
+          <> ",\"durationMs\":" <> show r.durationMs <> "}"
 
     jsStr :: String -> String
     jsStr s = "\"" <> escape s <> "\""

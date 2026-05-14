@@ -67,6 +67,7 @@ import Data.Number as Number
 import Effect (Effect)
 import Tidal.Binding (Binding, ContDest(..), PrimAction(..))
 import Tidal.Binding as Binding
+import Tidal.Chords as Chords
 import Tidal.Log as Log
 import Tidal.MIDIBridge (BridgeClient, scheduleCCAt, scheduleNoteAt)
 import Tidal.MIDIBridge as MIDIBridge
@@ -386,6 +387,47 @@ dispatchPrimAction (State s) name token wallUs delayMs _delayInt params = case _
             KitDispatch -> pure unit
             _ -> dispatchPrimAction (State s) (name <> "/" <> token)
                                     token wallUs delayMs _delayInt params pa
+
+  ChordDispatch c ->
+    -- Chord broadcast: token becomes the root note, fire `voiceCount`
+    -- parallel MIDI notes — one per voice channel, with intervals
+    -- from the chord-shape lookup applied to the root.
+    --
+    -- Token resolution mirrors MidiNote: note-name tokens (`c4`,
+    -- `fs3`) override defaultNote via noteNameMidi; other tokens
+    -- fall back to defaultNote.
+    --
+    -- Shape lookup happens per event so a hot-edit of the chord
+    -- table is a no-cell-restart change. Unknown shapes silently
+    -- no-op at dispatch (parse-time validation rejects unknowns
+    -- before the binding is installed).
+    when (token /= "~") do
+      case Chords.lookupChord c.shape of
+        Nothing ->
+          Log.debug $ "✗ [" <> name <> "] chord: unknown shape '"
+                    <> c.shape <> "'"
+        Just intervals -> case Map.lookup c.device s.midiDevices of
+          Nothing ->
+            Log.debug $ "✗ [" <> name <> "] chord: unknown device alias '"
+                      <> c.device <> "'"
+          Just dev -> do
+            let rootNote = case Map.lookup token noteNameMidi of
+                  Just n -> n
+                  Nothing -> c.defaultNote
+                adjustedUnixUs = wallUs - dev.latencyMs * 1000.0
+                intervalCount = Array.length intervals
+            Log.debug $ "♪♪ [" <> name <> "] chord " <> c.shape
+                      <> " root=" <> show rootNote
+                      <> " × " <> show c.voiceCount <> " voices"
+            for_ (Array.range 0 (c.voiceCount - 1)) \i ->
+              let interval = case Array.index intervals (i `mod` intervalCount) of
+                    Just iv -> iv
+                    Nothing -> 0  -- intervalCount=0 should never happen
+                                  -- (parse-time validation rejects empty shapes)
+                  note = rootNote + interval
+                  channel = c.baseChannel + i
+              in scheduleNoteAt s.bridgeClient dev.name channel note
+                                c.velocity c.durationMs adjustedUnixUs
 
 -- | Route one continuous-voice event. Looks up the voice's name in
 -- | `continuousBindings`, applies the recorded `ContDest`, and emits

@@ -265,6 +265,26 @@ try_parse_prefixed(<<"kit ", Rest/binary>>) ->
         _ ->
             none
     end;
+try_parse_prefixed(<<"chord ", Rest/binary>>) ->
+    %% Chord cell: broadcast each event token as a chord root across
+    %% N FH-2 voices with intervals from the named chord shape.
+    %%
+    %%   chord pad1 [4]
+    %%     shape minor7
+    %%     gates gt0
+    %%     pitch main
+    %%     ch 12
+    %%
+    %% Pattern firing: `pad1 "c4 g3 a3"` plays C-minor7, G-minor7,
+    %% A-minor7 in turn — each root broadcasts to all 4 voice
+    %% channels (12..15) with intervals [0,3,7,10] applied.
+    %%
+    %% Hardware claim path is shared with drumkit: synthesized voice
+    %% names `<chordName>-1`..`<chordName>-N` go to fh2-config via
+    %% the existing apply-drumkit envelope. Chord-specific behaviour
+    %% (broadcast-with-intervals) is purely BEAM-side, installed as
+    %% a single ChordDispatch binding under the chord's name.
+    parse_chord_cell(Rest);
 try_parse_prefixed(<<"drumkit ", Rest/binary>>) ->
     %% Drum-kit cell. The user-facing grammar is:
     %%
@@ -655,6 +675,30 @@ handle_pattern_message(Text, State) ->
             install_pattern_voice(
                 ('tidal_expr@ps':parseEvalPattern())(ExprSrc),
                 VoiceName, Binding, <<"kit">>, OkBin, State);
+        {chord, ChordName, ShapeName, VoiceCount, BaseChannel, Json} ->
+            %% Chord cell — synthesised voices go through the existing
+            %% apply-drumkit envelope (daemon doesn't know it's a
+            %% chord). On OK, install a single ChordDispatch binding
+            %% under the chord's name; pattern firing `pad1 "c4 g3"`
+            %% then broadcasts each root to all N voice channels.
+            Reply = case fh2_daemon_call(<<"apply-drumkit ", Json/binary>>) of
+                {ok, ReplyBin} ->
+                    case is_drumkit_ok_reply(ReplyBin) of
+                        true ->
+                            register_chord_binding(
+                                ChordName, ShapeName,
+                                BaseChannel, VoiceCount),
+                            {text, ReplyBin};
+                        false ->
+                            {text, ReplyBin}
+                    end;
+                {error, Reason} ->
+                    ReasonBin = list_to_binary(
+                                  io_lib:format("~p", [Reason])),
+                    {text, <<"ERR chord: fh2-config daemon unreachable (",
+                             ReasonBin/binary, ")">>}
+            end,
+            {reply, Reply, State};
         {fh2_shape, Voice, A, D, S, R} ->
             tidal_dispatcher:dispatch_fh2_shape(Voice, A, D, S, R),
             Reply = {text, <<"OK: fh2-shape v",
@@ -1964,6 +2008,93 @@ parse_range(Bin) ->
         _ -> error
     end.
 
+%% Chord cell parser. Cell text shape:
+%%
+%%   chord <name> [<N>] shape <shapeName> gates <bank> [<lo>-<hi>]
+%%                       pitch <bank> [<lo>-<hi>] ch <chBase>
+%%
+%% Synthesises N voice records (`<name>-1`..`<name>-N`) and reuses the
+%% drumkit envelope — the daemon doesn't know it's a chord. Returns
+%% `{chord, Name, ShapeName, N, BaseChannel, Json}` for the handler arm.
+parse_chord_cell(Rest) ->
+    Tokens = [T || T <- ws_tokens(Rest), T =/= <<"<>">>],
+    case Tokens of
+        [Name | T0] ->
+            case is_bracket_start(T0) of
+                true ->
+                    parse_chord_bracket_form(Name, T0);
+                false ->
+                    {routing_error, <<"chord">>,
+                     <<"expected `[<voiceCount>]` after `<name>` — "
+                       "e.g. `chord pad1 [4] shape minor7 gates gt0 "
+                       "pitch main ch 12`">>}
+            end;
+        [] ->
+            {routing_error, <<"chord">>, <<"empty body">>}
+    end.
+
+parse_chord_bracket_form(Name, Tokens) ->
+    case extract_bracket_tokens(Tokens) of
+        {ok, [CountBin], RestTokens} ->
+            case parse_int(CountBin) of
+                {ok, N} when N > 0 ->
+                    parse_chord_body(Name, N, RestTokens);
+                _ ->
+                    {routing_error, <<"chord">>,
+                     <<"voice count must be a positive integer, got `",
+                       CountBin/binary, "`">>}
+            end;
+        {ok, _Multi, _} ->
+            {routing_error, <<"chord">>,
+             <<"expected `[<voiceCount>]` — single integer in bracket">>};
+        {error, Msg} ->
+            {routing_error, <<"chord">>, Msg}
+    end.
+
+parse_chord_body(Name, N, Tokens) ->
+    case Tokens of
+        [<<"shape">>, ShapeName | T1] ->
+            case ('tidal_chords@ps':lookupChord())(ShapeName) of
+                {nothing} ->
+                    {routing_error, <<"chord">>,
+                     <<"unknown chord shape `", ShapeName/binary,
+                       "` — check Tidal.Chords for the supported list "
+                       "(major / minor / major7 / minor7 / sus4 / dim "
+                       "/ aug / …)">>};
+                {just, _Intervals} ->
+                    case parse_drumkit_header_lenient(T1, N) of
+                        {ok, Header} ->
+                            Json = build_chord_json(Name, N, Header),
+                            ChBase = maps:get(ch_base, Header),
+                            {chord, Name, ShapeName, N, ChBase, Json};
+                        {error, Msg} ->
+                            {routing_error, <<"chord">>, Msg}
+                    end
+            end;
+        _ ->
+            {routing_error, <<"chord">>,
+             <<"expected `shape <shapeName>` after `[N]`">>}
+    end.
+
+%% Build the drumkit-shaped JSON envelope from a chord header.
+%% Synthesises N voice records `<chordName>-1`..`<chordName>-N`,
+%% each on its own MIDI channel + gate slot + pitch slot.
+build_chord_json(Name, N, Header) ->
+    #{gate_bank := GateBank, gate_lo := GLo,
+      pitch_bank := PitchBank, pitch_lo := PLo,
+      ch_base := ChBase} = Header,
+    Voices = [
+        #{name       => <<Name/binary, "-",
+                          (integer_to_binary(I + 1))/binary>>,
+          channel    => ChBase + I,
+          gate_bank  => GateBank,
+          gate_slot  => GLo + I,
+          pitch_bank => PitchBank,
+          pitch_slot => PLo + I}
+        || I <- lists:seq(0, N - 1)
+    ],
+    build_drumkit_json(Name, Voices).
+
 %% Walk tokens collecting names inside a `[...]` head bracket. Handles
 %% three input styles depending on how ws_tokens carved them up:
 %%
@@ -2180,6 +2311,27 @@ register_one_voice_binding(Pair) ->
             end;
         _ -> ok
     end.
+
+%% Install a single ChordDispatch binding under the chord's name.
+%% Auto-registers the `fh2` device alias for the same reason
+%% drumkit does (a freshly-restarted purerl-tidal shouldn't require
+%% the user to fire a code pane before chord cells will sound).
+%%
+%% The `{chordDispatch, #{...}}` shape is the purs-backend-erl
+%% encoding of `ChordDispatch { device, baseChannel, voiceCount,
+%% shape, defaultNote, velocity, durationMs }` — single-record
+%% constructor with atom-keyed map fields.
+register_chord_binding(ChordName, ShapeName, BaseChannel, VoiceCount) ->
+    tidal_dispatcher:register_midi_device(<<"fh2">>, <<"FH-2">>, 0.0),
+    Binding = array:from_list(
+      [{chordDispatch, #{device      => <<"fh2">>,
+                         baseChannel => BaseChannel,
+                         voiceCount  => VoiceCount,
+                         shape       => ShapeName,
+                         defaultNote => 60,
+                         velocity    => 100,
+                         durationMs  => 200}}]),
+    tidal_dispatcher:set_binding(ChordName, Binding).
 
 fh2_daemon_socket_path() ->
     case os:getenv("HOME") of

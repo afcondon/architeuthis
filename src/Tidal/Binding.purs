@@ -128,6 +128,34 @@ data PrimAction
   --   verb is `kit <name> <pattern>`). No fields — the meta-action
   --   carries no per-instance state. Nested KitDispatch is guarded
   --   against in the dispatcher.
+  | ChordDispatch
+      { device :: String
+      , baseChannel :: Int
+      , voiceCount :: Int
+      , shape :: String
+      , defaultNote :: Int
+      , velocity :: Int
+      , durationMs :: Int
+      }
+  -- ^ Chord broadcast — each event's token becomes a root note, and
+  --   the dispatcher fires `voiceCount` parallel MIDI notes, one per
+  --   FH-2 voice channel (`baseChannel`, `baseChannel+1`, …), with
+  --   intervals from `Tidal.Chords.lookupChord shape` applied to the
+  --   root. Used by the `chord` cell verb so `pad1 "c4 g3 a3"` plays
+  --   chord pads at each root.
+  --
+  --   Shape is resolved at dispatch time (re-lookup per event) so
+  --   editing the shape lookup table is a no-cell-restart change.
+  --   `shape` is validated at parse time — unknown shapes error
+  --   when the cell is fired, not silently at dispatch.
+  --
+  --   When intervals has fewer entries than voiceCount, voices cycle
+  --   the intervals (`intervals[i mod len(intervals)]`). When more,
+  --   excess intervals are unused. Token rests (`~`) skip the whole
+  --   broadcast.
+  --
+  --   *Server-only*: not constructable via `bind` (the user-facing
+  --   verb is `chord <name> [N] shape <shapeName> gates … pitch … ch …`).
 
 derive instance eqPrimAction :: Eq PrimAction
 
