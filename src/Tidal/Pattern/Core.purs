@@ -73,6 +73,8 @@ module Tidal.Pattern.Core
   , nextSam
   , cyclePos
   , wholeCycle
+    -- * Pattern conversion
+  , patternStringToNumber
     -- * Arc operations (re-exported)
   , module ArcExports
   ) where
@@ -83,6 +85,7 @@ import Data.Array as Array
 import Data.Int as Int
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
+import Data.Number as Number
 import Data.Ord (comparing)
 import Data.Rational (Rational, fromInt, toNumber)
 import Math (cos, floor, pi, sin, sqrt)
@@ -1001,3 +1004,20 @@ splitArcByCycles (Arc { start, stop }) =
 -- | The silent pattern (re-exported from Types but useful here)
 silence :: forall a. Pattern a
 silence = pattern \_ -> []
+
+-- | Coerce a `Pattern String` into a `Pattern Number` by parsing each
+-- | event's value as a number.  Tokens that don't parse become `0.0`
+-- | (silence-equivalent for CC / continuous CV — a `~` rest in the
+-- | source mini-notation never reaches this fmap because the parser
+-- | filters rest events out before producing the Pattern).
+-- |
+-- | Used by `play-armed` when the bound voice is a continuous one
+-- | (`midi-cc-cont`, `cv-cont`): cells always export
+-- | `pattern :: Pattern String`, so this helper bridges to the
+-- | `Pattern Number` shape `set_voice_cont_pat` expects.
+patternStringToNumber :: Pattern String -> Pattern Number
+patternStringToNumber = map parseOrZero
+  where
+  parseOrZero s = case Number.fromString s of
+    Just n -> n
+    Nothing -> 0.0
