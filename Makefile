@@ -68,6 +68,8 @@ erl: ps
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_compiler.erl
 	@# Live control bus (knob → ETS → State.controls).
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_control_bus.erl
+	@# Per-yarns-cell voice allocator state (yarns macro verb).
+	@erlc -disable-feature maybe_expr -o ebin src/tidal_yarns_state.erl
 	@echo "==> Build complete. BEAM files in ebin/"
 
 # Run tests

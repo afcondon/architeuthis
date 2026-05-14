@@ -184,6 +184,19 @@ data SinkType
       }
   -- ^ Chord broadcast sink. Mirrors ChordDispatch PrimAction shape.
   --   Element = Note (token is the chord's root); DestKind = ToMidi.
+  | SinkYarnsDispatch
+      { device :: String
+      , baseChannel :: Int
+      , voiceCount :: Int
+      , mode :: String
+      , alloc :: String
+      , glideMs :: Int
+      , defaultNote :: Int
+      , velocity :: Int
+      , durationMs :: Int
+      }
+  -- ^ Polyphonic voice-allocation sink. Mirrors YarnsDispatch
+  --   PrimAction shape. Element = Note; DestKind = ToMidi.
 
 derive instance eqSinkType :: Eq SinkType
 
@@ -207,6 +220,7 @@ inferPrimSinkType = case _ of
   Fh2Trigger r -> SinkFh2Trigger r
   KitDispatch -> SinkKitDispatch
   ChordDispatch r -> SinkChordDispatch r
+  YarnsDispatch r -> SinkYarnsDispatch r
 
 -- | A `Binding` is `Array PrimAction` — the per-event dispatch list.
 -- | Its overall type is the array of per-action sink types; for
@@ -246,6 +260,7 @@ sinkElement = case _ of
   SinkFh2Trigger _ -> SampleOrNote
   SinkKitDispatch -> SampleOrNote
   SinkChordDispatch _ -> Note
+  SinkYarnsDispatch _ -> Note
 
 sinkDestKind :: SinkType -> DestKind
 sinkDestKind = case _ of
@@ -263,6 +278,7 @@ sinkDestKind = case _ of
   SinkFh2Trigger _ -> ToMidi
   SinkKitDispatch -> ToMidi
   SinkChordDispatch _ -> ToMidi
+  SinkYarnsDispatch _ -> ToMidi
 
 -- ---------------------------------------------------------------------------
 -- Pattern classification
@@ -510,6 +526,11 @@ checkPattern sink pat = case sink of
       Left $ "chord voice expects note-name tokens (e.g., \"c4 g3 a3\"), got a numeric pattern"
     PatString _ -> Right unit  -- defaultNote fallback handles non-note tokens
 
+  SinkYarnsDispatch _ -> case pat of
+    PatNumber ->
+      Left $ "yarns voice expects note-name tokens (e.g., \"c4 e4 g4 b4\"), got a numeric pattern"
+    PatString _ -> Right unit  -- defaultNote fallback handles non-note tokens
+
 -- ---------------------------------------------------------------------------
 -- Rendering — for state snapshot and Voices pane
 -- ---------------------------------------------------------------------------
@@ -564,6 +585,12 @@ renderSinkType st =
           <> " baseCh=" <> show r.baseChannel
           <> " voices=" <> show r.voiceCount
           <> " shape=" <> show r.shape
+      SinkYarnsDispatch r ->
+        "Yarns device=" <> show r.device
+          <> " baseCh=" <> show r.baseChannel
+          <> " voices=" <> show r.voiceCount
+          <> " mode=" <> show r.mode
+          <> " alloc=" <> show r.alloc
 
 -- | JSON object representation for the state snapshot.  Stable shape:
 -- | { kind, element, destKind, detail }.  Calypso reads this to render
@@ -617,6 +644,16 @@ renderSinkTypeJSON st =
           <> ",\"baseChannel\":" <> show r.baseChannel
           <> ",\"voiceCount\":" <> show r.voiceCount
           <> ",\"shape\":" <> jsStr r.shape
+          <> ",\"defaultNote\":" <> show r.defaultNote
+          <> ",\"velocity\":" <> show r.velocity
+          <> ",\"durationMs\":" <> show r.durationMs <> "}"
+      SinkYarnsDispatch r ->
+        "{\"device\":" <> jsStr r.device
+          <> ",\"baseChannel\":" <> show r.baseChannel
+          <> ",\"voiceCount\":" <> show r.voiceCount
+          <> ",\"mode\":" <> jsStr r.mode
+          <> ",\"alloc\":" <> jsStr r.alloc
+          <> ",\"glideMs\":" <> show r.glideMs
           <> ",\"defaultNote\":" <> show r.defaultNote
           <> ",\"velocity\":" <> show r.velocity
           <> ",\"durationMs\":" <> show r.durationMs <> "}"

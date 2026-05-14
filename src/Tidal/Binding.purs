@@ -156,6 +156,39 @@ data PrimAction
   --
   --   *Server-only*: not constructable via `bind` (the user-facing
   --   verb is `chord <name> [N] shape <shapeName> gates … pitch … ch …`).
+  | YarnsDispatch
+      { device :: String
+      , baseChannel :: Int
+      , voiceCount :: Int
+      , mode :: String
+      , alloc :: String
+      , glideMs :: Int
+      , defaultNote :: Int
+      , velocity :: Int
+      , durationMs :: Int
+      }
+  -- ^ Polyphonic voice-allocation dispatch — each pattern note is
+  --   assigned to one of `voiceCount` MCV voices on consecutive
+  --   channels (`baseChannel`..`baseChannel + voiceCount - 1`)
+  --   according to `mode` + `alloc`. Used by the `yarns` cell verb
+  --   for polyphonic MIDI-to-CV synth surfaces.
+  --
+  --   mode = "poly":    voice picked via `alloc`
+  --   mode = "mono":    always voice 0 (monophonic lead)
+  --   mode = "unison":  all voices fire in parallel (broadcast)
+  --
+  --   alloc = "round-robin":  cycles 0,1,…,N-1,0,…
+  --   (steal-oldest / steal-newest planned; not in v1)
+  --
+  --   Per-cell allocator state lives in an ETS table
+  --   (`tidal_yarns_state`) keyed by yarns name. Re-firing replaces.
+  --
+  --   `glideMs` is recorded but not yet implemented — placeholder
+  --   for FH-2 hardware portamento integration. v1 dispatches with
+  --   no inter-note slewing.
+  --
+  --   *Server-only*: not constructable via `bind` (the user-facing
+  --   verb is `yarns <name> [N] mode <m> alloc <a> glide <ms> …`).
 
 derive instance eqPrimAction :: Eq PrimAction
 

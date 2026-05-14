@@ -68,6 +68,7 @@ import Effect (Effect)
 import Tidal.Binding (Binding, ContDest(..), PrimAction(..))
 import Tidal.Binding as Binding
 import Tidal.Chords as Chords
+import Tidal.YarnsState (AllocResult(..), allocateVoice)
 import Tidal.Log as Log
 import Tidal.MIDIBridge (BridgeClient, scheduleCCAt, scheduleNoteAt)
 import Tidal.MIDIBridge as MIDIBridge
@@ -387,6 +388,51 @@ dispatchPrimAction (State s) name token wallUs delayMs _delayInt params = case _
             KitDispatch -> pure unit
             _ -> dispatchPrimAction (State s) (name <> "/" <> token)
                                     token wallUs delayMs _delayInt params pa
+
+  YarnsDispatch y ->
+    -- Polyphonic voice allocation: token becomes one note assigned
+    -- to a voice picked by the ETS-backed allocator. Voice index
+    -- maps to MIDI channel `baseChannel + idx`.
+    --
+    -- For unison mode the allocator returns AllocBroadcast — fire
+    -- the same note on all voices (analogous to chord with all-zero
+    -- intervals). For poly/mono it returns AllocSingle.
+    --
+    -- Token resolution mirrors MidiNote: note-name tokens override
+    -- defaultNote via noteNameMidi; other tokens fall back. Rests
+    -- (~) skip the whole allocation.
+    --
+    -- `glideMs` is recorded in the binding but not yet acted on at
+    -- dispatch — future work will configure FH-2 hardware glide
+    -- via the per-MCV-voice config at apply time.
+    when (token /= "~") do
+      case Map.lookup y.device s.midiDevices of
+        Nothing ->
+          Log.debug $ "✗ [" <> name <> "] yarns: unknown device alias '"
+                    <> y.device <> "'"
+        Just dev -> do
+          let note = case Map.lookup token noteNameMidi of
+                Just n -> n
+                Nothing -> y.defaultNote
+              adjustedUnixUs = wallUs - dev.latencyMs * 1000.0
+          alloc <- allocateVoice name wallUs
+          case alloc of
+            AllocFailed ->
+              Log.debug $ "✗ [" <> name <> "] yarns: allocator not installed"
+            AllocSingle idx -> do
+              let channel = y.baseChannel + idx
+              Log.debug $ "♪ [" <> name <> "] yarns ch" <> show channel
+                        <> " v" <> show idx <> " note " <> show note
+              scheduleNoteAt s.bridgeClient dev.name channel note
+                             y.velocity y.durationMs adjustedUnixUs
+            AllocBroadcast idxs -> do
+              Log.debug $ "♪♪ [" <> name <> "] yarns unison × "
+                        <> show (Array.length idxs)
+                        <> " note " <> show note
+              for_ idxs \idx ->
+                let channel = y.baseChannel + idx
+                in scheduleNoteAt s.bridgeClient dev.name channel note
+                                  y.velocity y.durationMs adjustedUnixUs
 
   ChordDispatch c ->
     -- Chord broadcast: token becomes the root note, fire `voiceCount`

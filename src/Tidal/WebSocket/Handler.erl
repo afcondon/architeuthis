@@ -210,8 +210,37 @@ try_parse_prefixed(<<"midi ", Rest/binary>>) ->
     parse_root_device_verb(midi, Rest);
 try_parse_prefixed(<<"fh2 ", Rest/binary>>) ->
     parse_root_device_verb(fh2, Rest);
+try_parse_prefixed(<<"release-claim ", Rest/binary>>) ->
+    %% Release an owner's claims on the fh2-config daemon. Frees the
+    %% gate/pitch slots so the same outputs can be re-claimed by a
+    %% different macro cell without bouncing the daemon.
+    %%
+    %%   release-claim <kind> <name>
+    %%
+    %% kind is polysignal / tvoice / drumkit / yarns / chord. The
+    %% daemon validates and returns OK or ERR. Optional cleanup of
+    %% the dispatcher binding registry is deferred — stale bindings
+    %% just fail to fire (their hardware is no longer configured).
+    case binary:split(Rest, <<" ">>) of
+        [Kind, Name] ->
+            {release_claim, trim_binary(Kind), trim_binary(Name)};
+        _ ->
+            {routing_error, <<"release-claim">>,
+             <<"expected `release-claim <kind> <name>` — "
+               "e.g. `release-claim chord pad1`">>}
+    end;
 try_parse_prefixed(<<"yarns ", Rest/binary>>) ->
-    parse_root_device_verb(yarns, Rest);
+    %% Two distinct uses of `yarns `:
+    %%
+    %%   yarns synth1 [4] mode poly …    — macro polyvoice cell
+    %%   yarns yarns "Yarns"             — device-alias registration
+    %%
+    %% Disambiguator: the macro form has `[N]` as its second token
+    %% (after the voice name); the device-alias form doesn't.
+    case looks_like_yarns_macro(Rest) of
+        true  -> parse_yarns_cell(Rest);
+        false -> parse_root_device_verb(yarns, Rest)
+    end;
 try_parse_prefixed(<<"es9 ", Rest/binary>>) ->
     parse_es9_verb(Rest);
 try_parse_prefixed(<<"es5 ", Rest/binary>>) ->
@@ -675,15 +704,46 @@ handle_pattern_message(Text, State) ->
             install_pattern_voice(
                 ('tidal_expr@ps':parseEvalPattern())(ExprSrc),
                 VoiceName, Binding, <<"kit">>, OkBin, State);
-        {chord, ChordName, ShapeName, VoiceCount, BaseChannel, Json} ->
-            %% Chord cell — synthesised voices go through the existing
-            %% apply-drumkit envelope (daemon doesn't know it's a
-            %% chord). On OK, install a single ChordDispatch binding
-            %% under the chord's name; pattern firing `pad1 "c4 g3"`
-            %% then broadcasts each root to all N voice channels.
-            Reply = case fh2_daemon_call(<<"apply-drumkit ", Json/binary>>) of
+        {yarns, YarnsName, Mode, Alloc, GlideMs, VoiceCount,
+         BaseChannel, Json} ->
+            %% Yarns cell — daemon-side apply uses its OWN command
+            %% (`apply-yarns`) so the ClaimRig tags ownership as
+            %% OwnYarns rather than OwnDrumKit. JSON envelope shape
+            %% is identical to drumkit's; the daemon's
+            %% applyMacroEnvelope helper handles the kind dispatch.
+            %% Reply prefix is `OK apply-yarns` accordingly.
+            %%
+            %% Install order: ETS allocator state before set_binding
+            %% so the first dispatch event has somewhere to allocate
+            %% against (tidal_yarns_state:install is synchronous).
+            Reply = case fh2_daemon_call(<<"apply-yarns ", Json/binary>>) of
                 {ok, ReplyBin} ->
-                    case is_drumkit_ok_reply(ReplyBin) of
+                    case is_apply_ok_reply(<<"yarns">>, ReplyBin) of
+                        true ->
+                            register_yarns_binding(
+                                YarnsName, Mode, Alloc, GlideMs,
+                                BaseChannel, VoiceCount),
+                            {text, ReplyBin};
+                        false ->
+                            {text, ReplyBin}
+                    end;
+                {error, Reason} ->
+                    ReasonBin = list_to_binary(
+                                  io_lib:format("~p", [Reason])),
+                    {text, <<"ERR yarns: fh2-config daemon unreachable (",
+                             ReasonBin/binary, ")">>}
+            end,
+            {reply, Reply, State};
+        {chord, ChordName, ShapeName, VoiceCount, BaseChannel, Json} ->
+            %% Chord cell — daemon-side apply uses its OWN command
+            %% (`apply-chord`) so the ClaimRig tags ownership as
+            %% OwnChord rather than OwnDrumKit. JSON envelope shape
+            %% is identical to drumkit's; the daemon's
+            %% applyMacroEnvelope helper handles the kind dispatch.
+            %% Reply prefix is `OK apply-chord` accordingly.
+            Reply = case fh2_daemon_call(<<"apply-chord ", Json/binary>>) of
+                {ok, ReplyBin} ->
+                    case is_apply_ok_reply(<<"chord">>, ReplyBin) of
                         true ->
                             register_chord_binding(
                                 ChordName, ShapeName,
@@ -697,6 +757,24 @@ handle_pattern_message(Text, State) ->
                                   io_lib:format("~p", [Reason])),
                     {text, <<"ERR chord: fh2-config daemon unreachable (",
                              ReasonBin/binary, ")">>}
+            end,
+            {reply, Reply, State};
+        {release_claim, Kind, Name} ->
+            %% Relay to fh2-config daemon. Daemon validates the kind
+            %% and either OKs the release or returns a typed error.
+            %% No BEAM-side state change beyond the relay — stale
+            %% dispatcher bindings remain but their hardware is now
+            %% unclaimed, so any in-flight patterns silently no-op.
+            Reply = case fh2_daemon_call(
+                            <<"release-claim ", Kind/binary,
+                              " ", Name/binary>>) of
+                {ok, ReplyBin} ->
+                    {text, ReplyBin};
+                {error, Reason} ->
+                    ReasonBin = list_to_binary(
+                                  io_lib:format("~p", [Reason])),
+                    {text, <<"ERR release-claim: fh2-config daemon "
+                             "unreachable (", ReasonBin/binary, ")">>}
             end,
             {reply, Reply, State};
         {fh2_shape, Voice, A, D, S, R} ->
@@ -1875,6 +1953,21 @@ parse_drumkit_cell(Rest) ->
 is_bracket_start([<<$[, _/binary>> | _]) -> true;
 is_bracket_start(_) -> false.
 
+%% Distinguish the yarns macro cell from the yarns device-alias verb.
+%% Macro: `yarns <voiceName> [<N>] …`  → 2nd token starts with `[`
+%% Device: `yarns <alias> "<deviceName>"` or `yarns <alias>`
+%%
+%% The token-after-name shape is reliable because device aliases
+%% don't use `[`-prefixed identifiers (the routing grammar's
+%% alias-and-detail form doesn't admit bracket tokens). Used in the
+%% `try_parse_prefixed(<<"yarns ", _>>)` dispatch above.
+looks_like_yarns_macro(Body) ->
+    Tokens = [T || T <- ws_tokens(Body), T =/= <<"<>">>],
+    case Tokens of
+        [_Name | T0] -> is_bracket_start(T0);
+        _ -> false
+    end.
+
 %% Form 3 dispatch — original parser, body-driven offsets.
 parse_drumkit_legacy_form(Name, Tokens) ->
     case parse_drumkit_header(Tokens) of
@@ -2007,6 +2100,108 @@ parse_range(Bin) ->
             end;
         _ -> error
     end.
+
+%% Yarns cell parser. Returns
+%% {yarns, Name, Mode, Alloc, GlideMs, N, BaseChannel, Json} on success.
+%%
+%% Cell-text body (all keywords after [N] are optional except gates/
+%% pitch/ch):
+%%
+%%   yarns <name> [<N>] [mode <m>] [alloc <a>] [glide <ms>]
+%%                gates <bank> [<lo>-<hi>] pitch <bank> [<lo>-<hi>]
+%%                ch <chBase>
+%%
+%% Defaults: mode=poly, alloc=round-robin, glide=0.
+parse_yarns_cell(Rest) ->
+    Tokens = [T || T <- ws_tokens(Rest), T =/= <<"<>">>],
+    case Tokens of
+        [Name | T0] ->
+            case is_bracket_start(T0) of
+                true -> parse_yarns_bracket_form(Name, T0);
+                false ->
+                    {routing_error, <<"yarns">>,
+                     <<"expected `[<voiceCount>]` after `<name>` — "
+                       "e.g. `yarns synth1 [4] gates gt0 pitch main "
+                       "ch 11`">>}
+            end;
+        [] -> {routing_error, <<"yarns">>, <<"empty body">>}
+    end.
+
+parse_yarns_bracket_form(Name, Tokens) ->
+    case extract_bracket_tokens(Tokens) of
+        {ok, [CountBin], RestTokens} ->
+            case parse_int(CountBin) of
+                {ok, N} when N > 0 ->
+                    parse_yarns_body(Name, N, RestTokens);
+                _ ->
+                    {routing_error, <<"yarns">>,
+                     <<"voice count must be a positive integer, got `",
+                       CountBin/binary, "`">>}
+            end;
+        {ok, _Multi, _} ->
+            {routing_error, <<"yarns">>,
+             <<"expected `[<voiceCount>]` — single integer in bracket">>};
+        {error, Msg} ->
+            {routing_error, <<"yarns">>, Msg}
+    end.
+
+parse_yarns_body(Name, N, Tokens0) ->
+    {Mode, Tokens1} = peel_optional_keyword(<<"mode">>, Tokens0, <<"poly">>),
+    {Alloc, Tokens2} = peel_optional_keyword(<<"alloc">>, Tokens1,
+                                              <<"round-robin">>),
+    {Glide, Tokens3} = peel_optional_int_keyword(<<"glide">>, Tokens2, 0),
+    case validate_yarns_mode(Mode) of
+        {error, Msg} -> {routing_error, <<"yarns">>, Msg};
+        ok ->
+            case validate_yarns_alloc(Alloc) of
+                {error, Msg} -> {routing_error, <<"yarns">>, Msg};
+                ok ->
+                    case parse_drumkit_header_lenient(Tokens3, N) of
+                        {ok, Header} ->
+                            ChBase = maps:get(ch_base, Header),
+                            Json = build_chord_json(Name, N, Header),
+                            {yarns, Name, Mode, Alloc, Glide, N,
+                             ChBase, Json};
+                        {error, Msg} ->
+                            {routing_error, <<"yarns">>, Msg}
+                    end
+            end
+    end.
+
+%% Peel an optional `<keyword> <value>` pair off the head of a token
+%% list. If the head matches the keyword, consume both tokens and
+%% return the value + remainder. Otherwise return the default and
+%% leave tokens untouched.
+peel_optional_keyword(Keyword, [Keyword, Value | Rest], _Default) ->
+    {Value, Rest};
+peel_optional_keyword(_Keyword, Tokens, Default) ->
+    {Default, Tokens}.
+
+peel_optional_int_keyword(Keyword, [Keyword, ValueBin | Rest], _Default) ->
+    case parse_int(ValueBin) of
+        {ok, N} -> {N, Rest};
+        _ -> {0, Rest}  %% defensive — silently fall back rather than error
+    end;
+peel_optional_int_keyword(_Keyword, Tokens, Default) ->
+    {Default, Tokens}.
+
+validate_yarns_mode(<<"poly">>) -> ok;
+validate_yarns_mode(<<"mono">>) -> ok;
+validate_yarns_mode(<<"unison">>) -> ok;
+validate_yarns_mode(M) ->
+    {error, <<"unknown yarns mode `", M/binary,
+              "` — expected `poly` / `mono` / `unison`">>}.
+
+validate_yarns_alloc(<<"round-robin">>) -> ok;
+validate_yarns_alloc(<<"steal-oldest">>) ->
+    {error, <<"alloc `steal-oldest` not implemented in v1 — use "
+              "`round-robin` or omit (default)">>};
+validate_yarns_alloc(<<"steal-newest">>) ->
+    {error, <<"alloc `steal-newest` not implemented in v1 — use "
+              "`round-robin` or omit (default)">>};
+validate_yarns_alloc(A) ->
+    {error, <<"unknown yarns alloc `", A/binary,
+              "` — only `round-robin` supported in v1">>}.
 
 %% Chord cell parser. Cell text shape:
 %%
@@ -2249,8 +2444,15 @@ bin_join([H | T], Sep) ->
 %% convention purerl-tidal already uses for FH-2 routing.
 
 is_drumkit_ok_reply(Reply) ->
-    case Reply of
-        <<"OK apply-drumkit ", _/binary>> -> true;
+    is_apply_ok_reply(<<"drumkit">>, Reply).
+
+%% Verb-parameterised reply check. Matches replies of the form
+%% `OK apply-<verb> <name> voices=…` produced by the daemon's
+%% applyMacroEnvelope helper. Used for drumkit / chord / yarns.
+is_apply_ok_reply(Verb, Reply) ->
+    Prefix = <<"OK apply-", Verb/binary, " ">>,
+    case binary:match(Reply, Prefix) of
+        {0, _} -> true;
         _ -> false
     end.
 
@@ -2332,6 +2534,28 @@ register_chord_binding(ChordName, ShapeName, BaseChannel, VoiceCount) ->
                          velocity    => 100,
                          durationMs  => 200}}]),
     tidal_dispatcher:set_binding(ChordName, Binding).
+
+%% Install yarns allocator state AND a single YarnsDispatch binding
+%% under the yarns name. Allocator state goes first so the first
+%% dispatch event has somewhere to allocate against.
+%%
+%% `{yarnsDispatch, #{...}}` is the purs-backend-erl encoding of
+%% the YarnsDispatch record constructor.
+register_yarns_binding(YarnsName, Mode, Alloc, GlideMs,
+                       BaseChannel, VoiceCount) ->
+    tidal_dispatcher:register_midi_device(<<"fh2">>, <<"FH-2">>, 0.0),
+    tidal_yarns_state:install(YarnsName, Mode, Alloc, VoiceCount),
+    Binding = array:from_list(
+      [{yarnsDispatch, #{device      => <<"fh2">>,
+                         baseChannel => BaseChannel,
+                         voiceCount  => VoiceCount,
+                         mode        => Mode,
+                         alloc       => Alloc,
+                         glideMs     => GlideMs,
+                         defaultNote => 60,
+                         velocity    => 100,
+                         durationMs  => 200}}]),
+    tidal_dispatcher:set_binding(YarnsName, Binding).
 
 fh2_daemon_socket_path() ->
     case os:getenv("HOME") of
