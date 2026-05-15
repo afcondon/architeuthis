@@ -59,14 +59,31 @@ Send these messages in order (response after each):
 
 ```
 midi-device iac "IAC Driver Tidal"
-→ OK: midi-device iac → IAC Driver Tidal
+→ OK: midi-device iac = IAC Driver Tidal (lat 0.0ms)
 
 bind bass1 midi-note iac 1 36 100 50
-→ OK: bound bass1 → midi-note(iac, ch=1, note=36, vel=100, dur=50ms)
+→ OK: bind bass1 midi-note iac 1 36 100 50
 
 play-armed bass1 Mcalypsobass1
 → OK: play-armed bass1 Mcalypsobass1
 ```
+
+**Scripted alternative** (one-shot, no interactive session):
+
+```bash
+(sleep 1; \
+ echo 'midi-device iac "IAC Driver Tidal"'; sleep 1; \
+ echo 'bind bass1 midi-note iac 1 36 100 50'; sleep 1; \
+ echo 'play-armed bass1 Mcalypsobass1'; sleep 3) \
+| wscat -c ws://localhost:3012/ws
+```
+
+The **leading `sleep 1` is required** — wscat 6.1.0 swallows the
+first stdin line before the WebSocket upgrade handshake completes.
+Without it, `midi-device` gets lost silently and downstream MIDI
+events evaporate (the voice tries to send to an unregistered
+device alias). Confirm via `state` that `midiDevices` is non-empty
+before troubleshooting elsewhere.
 
 After the third command, **Ableton should start receiving MIDI**
 on the IAC Driver Tidal channel 1. The pattern is bass1A's
