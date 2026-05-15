@@ -846,11 +846,11 @@ handle_pattern_message(Text, State) ->
                     %% without separate Level-2 wire commands.
                     Summary =
                         case tidal_session_walker:walk_baseline() of
-                            {ok, #{devices := D, bindings := B}} ->
+                            {ok, #{devices := D, channels := C}} ->
                                 iolist_to_binary([
                                     " (",
                                     integer_to_binary(D), " device(s), ",
-                                    integer_to_binary(B), " binding(s))"]);
+                                    integer_to_binary(C), " channel(s))"]);
                             {error, _} ->
                                 <<>>
                         end,

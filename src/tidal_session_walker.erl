@@ -1,26 +1,32 @@
 %% @doc Walks the typeful-cues baseline module (Calypso.Generated.Session)
-%% after a hot reload, registering devices and bindings into the existing
+%% after a hot reload, registering devices and channels into the existing
 %% tidal_dispatcher so that arming a cue against a typeful tvoice (e.g.
 %% `bass1`) finds the binding without the user having to fire Level-2
 %% wire commands separately.
 %%
-%% The PureScript newtypes (MidiDevice, MidiNote, Cue, Session) compile
-%% down to bare Erlang maps with no constructor tag, so dispatch happens
-%% by keys-present rather than by atom tag. Distinct key sets:
+%% purs-backend-erl encoding:
+%%   data MidiDevice = MidiDevice String Int
+%%     → {midiDevice, NameBin, LatencyInt}
+%%   data Channel = Channel MidiDevice Int Int Int Int
+%%     → {channel, DeviceTuple, Ch, Note, Vel, Dur}
+%%   newtype Cue (mvoice :: Symbol) = Cue { destination, body }
+%%     → #{destination => …, body => …}        (newtype elision)
+%%   newtype Session = Session { devices, channels, cues }
+%%     → #{devices => …, channels => …, cues => …}
 %%
-%%   device:    #{name, latency}
-%%   midi-note: #{device, channel, note, velocity, duration}
-%%   cue:       #{destination, body}              — skipped here
-%%   session:   #{devices, bindings, cues}        — skipped (we walk
-%%                                                  exports directly)
+%% We classify by:
+%%   - constructor tag (first element) for tuple-encoded data
+%%   - keys-present for newtype-elided record maps
 %%
-%% Devices register first; bindings second so device-content-to-alias
-%% lookup is populated. We reuse `set_binding_from_spec` by synthesising
-%% the same Level-2 `midi-note <alias> <ch> <note> <vel> <dur>` strings
-%% the parser already handles — no new code path on the PS side.
+%% Devices register first (builds a content→alias map keyed by the
+%% device tuple); channels register second, looking up their embedded
+%% device tuple to recover the alias.  We reuse `set_binding_from_spec`
+%% by synthesising the same Level-2 `midi-note <alias> <ch> <note>
+%% <vel> <dur>` strings the parser already handles — no new code path
+%% on the PS side.
 %%
-%% New binding kinds (Cv, Gate, MidiCc, …) get added as additional
-%% classify/1 arms when they land in Calypso.Prelude.
+%% Future binding kinds (Cv, Gate, Cc) become additional Channel
+%% constructors and additional classify/1 + register arms here.
 -module(tidal_session_walker).
 
 -export([walk_baseline/0]).
@@ -34,16 +40,15 @@ walk_baseline() ->
             {error, not_loaded};
         true ->
             Exports = Module:module_info(exports),
-            %% Only 0-arity user functions — module_info is BEAM bookkeeping.
             Zeros =
                 [Name
                  || {Name, 0} <- Exports,
                     Name =/= module_info],
             Values = [{N, safe_call(Module, N)} || N <- Zeros],
             DeviceContentToAlias = register_devices(Values),
-            register_bindings(Values, DeviceContentToAlias),
+            register_channels(Values, DeviceContentToAlias),
             {ok, #{devices => maps:size(DeviceContentToAlias),
-                   bindings => count_kind(Values, midi_note)}}
+                   channels => count_kind(Values, channel)}}
     end.
 
 safe_call(Module, Name) ->
@@ -62,8 +67,8 @@ register_devices(Values) ->
         fun({Name, V}, Acc) ->
             case classify(V) of
                 device ->
-                    DevName = maps:get(name, V),
-                    Lat = trunc(maps:get(latency, V, 0)),
+                    DevName = element(2, V),
+                    Lat = element(3, V),
                     AliasBin = atom_to_binary(Name, utf8),
                     tidal_dispatcher:register_midi_device(
                         AliasBin, DevName, Lat),
@@ -75,18 +80,18 @@ register_devices(Values) ->
         #{},
         Values).
 
-register_bindings(Values, DeviceContentToAlias) ->
+register_channels(Values, DeviceContentToAlias) ->
     lists:foreach(
         fun({Name, V}) ->
             case classify(V) of
-                midi_note ->
-                    Device = maps:get(device, V),
+                channel ->
+                    Device = element(2, V),
                     case maps:find(Device, DeviceContentToAlias) of
                         {ok, Alias} ->
-                            Ch  = maps:get(channel, V),
-                            N   = maps:get(note, V),
-                            Vel = maps:get(velocity, V),
-                            Dur = maps:get(duration, V),
+                            Ch  = element(3, V),
+                            N   = element(4, V),
+                            Vel = element(5, V),
+                            Dur = element(6, V),
                             Spec = iolist_to_binary([
                                 "midi-note ", Alias, " ",
                                 integer_to_binary(Ch), " ",
@@ -99,8 +104,8 @@ register_bindings(Values, DeviceContentToAlias) ->
                                 BindName, Spec);
                         error ->
                             tidal_log:debug(
-                                "session_walker: binding ~p references "
-                                "unknown device map ~p~n",
+                                "session_walker: channel ~p references "
+                                "unknown device tuple ~p~n",
                                 [Name, Device])
                     end;
                 _ ->
@@ -112,18 +117,20 @@ register_bindings(Values, DeviceContentToAlias) ->
 count_kind(Values, Kind) ->
     length([V || {_, V} <- Values, classify(V) =:= Kind]).
 
+classify(V) when is_tuple(V), tuple_size(V) >= 1 ->
+    case element(1, V) of
+        midiDevice -> device;
+        channel    -> channel;
+        _          -> unknown
+    end;
 classify(V) when is_map(V) ->
     Keys = maps:keys(V),
     Has = fun(K) -> lists:member(K, Keys) end,
-    case {Has(devices) andalso Has(bindings) andalso Has(cues),
-          Has(destination) andalso Has(body),
-          Has(device) andalso Has(channel) andalso Has(note),
-          Has(name) andalso Has(latency) andalso not Has(channel)} of
-        {true,  _, _, _} -> session;
-        {_, true, _, _}  -> cue;
-        {_, _, true, _}  -> midi_note;
-        {_, _, _, true}  -> device;
-        _                -> unknown
+    case {Has(devices) andalso Has(channels) andalso Has(cues),
+          Has(destination) andalso Has(body)} of
+        {true, _} -> session;
+        {_, true} -> cue;
+        _         -> unknown
     end;
 classify(_) ->
     unknown.
