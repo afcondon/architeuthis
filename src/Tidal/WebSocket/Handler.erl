@@ -827,6 +827,12 @@ handle_pattern_message(Text, State) ->
             ErlAtom = list_to_atom(
                 "tidal_generated_" ++
                 string:lowercase(binary_to_list(Module)) ++ "@ps"),
+            %% Force reload from ebin/ so a re-built bridge module
+            %% (the typeful-cues arm-switch path; daemon rewrites the
+            %% bridge between arms) takes effect. Old version is purged;
+            %% any running tidal_voice keeps its prior fun-ref until
+            %% set_voice_pat below installs the new Pattern.
+            _ = code:load_file(ErlAtom),
             case tidal_dispatcher:lookup_binding(MvoiceName) of
                 {just, Binding} ->
                     try ErlAtom:pattern() of
