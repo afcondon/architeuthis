@@ -32,3 +32,5 @@ spago.lock
 
 # Generated cell modules (hash-named; kept Mtest.purs as reference)
 src/Tidal/Generated/M[0-9a-f]*.purs
+# Typeful-cues integration bridge — manually authored, not a generated cell
+!src/Tidal/Generated/Mcalypsobass1.purs
