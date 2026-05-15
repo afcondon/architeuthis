@@ -70,6 +70,8 @@ erl: ps
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_control_bus.erl
 	@# Per-yarns-cell voice allocator state (yarns macro verb).
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_yarns_state.erl
+	@# Phase 4 typeful-cues Session walker (reload-baseline path).
+	@erlc -disable-feature maybe_expr -o ebin src/tidal_session_walker.erl
 	@echo "==> Build complete. BEAM files in ebin/"
 
 # Run tests

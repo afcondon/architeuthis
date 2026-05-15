@@ -50,7 +50,7 @@ qd2A :: Cue "drums"
 qd2A = on qd2 (mini "~ ~ sn ~ ~ ~ sn ~")
 
 bass1A :: Cue "bass"
-bass1A = on bass1 (mini "c2 e2 g2 ~ b2 ~ g2 e2")
+bass1A = on bass1 (mini "c2 e2 g2 ~ b2 ~ g2 e2") 
 
 bass1B :: Cue "bass"
 bass1B = on bass1 (mini "c3 c3 ~ g2 ~ c3 e3 ~")

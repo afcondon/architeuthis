@@ -186,6 +186,17 @@ try_parse_prefixed(<<"set-control ", Rest/binary>>) ->
             end;
         _ -> none
     end;
+try_parse_prefixed(<<"reload-baseline">>) ->
+    %% reload-baseline — code:load_file the typeful-cues baseline module
+    %% (Calypso.Generated.Session). Used by Calypso's /session-source
+    %% endpoint after writing + building a new typeful session. Voice
+    %% gen_servers keep their currently-captured Pattern funs; calls
+    %% inside those funs late-bind to the freshly-loaded Session, so
+    %% currently-playing cues may pick up new bodies automatically. Re-
+    %% arming guarantees a clean swap.
+    {reload_baseline};
+try_parse_prefixed(<<"reload-baseline ", _/binary>>) ->
+    {reload_baseline};
 try_parse_prefixed(<<"play-armed ", Rest/binary>>) ->
     %% play-armed <mvoiceName> <moduleName> — install a previously-cued
     %% module's pattern/0 export into the named voice.  The mvoice name
@@ -806,6 +817,53 @@ handle_pattern_message(Text, State) ->
                           DetailBin/binary>>},
                     {reply, Reply, State}
             end;
+        {reload_baseline} ->
+            %% Force-load the typeful-cues baseline from ebin/. The
+            %% Calypso server has just written + built a new
+            %% Calypso.Generated.Session.purs, erlc'd the resulting
+            %% .erl, and dropped the .beam in ebin/ — this reads it.
+            %%
+            %% BEAM keeps at most two versions of a module (current +
+            %% one old). load_file does an implicit soft_purge of the
+            %% old slot; if anything still references it, load fails
+            %% with {error, not_purged}. We attempt soft_purge first
+            %% (no kill) and fall back to a force purge (kills any
+            %% process still running old code). For live-coding, that
+            %% means voices using the old Session may be terminated
+            %% and need re-arming — that's the trade-off for keeping
+            %% fire-typeful idempotent.
+            BaselineAtom = 'calypso_generated_session@ps',
+            _ = case code:soft_purge(BaselineAtom) of
+                    true -> ok;
+                    false -> code:purge(BaselineAtom)
+                end,
+            case code:load_file(BaselineAtom) of
+                {module, _} ->
+                    %% Walk the freshly-loaded module's 0-arity exports
+                    %% and register every MidiDevice / MidiNote it finds
+                    %% with the dispatcher. After this, `arm` against a
+                    %% typeful tvoice (e.g. `bass1`) resolves the binding
+                    %% without separate Level-2 wire commands.
+                    Summary =
+                        case tidal_session_walker:walk_baseline() of
+                            {ok, #{devices := D, bindings := B}} ->
+                                iolist_to_binary([
+                                    " (",
+                                    integer_to_binary(D), " device(s), ",
+                                    integer_to_binary(B), " binding(s))"]);
+                            {error, _} ->
+                                <<>>
+                        end,
+                    Reply = {text,
+                             <<"OK: reload-baseline", Summary/binary>>},
+                    {reply, Reply, State};
+                {error, LoadErr} ->
+                    ErrBin = list_to_binary(
+                        io_lib:format("~p", [LoadErr])),
+                    Reply = {text,
+                             <<"ERR reload-baseline: ", ErrBin/binary>>},
+                    {reply, Reply, State}
+            end;
         {play_armed, MvoiceName, Module} ->
             %% Install a previously-cued module's pattern into the
             %% named mvoice's voice gen_server.  Pre-condition: the
@@ -829,9 +887,18 @@ handle_pattern_message(Text, State) ->
                 string:lowercase(binary_to_list(Module)) ++ "@ps"),
             %% Force reload from ebin/ so a re-built bridge module
             %% (the typeful-cues arm-switch path; daemon rewrites the
-            %% bridge between arms) takes effect. Old version is purged;
-            %% any running tidal_voice keeps its prior fun-ref until
-            %% set_voice_pat below installs the new Pattern.
+            %% bridge between arms) takes effect.
+            %%
+            %% BEAM only holds two versions of a module (current + old).
+            %% After two prior arms of the same tvoice the OLD slot is
+            %% full; load_file would fail silently with {error, not_purged}.
+            %% Soft_purge if possible, force-purge if a voice fun still
+            %% references old code. The voice will pick up the new
+            %% pattern below via set_voice_pat.
+            _ = case code:soft_purge(ErlAtom) of
+                    true -> ok;
+                    false -> code:purge(ErlAtom)
+                end,
             _ = code:load_file(ErlAtom),
             case tidal_dispatcher:lookup_binding(MvoiceName) of
                 {just, Binding} ->
