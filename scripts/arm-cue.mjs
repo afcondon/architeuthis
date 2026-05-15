@@ -6,16 +6,27 @@
 //        node scripts/arm-cue.mjs bass1 bass1B
 //
 // Synthesises a bridge module Tidal.Generated.M<tvoice> that extracts
-// the body from <cue-name>'s typeful Cue value, builds it via
-// spago/purs-backend-erl, erlc's the resulting .erl, then sends
+// the body from <cue-name>'s typeful Cue value, builds it via purs +
+// `purs-backend-erl --filter` (scoped emit; see purerl-leaf-edit-
+// benchmark findings), erlc's the resulting .erl, then sends
 // `play-armed <tvoice> M<tvoice>` over the WS.  The handler's
 // code:load_file step forces the BEAM to pick up the freshly-built
 // .beam; the voice gen_server's pattern swaps on the next cycle.
 //
-// Demonstrates cue hot-switching via the typeful path with no further
-// changes to purerl-tidal beyond the play-armed handler's load_file
-// call.
-import { writeFileSync, statSync } from 'node:fs'
+// Glob caching: the script needs the full purs source-file glob to
+// invoke purs compile directly (bypassing spago's overhead). On first
+// run it dumps the glob via `spago build --verbose` and caches it to
+// .arm-cue/purs-glob.txt. Subsequent runs read the cache, which is
+// invalidated by `rm .arm-cue/purs-glob.txt` or when spago.yaml is
+// newer than the cache.
+import {
+  writeFileSync,
+  readFileSync,
+  existsSync,
+  statSync,
+  mkdirSync,
+  rmSync,
+} from 'node:fs'
 import { execSync, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
@@ -46,7 +57,6 @@ const bridgePsPath = join(
   'Generated',
   `M${tvoiceTail}.purs`
 )
-// The Erlang atom that play-armed will reach for, lowercased
 const bridgeErlBase = `tidal_generated_m${tvoiceTail}@ps`
 const bridgeErlPath = join(
   repoRoot,
@@ -54,7 +64,10 @@ const bridgeErlPath = join(
   bridgeModule,
   `${bridgeErlBase}.erl`
 )
+const buildTxt = join(repoRoot, 'output-erl', 'build.txt')
 const beamOut = join(repoRoot, 'ebin')
+const cacheDir = join(repoRoot, '.arm-cue')
+const globCachePath = join(cacheDir, 'purs-glob.txt')
 
 // ---------------------------------------------------------------------------
 // 1. Write the bridge module
@@ -74,31 +87,100 @@ writeFileSync(bridgePsPath, bridgeSrc)
 console.log(`[arm-cue] wrote ${bridgePsPath}`)
 
 // ---------------------------------------------------------------------------
-// 2. Build via spago (full path for now; --filter scoping comes later)
-const t0 = Date.now()
-console.log('[arm-cue] spago build…')
-const build = spawnSync('spago', ['build'], {
-  cwd: repoRoot,
-  stdio: ['ignore', 'pipe', 'pipe'],
-  encoding: 'utf-8',
-})
-if (build.status !== 0) {
-  console.error('[arm-cue] spago build FAILED:')
-  console.error(build.stdout)
-  console.error(build.stderr)
-  process.exit(2)
+// 2. Get the purs glob (cached after first run)
+mkdirSync(cacheDir, { recursive: true })
+
+function deriveGlob() {
+  console.log('[arm-cue] deriving purs glob via `spago build --verbose`…')
+  const r = spawnSync('spago', ['build', '--verbose'], {
+    cwd: repoRoot,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    encoding: 'utf-8',
+  })
+  // The verbose output includes a `purs compile --codegen corefn,docs
+  // --json-errors <huge glob>` line we want to extract.
+  const lines = (r.stdout + r.stderr).split('\n')
+  for (const line of lines) {
+    const i = line.indexOf('purs compile ')
+    if (i >= 0) return line.slice(i + 'purs compile '.length).trim()
+  }
+  throw new Error('could not extract purs glob from spago --verbose output')
 }
-const tBuild = Date.now() - t0
-console.log(`[arm-cue] spago build done in ${tBuild}ms`)
+
+let pursGlob
+const spagoYaml = join(repoRoot, 'spago.yaml')
+const cacheStale =
+  !existsSync(globCachePath) ||
+  statSync(globCachePath).mtimeMs < statSync(spagoYaml).mtimeMs
+if (cacheStale) {
+  pursGlob = deriveGlob()
+  writeFileSync(globCachePath, pursGlob)
+  console.log(`[arm-cue] cached purs glob to ${globCachePath}`)
+} else {
+  pursGlob = readFileSync(globCachePath, 'utf-8').trim()
+}
 
 // ---------------------------------------------------------------------------
-// 3. erlc the bridge .erl → ebin/<bridgeErlBase>.beam
+// 3. Run purs compile directly to refresh corefn (much faster than spago)
+const t0 = Date.now()
+console.log('[arm-cue] purs compile (incremental)…')
+const tPurs0 = Date.now()
+// purs accepts the glob as a shell expansion; bash -O globstar makes
+// '**/*.purs' expand to all matching files (default /bin/sh / bash
+// have globstar disabled).
+const pursResult = spawnSync(
+  'bash',
+  ['-O', 'globstar', '-c', `purs compile ${pursGlob}`],
+  {
+    cwd: repoRoot,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    encoding: 'utf-8',
+  }
+)
+if (pursResult.status !== 0) {
+  console.error('[arm-cue] purs compile FAILED:')
+  console.error(pursResult.stdout)
+  console.error(pursResult.stderr)
+  process.exit(2)
+}
+const tPurs = Date.now() - tPurs0
+console.log(`[arm-cue] purs compile done in ${tPurs}ms`)
+
+// ---------------------------------------------------------------------------
+// 4. Invalidate backend-erl cache; run scoped emit via --filter
+console.log(`[arm-cue] backend-erl --filter ${bridgeModule}`)
+const tBe0 = Date.now()
+try {
+  rmSync(buildTxt)
+} catch (_) {
+  /* may not exist */
+}
+const beResult = spawnSync(
+  'node_modules/.bin/purs-backend-erl',
+  ['--filter', bridgeModule],
+  {
+    cwd: repoRoot,
+    stdio: ['ignore', 'pipe', 'pipe'],
+    encoding: 'utf-8',
+  }
+)
+if (beResult.status !== 0) {
+  console.error('[arm-cue] backend-erl FAILED:')
+  console.error(beResult.stdout)
+  console.error(beResult.stderr)
+  process.exit(3)
+}
+const tBe = Date.now() - tBe0
+console.log(`[arm-cue] backend-erl done in ${tBe}ms`)
+
+// ---------------------------------------------------------------------------
+// 5. erlc the bridge .erl → ebin/<bridgeErlBase>.beam
 console.log(`[arm-cue] erlc ${bridgeErlPath}`)
 try {
   statSync(bridgeErlPath)
 } catch (_) {
   console.error(`[arm-cue] bridge .erl not found after build: ${bridgeErlPath}`)
-  process.exit(3)
+  process.exit(4)
 }
 const tErlc0 = Date.now()
 execSync(
@@ -109,28 +191,24 @@ const tErlc = Date.now() - tErlc0
 console.log(`[arm-cue] erlc done in ${tErlc}ms`)
 
 // ---------------------------------------------------------------------------
-// 4. Send play-armed over WS.  Uses Node 22's built-in WebSocket.
+// 6. Send play-armed over WS.  Uses Node 22's built-in WebSocket.
 const tWs0 = Date.now()
 const ws = new WebSocket('ws://localhost:3012/ws')
 
-const armWireModule = `M${tvoiceTail}`  // play-armed lowercases on its end
+const armWireModule = `M${tvoiceTail}`
 const cmds = [
-  `midi-device iac "IAC Driver Tidal"`,         // idempotent device register
-  `bind ${tvoice} midi-note iac 1 36 100 50`,   // idempotent re-bind
+  `midi-device iac "IAC Driver Tidal"`,
+  `bind ${tvoice} midi-note iac 1 36 100 50`,
   `play-armed ${tvoice} ${armWireModule}`,
 ]
 
 await new Promise((resolve, reject) => {
   const replies = []
-  let sent = 0
 
   ws.addEventListener('open', () => {
-    // wscat-style leading delay isn't needed for built-in WebSocket
-    // because we send only after `open` fires
     for (const cmd of cmds) {
       ws.send(cmd)
       console.log(`[arm-cue] → ${cmd}`)
-      sent++
     }
   })
 
@@ -171,5 +249,5 @@ const tWs = Date.now() - tWs0
 const tTotal = Date.now() - t0
 console.log(
   `[arm-cue] DONE  total=${tTotal}ms  ` +
-    `build=${tBuild}ms  erlc=${tErlc}ms  ws=${tWs}ms`
+    `purs=${tPurs}ms  be=${tBe}ms  erlc=${tErlc}ms  ws=${tWs}ms`
 )

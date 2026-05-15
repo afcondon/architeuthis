@@ -96,15 +96,23 @@ swaps on next cycle boundary.
 
 ### Arm-switch cycle measured
 
-- Edit wrapper `qd1A → qd1B`
-- `purs compile` (incremental) + `rm build.txt && backend-erl --filter Calypso.Voices.Qd1`: **2.5s**
-- Content-hash gate + `erlc` one .beam: **0.18s**
-- `code:load_binary` + first call: **<2ms**
-- **Total per arm-switch: ~2.7s**
+Via `scripts/arm-cue.mjs` on the real rig:
 
-Bypassing spago (direct `purs compile` + direct `purs-backend-erl`)
-gives the same timing. spago doesn't add overhead on the hot path;
-the cost is in backend-erl's emit of the 149-module closure.
+| Stage                                    | Time   |
+|------------------------------------------|--------|
+| Write bridge module                      | <10ms  |
+| `purs compile` (incremental)             | 314ms  |
+| `rm build.txt && backend-erl --filter X` | 2509ms |
+| `erlc` one `.erl → .beam`                | 171ms  |
+| WS round-trip (3 commands)               | 134ms  |
+| **Total per arm-switch**                 | **3.1s** |
+
+For comparison, the naive `spago build` full path was **6.5s**;
+the `--filter` optimisation cuts that in half on the real codebase.
+backend-erl's emit of the 149-module dep closure is the floor —
+~17ms × 149 ≈ 2.5s. Andrew confirmed live on rig (2026-05-15) that
+arm bass1A → arm bass1B swaps the bass1 voice without audible
+interruption.
 
 ## End-to-end BEAM load confirmed
 
