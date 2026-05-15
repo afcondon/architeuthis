@@ -67,14 +67,66 @@ architecture is proven end-to-end.
 - `src/Calypso/Prelude.purs` — the DSL surface
 - `src/Calypso/Generated/Session.purs` — hand-written test session
 
+## Voice wrapper validation
+
+`src/Calypso/Voices/Qd1.purs` is the prototype voice wrapper.
+One declaration:
+
+```purescript
+module Calypso.Voices.Qd1 where
+import Calypso.Generated.Session (qd1A)
+import Calypso.Prelude (Cue)
+
+armed :: Cue "drums"
+armed = qd1A
+```
+
+Generated `.erl` is also one declaration:
+
+```erlang
+-module(calypso_voices_qd1@ps).
+-export([armed/0]).
+armed() -> calypso_generated_session@ps:qd1A().
+```
+
+The voice gen_server calls `calypso_voices_qd1@ps:armed/0` to get
+the cue. To switch from qd1A to qd1B, the daemon rewrites this
+file with `qd1B` instead. Scoped emit + hot-load: voice's pattern
+swaps on next cycle boundary.
+
+### Arm-switch cycle measured
+
+- Edit wrapper `qd1A → qd1B`
+- `purs compile` (incremental) + `rm build.txt && backend-erl --filter Calypso.Voices.Qd1`: **2.5s**
+- Content-hash gate + `erlc` one .beam: **0.18s**
+- `code:load_binary` + first call: **<2ms**
+- **Total per arm-switch: ~2.7s**
+
+Bypassing spago (direct `purs compile` + direct `purs-backend-erl`)
+gives the same timing. spago doesn't add overhead on the hot path;
+the cost is in backend-erl's emit of the 149-module closure.
+
+## End-to-end BEAM load confirmed
+
+The Session value loads in BEAM as expected. `session/0` returns
+a map with `bindings`, `devices`, `cues` fields — `bindings` is
+an Erlang array of `{bMidiNote, #{...}}` tagged tuples; `cues` is
+an array of `{anyCue, #{body, destination, mvoice}}` tuples with
+mvoice reflected to a binary string. Body is a `#Fun<...>` ref
+into the pattern infrastructure. This is exactly what
+purerl-tidal's runtime would walk at baseline-load time.
+
 ## Next
 
 - **Phase 1 wrap-up**: extend Calypso.Prelude with the remaining
   binding kinds (Cv, Gate, MidiCc) and polysignal/control/tag
   primitives. The shape is established; the rest is additive.
-- **Phase 2**: build the daemon-side wrapper synthesis logic
-  (write `session/Voices/Qd1.purs` from session AST).
-- **Phase 3**: voice gen_server hot-load wiring.
+- **Phase 2 next**: build the daemon-side orchestrator script.
+  Input: session source + target tvoice. Output: .beam binaries
+  ready to ship over WS. The mechanics are proven; this is
+  packaging.
+- **Phase 3**: voice gen_server hot-load wiring (`{:swap_pattern,
+  Module}` message; capture fun-ref on each swap).
 - **Phase 4+**: Calypso frontend integration.
 
 See `calypso/docs/typeful-cues-plan-2026-05-15.md` for the full
