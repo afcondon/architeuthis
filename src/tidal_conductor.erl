@@ -159,44 +159,59 @@ code_change(_OldVsn, State, _Extra) ->
 %% Internal
 %% =========================================================================
 
-%% Dispatch one arm.  Mirror of the play-armed WS handler arm:
+%% Dispatch one arm.  The cue's destination Channel resolves to a
+%% binding name via the session walker's ETS map; dispatch is then
+%% the same as the `play-armed` WS verb:
 %%   - lookup_binding (discrete) → set_voice_pat
 %%   - else lookup_continuous_binding → set_voice_cont_pat (Pattern
 %%     Pitch coerced to Pattern Number via patternPitchToNumber).
 %% Errors are logged at debug level; the conductor doesn't crash on
 %% individual arm failures so a missing-binding for one voice doesn't
 %% take down the whole section.
-fire_arm(#{mvoice := Mvoice, body := Body}) ->
-    case tidal_dispatcher:lookup_binding(Mvoice) of
+fire_arm(#{destination := Dest, body := Body, mvoice := Mvoice}) ->
+    case tidal_session_walker:lookup_channel_alias(Dest) of
+        {just, BindName} ->
+            install_armed(BindName, Body);
+        nothing ->
+            tidal_log:debug(
+                "conductor: no channel alias for destination ~p "
+                "(mvoice '~s') — re-fire the composition (▶ run) "
+                "so the Session walker registers it~n",
+                [Dest, Mvoice]),
+            ok
+    end.
+
+install_armed(BindName, Body) ->
+    case tidal_dispatcher:lookup_binding(BindName) of
         {just, Binding} ->
-            case tidal_voice_sup:set_voice_pat(Mvoice, Binding, Body) of
+            case tidal_voice_sup:set_voice_pat(BindName, Binding, Body) of
                 ok -> ok;
                 {error, Err} ->
                     tidal_log:debug(
                         "conductor: install (discrete) for '~s' failed: ~p~n",
-                        [Mvoice, Err]),
+                        [BindName, Err]),
                     ok
             end;
         {nothing} ->
-            case tidal_dispatcher:lookup_continuous_binding(Mvoice) of
-                {just, Dest} ->
+            case tidal_dispatcher:lookup_continuous_binding(BindName) of
+                {just, ContDest} ->
                     NumPat =
                         ('tidal_pitch@ps':patternPitchToNumber())(Body),
                     case tidal_voice_sup:set_voice_cont_pat(
-                           Mvoice, Dest, NumPat) of
+                           BindName, ContDest, NumPat) of
                         ok -> ok;
                         {error, Err} ->
                             tidal_log:debug(
                                 "conductor: install (cont) for '~s' "
                                 "failed: ~p~n",
-                                [Mvoice, Err]),
+                                [BindName, Err]),
                             ok
                     end;
                 {nothing} ->
                     tidal_log:debug(
-                        "conductor: no binding for mvoice '~s' — "
+                        "conductor: no binding for '~s' — "
                         "skipping arm~n",
-                        [Mvoice]),
+                        [BindName]),
                     ok
             end
     end.

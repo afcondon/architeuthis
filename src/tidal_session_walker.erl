@@ -29,10 +29,36 @@
 %% constructors and additional classify/1 + register arms here.
 -module(tidal_session_walker).
 
--export([walk_baseline/0]).
+-export([walk_baseline/0,
+         lookup_channel_alias/1]).
 
--define(BASELINE_MODULE, 'calypso_generated_session@ps').
--define(STUDIO_MODULE,   'studio@ps').
+-define(BASELINE_MODULE,    'calypso_generated_session@ps').
+-define(STUDIO_MODULE,      'studio@ps').
+-define(CHANNEL_ALIAS_ETS,  tidal_channel_aliases).
+
+%% Resolve a Channel tuple (the AnyCue.destination value) back to the
+%% binding name it was registered under by `register_channels/2` (the
+%% PureScript identifier — `bass1`, `qd1`, …).  Used by tidal_conductor
+%% to find the right dispatcher binding for a section-fired arm.
+%% Returns `{just, BinName}` or `nothing`.
+lookup_channel_alias(Channel) ->
+    case ets:info(?CHANNEL_ALIAS_ETS) of
+        undefined -> nothing;
+        _ ->
+            case ets:lookup(?CHANNEL_ALIAS_ETS, Channel) of
+                [{_, BindName}] -> {just, BindName};
+                _ -> nothing
+            end
+    end.
+
+ensure_channel_alias_table() ->
+    case ets:info(?CHANNEL_ALIAS_ETS) of
+        undefined ->
+            ets:new(?CHANNEL_ALIAS_ETS,
+                    [named_table, public, set,
+                     {read_concurrency, true}]);
+        _ -> ok
+    end.
 
 walk_baseline() ->
     case erlang:module_loaded(?BASELINE_MODULE) of
@@ -106,6 +132,11 @@ register_devices(Values) ->
         Values).
 
 register_channels(Values, DeviceContentToAlias) ->
+    ensure_channel_alias_table(),
+    %% Drop any aliases from a previous walk: a re-fire could rename
+    %% a channel, and stale entries would point conductor arms at the
+    %% wrong binding.
+    ets:delete_all_objects(?CHANNEL_ALIAS_ETS),
     lists:foreach(
         fun({Name, V}) ->
             case classify(V) of
@@ -125,6 +156,10 @@ register_channels(Values, DeviceContentToAlias) ->
                                 integer_to_binary(Dur)
                             ]),
                             BindName = atom_to_binary(Name, utf8),
+                            %% Record the Channel-value → BindName map
+                            %% so the conductor can resolve arm targets
+                            %% from cue destinations.
+                            ets:insert(?CHANNEL_ALIAS_ETS, {V, BindName}),
                             tidal_dispatcher:set_binding_from_spec(
                                 BindName, Spec);
                         error ->

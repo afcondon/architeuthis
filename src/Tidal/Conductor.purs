@@ -27,7 +27,7 @@ import Data.Maybe (Maybe(..))
 import Data.Rational (Rational, fromInt)
 import Data.Rational as R
 
-import Calypso.Prelude (AnyCue(..), Section)
+import Calypso.Prelude (AnyCue(..), Channel, Section)
 import Tidal.Pattern.Core (queryArcWith)
 import Tidal.Pattern.Types
   ( Event
@@ -43,9 +43,16 @@ import Tidal.Voice (Window) as TV
 -- | One arm command surfaced to the BEAM.  Wall time is the precise
 -- | moment the arm "should" land; today the BEAM fires arms as it
 -- | sees them, but a future scheduler can use this field.
+-- |
+-- | `destination` carries the cue's bound channel (a `Channel` value
+-- | like `bass1` / `qd1`); the BEAM-side `tidal_session_walker` keeps
+-- | an ETS map from Channel → binding name, which the conductor uses
+-- | to find the right voice supervisor.  `mvoice` is the type-level
+-- | phantom (`"bass"`, `"drums"`) preserved for logging only.
 type ArmCommand =
   { wallTimeUs :: Number
   , mvoice :: String
+  , destination :: Channel
   , body :: Pattern Pitch
   }
 
@@ -99,5 +106,6 @@ eventToArm w e =
   in
     { wallTimeUs
     , mvoice: ac.mvoice
+    , destination: ac.destination
     , body: ac.body
     }
