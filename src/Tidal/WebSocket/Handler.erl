@@ -165,13 +165,6 @@ try_parse_prefixed(<<"config bpm ", Rest/binary>>) ->
         {ok, N} -> {set_bpm, N};
         error -> none
     end;
-try_parse_prefixed(<<"cue ", Rest/binary>>) ->
-    %% cue <body> — compile a cell containing <body> into a generated
-    %% PureScript module and hot-load it.  Reply identifies the loaded
-    %% module by name so the frontend can fire it later via play-armed.
-    %% PR2 integrated-test phase: cells export `result :: Int`.  See
-    %% docs/per-cell-compile-plan.md.
-    {cue, Rest};
 try_parse_prefixed(<<"set-control ", Rest/binary>>) ->
     %% set-control <name> <value> — write a single named scalar to
     %% the live control bus (tidal_control_bus).  Cells reading
@@ -198,14 +191,19 @@ try_parse_prefixed(<<"reload-baseline">>) ->
 try_parse_prefixed(<<"reload-baseline ", _/binary>>) ->
     {reload_baseline};
 try_parse_prefixed(<<"play-armed ", Rest/binary>>) ->
-    %% play-armed <mvoiceName> <moduleName> — install a previously-cued
-    %% module's pattern/0 export into the named voice.  The mvoice name
-    %% must already have a binding registered (via `bind <name> <spec>`);
-    %% the loaded module's pattern is handed to tidal_voice_sup:set_voice_pat.
-    %% PR3.  See docs/per-cell-compile-plan.md.
+    %% play-armed <mvoiceName> <cueName> — install a typeful cue's body
+    %% into the named voice.  Resolves the cue by calling
+    %% calypso_generated_session@ps:<cueName>/0 and extracting the `body`
+    %% field from the newtype-elided Cue record.  The mvoice name must
+    %% already have a binding registered (via the Session walker after
+    %% reload-baseline, or `bind <name> <spec>` directly).
+    %%
+    %% Pre-2026-05-16 form was `play-armed <mvoice> <bridgeModule>` —
+    %% see git tag `interpreted-dsl-final-2026-05-16` for the bridge-
+    %% module-per-arm pipeline that this verb replaced.
     case binary:split(trim_binary(Rest), <<" ">>) of
-        [MvoiceName, Module] when MvoiceName =/= <<>>, Module =/= <<>> ->
-            {play_armed, MvoiceName, Module};
+        [MvoiceName, CueName] when MvoiceName =/= <<>>, CueName =/= <<>> ->
+            {play_armed, MvoiceName, CueName};
         _ -> none
     end;
 %% --- Calypso composition-grammar verbs (routing-only) ---------------
@@ -496,28 +494,6 @@ strip_quotes(Bin) ->
 trim_binary(Bin) ->
     list_to_binary(string:trim(binary_to_list(Bin))).
 
-%% Lowercase-hex SHA-256 prefix of a source binary, truncated to N hex
-%% chars.  Used by the `cue` verb to produce stable module names.
-%% PureScript module names disallow underscores so we keep the result
-%% hex-only; the generated module is `Tidal.Generated.M<Hash>`.
-source_hash(Source, N) ->
-    Digest = crypto:hash(sha256, Source),
-    Hex = list_to_binary(
-        [io_lib:format("~2.16.0b", [B]) || <<B>> <= Digest]),
-    binary:part(Hex, 0, N).
-
-%% Render the Detail half of a compile_and_load error tuple as a
-%% binary suitable for the WS reply.  Detail can be:
-%%   - a binary (purs/erlc stderr already captured)
-%%   - {ExitCode, Output} where Output is a binary
-%%   - any other Erlang term (rare; fallback via io_lib:format)
-compile_error_detail({_ExitCode, Output}) when is_binary(Output) ->
-    Output;
-compile_error_detail(B) when is_binary(B) ->
-    B;
-compile_error_detail(Other) ->
-    list_to_binary(io_lib:format("~p", [Other])).
-
 %% Strip a trailing " lat <ms>" suffix from a device-name binary.
 %% Returns {DeviceName, Latency} where Latency is a float (default 0.0
 %% if the suffix is absent or unparseable).
@@ -798,25 +774,6 @@ handle_pattern_message(Text, State) ->
             tidal_control_bus:set(Name, Value),
             ValBin = list_to_binary(io_lib:format("~p", [Value])),
             {reply, {text, <<"OK: ", Name/binary, " = ", ValBin/binary>>}, State};
-        {cue, Body} ->
-            %% Hash the cell body to a stable hex prefix and route to
-            %% tidal_compiler.  See docs/per-cell-compile-plan.md.
-            %% Hash window is 12 hex chars — cheap, near-zero collision
-            %% risk for a session's worth of cells.
-            Hash = source_hash(Body, 12),
-            ModBin = <<"M", Hash/binary>>,
-            case tidal_compiler:compile_and_load(Body, Hash) of
-                {ok, _Module} ->
-                    Reply = {text, <<"OK: cue ", ModBin/binary>>},
-                    {reply, Reply, State};
-                {error, {Stage, Detail}} ->
-                    DetailBin = compile_error_detail(Detail),
-                    StageBin = atom_to_binary(Stage, utf8),
-                    Reply = {text,
-                        <<"ERR cue: [", StageBin/binary, "] ",
-                          DetailBin/binary>>},
-                    {reply, Reply, State}
-            end;
         {reload_baseline} ->
             %% Force-load the typeful-cues baseline from ebin/. The
             %% Calypso server has just written + built a new
@@ -864,16 +821,16 @@ handle_pattern_message(Text, State) ->
                              <<"ERR reload-baseline: ", ErrBin/binary>>},
                     {reply, Reply, State}
             end;
-        {play_armed, MvoiceName, Module} ->
-            %% Install a previously-cued module's pattern into the
-            %% named mvoice's voice gen_server.  Pre-condition: the
-            %% user has registered a binding for MvoiceName via the
-            %% composition pane (any of `midi-note`, `gate`, `cv`,
-            %% `midi-cc-cont`, `cv-cont`, ...).
+        {play_armed, MvoiceName, CueName} ->
+            %% Install a typeful cue's body into the named mvoice's
+            %% voice gen_server.  Pre-condition: the user has fired
+            %% the composition pane at least once (reload-baseline
+            %% loaded Calypso.Generated.Session and the walker
+            %% registered devices + bindings for the named mvoices).
             %%
             %% Two routing paths:
             %%   - discrete binding (lookup_binding succeeds):
-            %%       hand the loaded Pattern String to set_voice_pat.
+            %%       hand the Pattern String to set_voice_pat.
             %%   - continuous binding (lookup_continuous_binding):
             %%       fmap-parse Pattern String → Pattern Number via
             %%       Tidal.Pattern.Core.patternStringToNumber, then
@@ -882,35 +839,17 @@ handle_pattern_message(Text, State) ->
             %%       for CC / CV).
             %%
             %% Phase preserved across replacement (see Tidal.Voice).
-            ErlAtom = list_to_atom(
-                "tidal_generated_" ++
-                string:lowercase(binary_to_list(Module)) ++ "@ps"),
-            %% Force reload from ebin/ so a re-built bridge module
-            %% (the typeful-cues arm-switch path; daemon rewrites the
-            %% bridge between arms) takes effect.
-            %%
-            %% BEAM only holds two versions of a module (current + old).
-            %% After two prior arms of the same tvoice the OLD slot is
-            %% full; load_file would fail silently with {error, not_purged}.
-            %% Soft_purge if possible, force-purge if a voice fun still
-            %% references old code. The voice will pick up the new
-            %% pattern below via set_voice_pat.
-            _ = case code:soft_purge(ErlAtom) of
-                    true -> ok;
-                    false -> code:purge(ErlAtom)
-                end,
-            _ = code:load_file(ErlAtom),
-            case tidal_dispatcher:lookup_binding(MvoiceName) of
-                {just, Binding} ->
-                    try ErlAtom:pattern() of
-                        Pat ->
+            case resolve_cue_body(CueName) of
+                {ok, Pat} ->
+                    case tidal_dispatcher:lookup_binding(MvoiceName) of
+                        {just, Binding} ->
                             case tidal_voice_sup:set_voice_pat(
                                    MvoiceName, Binding, Pat) of
                                 ok ->
                                     Reply = {text,
                                              <<"OK: play-armed ",
                                                MvoiceName/binary, " ",
-                                               Module/binary>>},
+                                               CueName/binary>>},
                                     {reply, Reply, State};
                                 {error, InstallErr} ->
                                     InstallBin = list_to_binary(
@@ -919,34 +858,20 @@ handle_pattern_message(Text, State) ->
                                              <<"ERR play-armed: install: ",
                                                InstallBin/binary>>},
                                     {reply, Reply, State}
-                            end
-                    catch
-                        Class:What ->
-                            ClassBin = atom_to_binary(Class, utf8),
-                            WhatBin = list_to_binary(
-                                io_lib:format("~p", [What])),
-                            Reply = {text,
-                                     <<"ERR play-armed: ",
-                                       ClassBin/binary, ": ",
-                                       WhatBin/binary>>},
-                            {reply, Reply, State}
-                    end;
-                {nothing} ->
-                    case tidal_dispatcher:lookup_continuous_binding(
-                           MvoiceName) of
-                        {just, Dest} ->
-                            try ErlAtom:pattern() of
-                                StrPat ->
+                            end;
+                        {nothing} ->
+                            case tidal_dispatcher:lookup_continuous_binding(
+                                   MvoiceName) of
+                                {just, Dest} ->
                                     NumPat = ('tidal_pattern_core@ps':
-                                                patternStringToNumber())(
-                                                StrPat),
+                                                patternStringToNumber())(Pat),
                                     case tidal_voice_sup:set_voice_cont_pat(
                                            MvoiceName, Dest, NumPat) of
                                         ok ->
                                             Reply = {text,
                                                      <<"OK: play-armed ",
                                                        MvoiceName/binary, " ",
-                                                       Module/binary>>},
+                                                       CueName/binary>>},
                                             {reply, Reply, State};
                                         {error, InstallErr} ->
                                             InstallBin = list_to_binary(
@@ -955,28 +880,21 @@ handle_pattern_message(Text, State) ->
                                                      <<"ERR play-armed: install: ",
                                                        InstallBin/binary>>},
                                             {reply, Reply, State}
-                                    end
-                            catch
-                                Class:What ->
-                                    ClassBin = atom_to_binary(Class, utf8),
-                                    WhatBin = list_to_binary(
-                                        io_lib:format("~p", [What])),
+                                    end;
+                                {nothing} ->
                                     Reply = {text,
-                                             <<"ERR play-armed: ",
-                                               ClassBin/binary, ": ",
-                                               WhatBin/binary>>},
+                                             <<"ERR play-armed: no binding for '",
+                                               MvoiceName/binary,
+                                               "'.  Fire the composition first "
+                                               "(▶ run) so the Session walker "
+                                               "can register channels.">>},
                                     {reply, Reply, State}
-                            end;
-                        {nothing} ->
-                            Reply = {text,
-                                     <<"ERR play-armed: no binding for '",
-                                       MvoiceName/binary,
-                                       "'.  Declare one first in the "
-                                       "composition pane (e.g. `midi-note`, "
-                                       "`gate`, `cv`, `midi-cc-cont`, "
-                                       "`cv-cont`).">>},
-                            {reply, Reply, State}
-                    end
+                            end
+                    end;
+                {error, ErrBin} ->
+                    Reply = {text,
+                             <<"ERR play-armed: ", ErrBin/binary>>},
+                    {reply, Reply, State}
             end;
         {alias_recorded, Verb, Alias, Detail} ->
             %% Composition-grammar device verbs that don't back a
@@ -2422,6 +2340,47 @@ fh2_daemon_socket_path() ->
     case os:getenv("HOME") of
         false -> "/tmp/fh2-control.sock";
         Home -> Home ++ "/.fh2/control.sock"
+    end.
+
+%% Resolve a typeful cue's body Pattern from the loaded Session module.
+%% Returns {ok, Pat} or {error, ErrBin}. The Calypso server's
+%% /session-source path arranges for calypso_generated_session@ps to be
+%% loaded with the user's cues exported as 0-arity functions returning
+%% #{destination => ..., body => Pat} (newtype Cue elision).
+resolve_cue_body(CueName) ->
+    SessionAtom = 'calypso_generated_session@ps',
+    CueAtom = binary_to_atom(CueName, utf8),
+    case erlang:function_exported(SessionAtom, CueAtom, 0) of
+        false ->
+            case code:is_loaded(SessionAtom) of
+                false ->
+                    {error,
+                     <<"Session module not loaded.  Fire the composition "
+                       "first (▶ run) to build + load Calypso.Generated."
+                       "Session.">>};
+                _ ->
+                    {error,
+                     <<"cue '", CueName/binary,
+                       "' not found in current Session.  ",
+                       "Add it to the composition pane and fire again.">>}
+            end;
+        true ->
+            try erlang:apply(SessionAtom, CueAtom, []) of
+                #{body := Pat} -> {ok, Pat};
+                Other ->
+                    OtherBin = list_to_binary(io_lib:format("~p", [Other])),
+                    {error,
+                     <<"cue '", CueName/binary,
+                       "' returned unexpected shape (no body field): ",
+                       OtherBin/binary>>}
+            catch
+                Class:What ->
+                    ClassBin = atom_to_binary(Class, utf8),
+                    WhatBin = list_to_binary(io_lib:format("~p", [What])),
+                    {error,
+                     <<"cue '", CueName/binary, "' raised ",
+                       ClassBin/binary, ": ", WhatBin/binary>>}
+            end
     end.
 
 fh2_daemon_call(Command) ->
