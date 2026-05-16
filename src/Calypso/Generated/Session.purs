@@ -1,37 +1,13 @@
--- | Spike — hand-written `.tiderl` session for the typeful-cues pipeline.
+-- | The current session — what's playing right now.
 -- |
--- | The real daemon will write sessions like this one based on the
--- | user's .tiderl source.  When this compiles cleanly, the
--- | Calypso.Prelude MVP is validated.
+-- | Devices + channels are factored out into [[Studio]] (the rig
+-- | declaration).  This module is mostly cues — what notes go where.
+-- | Rewritten by the Calypso server on every ▶ run; edited by hand
+-- | only when the user takes the pen.
 module Calypso.Generated.Session where
 
 import Calypso.Prelude
-
--- ---------------------------------------------------------------------------
--- Devices
--- ---------------------------------------------------------------------------
-
-fh2 :: MidiDevice
-fh2 = MidiDevice "FH-2" 0
-
-fh2qd :: MidiDevice
-fh2qd = MidiDevice "FH-2" 69
-
-iac :: MidiDevice
-iac = MidiDevice "IAC Driver Tidal" 30
-
--- ---------------------------------------------------------------------------
--- Channels
--- ---------------------------------------------------------------------------
-
-qd1 :: Channel
-qd1 = Channel fh2qd 14 60 100 50
-
-qd2 :: Channel
-qd2 = Channel fh2qd 15 60 100 50
-
-bass1 :: Channel
-bass1 = Channel iac 1 36 100 50
+import Studio (fh2, fh2qd, iac, qd1, qd2, bass1)
 
 -- ---------------------------------------------------------------------------
 -- Cues

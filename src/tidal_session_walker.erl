@@ -32,24 +32,49 @@
 -export([walk_baseline/0]).
 
 -define(BASELINE_MODULE, 'calypso_generated_session@ps').
+-define(STUDIO_MODULE,   'studio@ps').
 
 walk_baseline() ->
-    Module = ?BASELINE_MODULE,
-    case erlang:module_loaded(Module) of
+    case erlang:module_loaded(?BASELINE_MODULE) of
         false ->
             {error, not_loaded};
         true ->
-            Exports = Module:module_info(exports),
-            Zeros =
-                [Name
-                 || {Name, 0} <- Exports,
-                    Name =/= module_info],
-            Values = [{N, safe_call(Module, N)} || N <- Zeros],
-            DeviceContentToAlias = register_devices(Values),
-            register_channels(Values, DeviceContentToAlias),
+            %% Walk Studio (rig declarations: devices + channels) and
+            %% Session (the user's cues, which may also redeclare devices
+            %% if running standalone) together.  Studio is optional —
+            %% Session.purs can stand alone if the user prefers.
+            StudioVals = module_values(?STUDIO_MODULE),
+            SessionVals = module_values(?BASELINE_MODULE),
+            AllVals = StudioVals ++ SessionVals,
+            DeviceContentToAlias = register_devices(AllVals),
+            register_channels(AllVals, DeviceContentToAlias),
             {ok, #{devices => maps:size(DeviceContentToAlias),
-                   channels => count_kind(Values, channel)}}
+                   channels => count_kind(AllVals, channel)}}
     end.
+
+module_values(Module) ->
+    case erlang:module_loaded(Module) of
+        true ->
+            walk_loaded_module(Module);
+        false ->
+            %% BEAM lazy-loads modules on first reference.  The walker
+            %% iterates exports without crossing into Studio, so the
+            %% module never gets implicitly loaded — try explicit load
+            %% before giving up.  Studio is optional: a missing .beam
+            %% is fine, the user may declare devices in Session directly.
+            case code:load_file(Module) of
+                {module, _} -> walk_loaded_module(Module);
+                {error, _}  -> []
+            end
+    end.
+
+walk_loaded_module(Module) ->
+    Exports = Module:module_info(exports),
+    Zeros =
+        [Name
+         || {Name, 0} <- Exports,
+            Name =/= module_info],
+    [{N, safe_call(Module, N)} || N <- Zeros].
 
 safe_call(Module, Name) ->
     try Module:Name() of
