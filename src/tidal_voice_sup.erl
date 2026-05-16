@@ -23,7 +23,8 @@
          remove_voice/1,
          find_voice/1,
          which_voices/0,
-         hush_all/0]).
+         hush_all/0,
+         silence_voice/1]).
 -export([init/1]).
 
 %% =========================================================================
@@ -160,6 +161,18 @@ which_voices() ->
 hush_all() ->
     [gen_server:call(Pid, clear_pattern) || Pid <- which_voices()],
     ok.
+
+%% Per-voice analogue of hush_all/0.  Clears one voice's pattern by
+%% name; binding + phase preserved so re-arming picks up cleanly.
+%% Idempotent: missing voice → ok.
+silence_voice(Name) ->
+    case find_voice(Name) of
+        {ok, Pid} ->
+            gen_server:call(Pid, clear_pattern),
+            ok;
+        not_found ->
+            ok
+    end.
 
 %% =========================================================================
 %% supervisor callback

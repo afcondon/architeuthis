@@ -48,11 +48,16 @@ websocket_handle(_Frame, State) ->
 %%   {bind, Name, ActionSpec}                  — register a named binding
 %%   {unbind, Name}                            — remove a named binding
 %%   {hush}                                    — silence everything (Tidal-compat)
+%%   {silence_one, Name}                       — clear one voice's pattern
 %%   none                                      — try named-binding dispatch
 try_parse_prefixed(<<"hush">>) -> {hush};
 try_parse_prefixed(<<"hush ", _/binary>>) -> {hush};
 try_parse_prefixed(<<"silence">>) -> {hush};
-try_parse_prefixed(<<"silence ", _/binary>>) -> {hush};
+try_parse_prefixed(<<"silence ", Rest/binary>>) ->
+    case trim_binary(Rest) of
+        <<>> -> {hush};
+        Name -> {silence_one, Name}
+    end;
 try_parse_prefixed(<<"log-level ", Rest/binary>>) ->
     try
         N = binary_to_integer(string:trim(Rest, both, "\r \t")),
@@ -542,6 +547,14 @@ handle_pattern_message(Text, State) ->
         {hush} ->
             tidal_voice_sup:hush_all(),
             Reply = {text, <<"OK: hush">>},
+            {reply, Reply, State};
+        {silence_one, Name} ->
+            %% Per-voice silence: clear the pattern but keep the
+            %% voice + binding alive so a subsequent arm restarts
+            %% it cleanly.  Idempotent — silencing a missing or
+            %% already-silent voice is a no-op.
+            tidal_voice_sup:silence_voice(Name),
+            Reply = {text, <<"OK: silence ", Name/binary>>},
             {reply, Reply, State};
         {log_level, N} ->
             tidal_log:set_level(N),
