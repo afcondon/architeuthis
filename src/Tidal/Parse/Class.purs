@@ -118,15 +118,35 @@ instance AtomParseable String where
               <|> (TPat_Atom <$> located stringAtom)
 
 -- | Core string atom parser
--- | Must start with alphanumeric, then can contain :.-_# (the # is
--- | accepted so note names like "f#2" parse as a single atom; the
--- | runtime's noteNameMidi map carries both `#` and `s` spellings).
+-- |
+-- | Two shapes recognised, tried in order:
+-- |
+-- |   1. **Signed integer** — a leading `-` followed by at least one
+-- |      digit, then more digits.  Lets users write `d "1 5 -1"` for
+-- |      degrees below the root; without this leg the leading `-`
+-- |      would fail the atom parser and the whole pattern would
+-- |      silence.  We `try` so a failure here backtracks cleanly into
+-- |      the regular leg (e.g. `-` at the start of something that
+-- |      isn't a number).
+-- |
+-- |   2. **Regular** — starts with an alphanumeric, then can contain
+-- |      `:.-_#` (the `#` is accepted so note names like `f#2` parse
+-- |      as a single atom; the runtime's noteNameMidi map carries
+-- |      both `#` and `s` spellings).
 stringAtom :: TidalParser String
-stringAtom = do
-  first <- liftP alphaNum  -- Must start with letter or digit
-  rest <- liftP $ Array.many validChar
-  pure $ SCU.fromCharArray (Array.cons first rest)
+stringAtom = signedIntAtom <|> regularAtom
   where
+    signedIntAtom = liftP $ PC.try do
+      minus <- char '-'
+      d0 <- digit
+      ds <- Array.many digit
+      pure $ SCU.fromCharArray (Array.cons minus (Array.cons d0 ds))
+
+    regularAtom = do
+      first <- liftP alphaNum
+      rest <- liftP $ Array.many validChar
+      pure $ SCU.fromCharArray (Array.cons first rest)
+
     validChar = alphaNum <|> satisfy \c ->
       c == ':' || c == '.' || c == '-' || c == '_' || c == '#'
 
