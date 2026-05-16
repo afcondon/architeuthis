@@ -29,8 +29,12 @@ module Calypso.Prelude
   , addDevice
   , addChannel
   , addCue
+  -- Sections (Pattern of cues, fired by the conductor)
+  , Section
+  , armCue
   ) where
 
+import Control.Applicative (pure)
 import Data.Semigroup ((<>))
 import Data.Symbol (class IsSymbol, reflectSymbol)
 import Type.Proxy (Proxy(..))
@@ -129,6 +133,29 @@ newtype Session = Session
   , channels :: Array Channel
   , cues     :: Array AnyCue
   }
+
+-- ---------------------------------------------------------------------------
+-- Sections (Pattern of cues)
+-- ---------------------------------------------------------------------------
+
+-- | A `Section` is just `Pattern AnyCue` — a pattern whose events are
+-- | cues that the BEAM-side conductor will arm on their target mvoice
+-- | when each event's cycle arrives.  Composable with every Pattern
+-- | combinator (`cat`, `stack`, `every`, `rev`, `fast`, `slow`, …).
+-- |
+-- | The conductor logic itself lives in `Tidal.Conductor`; this
+-- | module re-exports the user-facing surface so authored Session
+-- | modules only need `import Calypso.Prelude`.
+type Section = Pattern AnyCue
+
+-- | Lift a typed `Cue` into a one-event-per-cycle `Section`.  Reads
+-- | the mvoice phantom into a runtime string via `reflectSymbol` so
+-- | the conductor knows which voice supervisor to dispatch to.
+-- |
+-- |     intro :: Section
+-- |     intro = cat [armCue bass1A, armCue bass1B]
+armCue :: forall mv. IsSymbol mv => Cue mv -> Section
+armCue c = pure (anyCue c)
 
 emptySession :: Session
 emptySession = Session { devices: [], channels: [], cues: [] }

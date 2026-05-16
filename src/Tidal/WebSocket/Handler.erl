@@ -211,6 +211,24 @@ try_parse_prefixed(<<"reload-baseline">>) ->
     {reload_baseline};
 try_parse_prefixed(<<"reload-baseline ", _/binary>>) ->
     {reload_baseline};
+try_parse_prefixed(<<"play-piece ", Rest/binary>>) ->
+    %% play-piece <name> — install the named Section value (a top-level
+    %% `Pattern AnyCue` declaration in Calypso.Generated.Session) into
+    %% the conductor.  On each subsequent clock tick the conductor
+    %% queries the section over the look-ahead window and fires arms
+    %% for events that land in that window — same dispatch path as
+    %% `play-armed`, but driven by the section's own time structure.
+    case trim_binary(Rest) of
+        <<>> -> none;
+        Name -> {play_piece, Name}
+    end;
+try_parse_prefixed(<<"stop-piece">>) ->
+    %% stop-piece — clear the conductor's current piece.  Voices keep
+    %% their last-armed pattern (deliberate: stop halts arrangement,
+    %% not the music).  Idempotent.
+    {stop_piece};
+try_parse_prefixed(<<"stop-piece ", _/binary>>) ->
+    {stop_piece};
 try_parse_prefixed(<<"play-armed ", Rest/binary>>) ->
     %% play-armed <mvoiceName> <cueName> — install a typeful cue's body
     %% into the named voice.  Resolves the cue by calling
@@ -876,6 +894,25 @@ handle_pattern_message(Text, State) ->
                              <<"ERR reload-baseline: ", ErrBin/binary>>},
                     {reply, Reply, State}
             end;
+        {play_piece, Name} ->
+            %% Hand the named Pattern AnyCue value to the conductor.
+            %% The conductor resolves it via
+            %%   calypso_generated_session@ps:<Name>/0
+            %% and on each subsequent clock tick fires arms for the
+            %% events whose `whole.start` lands in the new window.
+            case tidal_conductor:play_piece(Name) of
+                {ok, _} ->
+                    {reply,
+                     {text, <<"OK: play-piece ", Name/binary>>},
+                     State};
+                {error, ErrBin} ->
+                    {reply,
+                     {text, <<"ERR play-piece: ", ErrBin/binary>>},
+                     State}
+            end;
+        {stop_piece} ->
+            ok = tidal_conductor:stop_piece(),
+            {reply, {text, <<"OK: stop-piece">>}, State};
         {play_armed, MvoiceName, CueName} ->
             %% Install a typeful cue's body into the named mvoice's
             %% voice gen_server.  Pre-condition: the user has fired

@@ -72,5 +72,11 @@ init([]) ->
            restart => permanent,
            shutdown => 5000,
            type => worker,
-           modules => [tidal_state_pub]}],
+           modules => [tidal_state_pub]},
+         #{id => tidal_conductor,
+           start => {tidal_conductor, start_link, []},
+           restart => permanent,
+           shutdown => 5000,
+           type => worker,
+           modules => [tidal_conductor]}],
     {ok, {SupFlags, ChildSpecs}}.
