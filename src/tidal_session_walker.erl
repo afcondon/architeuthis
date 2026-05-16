@@ -30,7 +30,8 @@
 -module(tidal_session_walker).
 
 -export([walk_baseline/0,
-         lookup_channel_alias/1]).
+         lookup_channel_alias/1,
+         ensure_channel_alias_table/0]).
 
 -define(BASELINE_MODULE,    'calypso_generated_session@ps').
 -define(STUDIO_MODULE,      'studio@ps').

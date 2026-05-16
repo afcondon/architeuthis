@@ -66,6 +66,13 @@ status() ->
 %% =========================================================================
 
 init([]) ->
+    %% Own the Channel → bind-name ETS map.  The session walker writes
+    %% to it on each ▶ run, but it has to be owned by a long-lived
+    %% process (not a short-lived cowboy WS handler), or it dies along
+    %% with the WS connection that triggered the walk.  The conductor
+    %% is supervised + permanent, so the table lives for the
+    %% application's lifetime.
+    tidal_session_walker:ensure_channel_alias_table(),
     PsState = 'tidal_conductor@ps':initialState(),
     {ok, #{piece => undefined, piece_name => undefined, ps_state => PsState}}.
 
