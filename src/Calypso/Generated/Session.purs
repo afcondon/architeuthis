@@ -28,6 +28,19 @@ bass1A = on bass1 (mini "c2 e2 g2 ~ b2 ~ g2 e2")
 bass1B :: Cue "bass"
 bass1B = on bass1 (mini "c3 c3 ~ g2 ~ c3 e3 ~")
 
+-- Degree-pattern cue — follows the active scale.  Arm against tvoice
+-- `bass`, then at the wire: `set-scale c-mixolydian` (root C4 →
+-- bass plays C4 G4 E4 G4 …) or `set-scale a-harmonic-minor` (root
+-- A4 → bass plays A4 E5 C5 …) and hear the mode change next tick.
+bass1Deg :: Cue "bass"
+bass1Deg = on bass1 (d "1 5 3 5 1 3 5 -1")
+
+-- Mode-pinned cue — eagerly rendered, so `set-scale` does NOT affect
+-- it.  Use this for sections that must stay in a specific mode
+-- regardless of the live key state (verse/chorus modulation).
+bass1Mix :: Cue "bass"
+bass1Mix = on bass1 (inKey cMixolydian (d "1 5 3 5 1 3 5 -1"))
+
 -- ---------------------------------------------------------------------------
 -- The Session value
 -- ---------------------------------------------------------------------------
@@ -36,5 +49,9 @@ session :: Session
 session = Session
   { devices:  [fh2, fh2qd, iac]
   , channels: [qd1, qd2, bass1]
-  , cues:     [anyCue qd1A, anyCue qd1B, anyCue qd2A, anyCue bass1A, anyCue bass1B]
+  , cues:
+      [ anyCue qd1A, anyCue qd1B, anyCue qd2A
+      , anyCue bass1A, anyCue bass1B
+      , anyCue bass1Deg, anyCue bass1Mix
+      ]
   }

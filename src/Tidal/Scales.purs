@@ -75,6 +75,7 @@ module Tidal.Scales
   , inKey
   , transposeDiatonic
   , transposeChromatic
+  , octave
     -- * Legacy interval-table API
   , lookupScale
   , scaleNames
@@ -805,3 +806,9 @@ transposeChromatic offset = map step
     step = case _ of
       Chromatic n -> Chromatic (n + offset)
       other       -> other
+
+-- | Shift a scale's root by `n` octaves.  `octave (-2) cMajor` is C2-
+-- | rooted C major; `octave 1 aMinor` is A5-rooted A minor.  Useful
+-- | for bass / lead voicings of the same mode.
+octave :: Int -> Scale -> Scale
+octave n (Scale s) = Scale (s { root = s.root + 12 * n })
