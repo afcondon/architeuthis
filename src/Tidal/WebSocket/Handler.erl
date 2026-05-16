@@ -184,6 +184,22 @@ try_parse_prefixed(<<"set-control ", Rest/binary>>) ->
             end;
         _ -> none
     end;
+try_parse_prefixed(<<"set-scale ", Rest/binary>>) ->
+    %% set-scale <name> — write the active scale to tidal_scale_bus.
+    %% On the next tick, every voice's Window.activeScale carries the
+    %% new value, and Degree pitches re-render against it — without
+    %% recompile, without per-cue editing, without re-arm.  Names are
+    %% kebab-case (`c-mixolydian`, `a-harmonic-minor`); see
+    %% `Tidal.Scales.namedScales` for the registry.
+    case trim_binary(Rest) of
+        <<>> -> none;
+        Name -> {set_scale, Name}
+    end;
+try_parse_prefixed(<<"clear-scale">>) ->
+    %% clear-scale — drop the active scale.  Degree patterns go silent
+    %% until a new set-scale arrives.  Useful for "all chromatic"
+    %% sections that should ignore key state.
+    {clear_scale};
 try_parse_prefixed(<<"reload-baseline">>) ->
     %% reload-baseline — code:load_file the typeful-cues baseline module
     %% (Calypso.Generated.Session). Used by Calypso's /session-source
@@ -457,7 +473,12 @@ parse_join_segment(Segment) ->
 install_pattern_voice(ParserResult, VoiceName, Binding, VerbLabel,
                       OkBin, State) ->
     case ParserResult of
-        {right, Pat} ->
+        {right, PatStr} ->
+            %% Parser produces Pattern String; voice expects Pattern
+            %% Pitch (the typed substrate).  Lift per-event with the
+            %% mini-classifier (note-shaped → Chromatic, sample-shaped
+            %% → Sample) before installing.
+            Pat = ('tidal_voice@ps':liftStringToPitch())(PatStr),
             tidal_dispatcher:set_binding(VoiceName, Binding),
             case tidal_voice_sup:set_voice_pat(VoiceName, Binding, Pat) of
                 ok ->
@@ -787,6 +808,27 @@ handle_pattern_message(Text, State) ->
             tidal_control_bus:set(Name, Value),
             ValBin = list_to_binary(io_lib:format("~p", [Value])),
             {reply, {text, <<"OK: ", Name/binary, " = ", ValBin/binary>>}, State};
+        {set_scale, Name} ->
+            %% Active-scale ETS write.  Resolves the kebab-case name
+            %% through `Tidal.Scales.lookupScaleByName`; on the next
+            %% tick every voice's Window.activeScale carries the new
+            %% Scale value and Degree pitches re-render against it.
+            case tidal_scale_bus:set_scale(Name) of
+                {ok, _} ->
+                    {reply,
+                     {text, <<"OK: scale = ", Name/binary>>},
+                     State};
+                {error, unknown_scale} ->
+                    {reply,
+                     {text, <<"ERR set-scale: unknown scale '",
+                              Name/binary,
+                              "' (try c-major, c-mixolydian, "
+                              "a-harmonic-minor, d-dorian, …)">>},
+                     State}
+            end;
+        {clear_scale} ->
+            tidal_scale_bus:clear_scale(),
+            {reply, {text, <<"OK: scale cleared">>}, State};
         {reload_baseline} ->
             %% Force-load the typeful-cues baseline from ebin/. The
             %% Calypso server has just written + built a new
@@ -876,8 +918,12 @@ handle_pattern_message(Text, State) ->
                             case tidal_dispatcher:lookup_continuous_binding(
                                    MvoiceName) of
                                 {just, Dest} ->
-                                    NumPat = ('tidal_pattern_core@ps':
-                                                patternStringToNumber())(Pat),
+                                    %% Typed cue body is Pattern Pitch;
+                                    %% continuous voice wants Pattern
+                                    %% Number.  Coerce per-event using
+                                    %% Tidal.Pitch.patternPitchToNumber.
+                                    NumPat = ('tidal_pitch@ps':
+                                                patternPitchToNumber())(Pat),
                                     case tidal_voice_sup:set_voice_cont_pat(
                                            MvoiceName, Dest, NumPat) of
                                         ok ->

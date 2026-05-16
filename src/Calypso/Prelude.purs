@@ -35,6 +35,7 @@ import Data.Semigroup ((<>))
 import Data.Symbol (class IsSymbol, reflectSymbol)
 import Type.Proxy (Proxy(..))
 import Tidal.Cell.Prelude
+import Tidal.Pitch (Pitch)
 
 -- | Right-associative function application — Haskell/Tidal idiom for
 -- | avoiding nested parens: `f $ g $ x` reads as `f (g x)`.  Defined
@@ -79,19 +80,25 @@ data Channel
 
 -- | A Cue is a Pattern bound to a Channel, grouped by mvoice.
 -- | The mvoice Symbol is type-level for cross-checking + UI grouping.
+-- |
+-- | The body is `Pattern Pitch` — the typed substrate carries pitches
+-- | (and samples) all the way to the voice, which renders them to
+-- | dispatcher tokens at emit time using the active scale.  See
+-- | `Tidal.Pitch` for the variant and `Tidal.Scales` for the
+-- | rendering / `inKey` operators.
 newtype Cue (mvoice :: Symbol) = Cue
   { destination :: Channel
-  , body        :: Pattern String
+  , body        :: Pattern Pitch
   }
 
 -- | The standard cue constructor.  The mvoice type variable is usually
 -- | inferred from the declared type ascription.
-on :: forall mv. Channel -> Pattern String -> Cue mv
+on :: forall mv. Channel -> Pattern Pitch -> Cue mv
 on c body = Cue { destination: c, body }
 
 -- | Alternate name when the mvoice is being specified explicitly
 -- | rather than inferred.
-cueOf :: forall mv. Channel -> Pattern String -> Cue mv
+cueOf :: forall mv. Channel -> Pattern Pitch -> Cue mv
 cueOf = on
 
 -- ---------------------------------------------------------------------------
@@ -103,7 +110,7 @@ cueOf = on
 newtype AnyCue = AnyCue
   { mvoice      :: String
   , destination :: Channel
-  , body        :: Pattern String
+  , body        :: Pattern Pitch
   }
 
 -- | Erase the mvoice Symbol into a runtime String.

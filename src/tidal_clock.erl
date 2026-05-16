@@ -88,11 +88,16 @@ running(state_timeout, tick, State) ->
     ControlPairsList = [#{name => K, value => V}
                         || {K, V} <- tidal_control_bus:snapshot()],
     ControlPairs = array:from_list(ControlPairsList),
+    %% Active scale for Degree → MIDI rendering — read once per tick
+    %% so all voices in this pass see the same scale (set-scale
+    %% mid-tick still atomic relative to event emission).
+    ActiveScale = tidal_scale_bus:current_scale(),
     Window = #{currentCycle => ElapsedMs / CycleDur,
                lookAheadCycle => (ElapsedMs + LookAhead) / CycleDur,
                cycleDurationMs => CycleDur,
                nowUnixUs => float(NowUs),
-               controlPairs => ControlPairs},
+               controlPairs => ControlPairs,
+               activeScale => ActiveScale},
     broadcast_compute_window(Window),
     Tick = maps:get(tickIntervalMs, Info),
     {keep_state_and_data, [{state_timeout, Tick, tick}]};

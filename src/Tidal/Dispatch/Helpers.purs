@@ -8,6 +8,7 @@
 -- | runtime state.
 module Tidal.Dispatch.Helpers
   ( noteNameMidi
+  , resolveTokenMidi
   , interpretCV
   , clamp7bit
   , param7bit
@@ -85,6 +86,26 @@ noteNameMidi = Map.fromFoldable (entries <> sharpAliases entries)
       case SCU.toCharArray name of
         [ letter, 's', oct ] -> Just (Tuple (SCU.fromCharArray [letter, '#', oct]) n)
         _ -> Nothing
+
+-- | Resolve a dispatcher-facing token to a MIDI note number.
+-- |
+-- |   1. If the token matches a note name (`c4`, `fs3`), use that.
+-- |   2. Otherwise, if the token parses as an integer (`60`, `36`),
+-- |      use that directly — this is the path taken when the typed
+-- |      `Pitch` substrate has rendered a `Chromatic n` or
+-- |      `Degree d`-via-active-scale event into a number-string.
+-- |   3. Otherwise fall back to the binding's `defaultNote` — bare
+-- |      sample tokens (`bd`, `sn`) hit this leg.
+-- |
+-- | Used by every dispatch arm that resolves a token to a MIDI note
+-- | (MidiNote, Fh2Trigger, YarnsDispatch, ChordDispatch root).
+resolveTokenMidi :: String -> Int -> Int
+resolveTokenMidi token defaultNote =
+  case Map.lookup token noteNameMidi of
+    Just n -> n
+    Nothing -> case Int.fromString token of
+      Just n -> n
+      Nothing -> defaultNote
 
 -- | Interpret a pattern token according to a CV mapping mode.
 -- |   LiteralValue   → parse as Number

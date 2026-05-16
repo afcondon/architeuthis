@@ -72,7 +72,7 @@ import Tidal.YarnsState (AllocResult(..), allocateVoice)
 import Tidal.Log as Log
 import Tidal.MIDIBridge (BridgeClient, scheduleCCAt, scheduleNoteAt)
 import Tidal.MIDIBridge as MIDIBridge
-import Tidal.Dispatch.Helpers (clamp7bit, interpretCV, noteNameMidi, param7bit)
+import Tidal.Dispatch.Helpers (clamp7bit, interpretCV, param7bit, resolveTokenMidi)
 import Tidal.OSC (OSCClient, sendCVAfter, sendCVTrigAfter, sendES5GateTrigAfter, sendESXAfter, sendGateTrigAfter)
 import Tidal.Transform (applyTransforms)
 
@@ -310,10 +310,9 @@ dispatchPrimAction (State s) name token wallUs delayMs _delayInt params = case _
           Log.debug $ "✗ [" <> name <> "] midi-note: unknown device alias '" <> m.device <> "'"
         Just dev -> do
           -- Token can override the default note; falls back to default
-          -- for trigger-style names like "bd", "sn".
-          let note = case Map.lookup token noteNameMidi of
-                Just n -> n
-                Nothing -> m.defaultNote
+          -- for trigger-style names like "bd", "sn".  Numeric tokens
+          -- (e.g. `"36"` from a typed-cue Chromatic) resolve directly.
+          let note = resolveTokenMidi token m.defaultNote
           -- `# vel "..."` slot override: param value (already sampled
           -- at the event's cycle by the voice) overrides the binding's
           -- default velocity. Out-of-range / non-numeric tokens fall
@@ -353,9 +352,7 @@ dispatchPrimAction (State s) name token wallUs delayMs _delayInt params = case _
           Log.debug $ "  x [" <> name <> "] fh2-trigger v" <> show f.voice
             <> ": no fh2-envelope registration; skipping"
         Just channel -> do
-          let note = case Map.lookup token noteNameMidi of
-                Just n -> n
-                Nothing -> f.defaultNote
+          let note = resolveTokenMidi token f.defaultNote
           let dev = case Map.lookup "fh2" s.midiDevices of
                 Just d -> d
                 Nothing -> { name: "FH-2", latencyMs: 0.0 }
@@ -411,9 +408,7 @@ dispatchPrimAction (State s) name token wallUs delayMs _delayInt params = case _
           Log.debug $ "✗ [" <> name <> "] yarns: unknown device alias '"
                     <> y.device <> "'"
         Just dev -> do
-          let note = case Map.lookup token noteNameMidi of
-                Just n -> n
-                Nothing -> y.defaultNote
+          let note = resolveTokenMidi token y.defaultNote
               adjustedUnixUs = wallUs - dev.latencyMs * 1000.0
           alloc <- allocateVoice name wallUs
           case alloc of
@@ -457,9 +452,7 @@ dispatchPrimAction (State s) name token wallUs delayMs _delayInt params = case _
             Log.debug $ "✗ [" <> name <> "] chord: unknown device alias '"
                       <> c.device <> "'"
           Just dev -> do
-            let rootNote = case Map.lookup token noteNameMidi of
-                  Just n -> n
-                  Nothing -> c.defaultNote
+            let rootNote = resolveTokenMidi token c.defaultNote
                 adjustedUnixUs = wallUs - dev.latencyMs * 1000.0
                 intervalCount = Array.length intervals
             Log.debug $ "♪♪ [" <> name <> "] chord " <> c.shape

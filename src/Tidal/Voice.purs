@@ -44,6 +44,7 @@ module Tidal.Voice
   , EventToDispatch(..)
   , ComputeResult
   , computeUntil
+  , liftStringToPitch
   ) where
 
 import Prelude
@@ -63,6 +64,9 @@ import Tidal.Eval.Interpret (tpatToPattern)
 import Tidal.Parse.Parser (parse)
 import Tidal.Pattern.Core (queryArcWith)
 import Tidal.Pattern.Types (Arc(..), ControlMap, Event(..), Pattern, Value(..))
+import Tidal.Pitch (Pitch(..), pitchToken)
+import Tidal.Pitch.Parse (miniToken)
+import Tidal.Scales (Scale, renderDegree)
 
 -- ---------------------------------------------------------------------------
 -- VoiceKind — discrete vs continuous voice payload (private).
@@ -71,9 +75,16 @@ import Tidal.Pattern.Types (Arc(..), ControlMap, Event(..), Pattern, Value(..))
 -- | A voice's kind-specific payload. Internal — not exported. Erlang
 -- | sees `State` as opaque; discrimination happens at the
 -- | `EventToDispatch` boundary instead.
+-- |
+-- | A discrete voice's pattern is `Pattern Pitch` — the typed
+-- | substrate.  `Pitch` carries Degree / Chromatic / Sample; the
+-- | voice renders to a token-string at emit time, consulting the
+-- | active scale (Window.activeScale) for Degrees.  Params stay
+-- | `Pattern String` since `#`-joined params (`# gain "0.5 0.8"`) are
+-- | numeric / sample-name controls, not pitch-bearing.
 data VoiceKind
   = Discrete
-      { pattern :: Maybe (Pattern String)
+      { pattern :: Maybe (Pattern Pitch)
       , params :: Map String (Pattern String)
       , binding :: Binding
       }
@@ -132,7 +143,7 @@ initialContinuousState name dest = State
 -- | Continuous voice — the WS handler is responsible for routing
 -- | by kind, so reaching this with a Continuous voice indicates a
 -- | bug; we'd rather drop than crash mid-tick.
-setPattern :: Pattern String -> State -> State
+setPattern :: Pattern Pitch -> State -> State
 setPattern p (State s) = case s.kind of
   Discrete d -> State (s { kind = Discrete (d { pattern = Just p, params = Map.empty }) })
   Continuous _ -> State s
@@ -140,7 +151,7 @@ setPattern p (State s) = case s.kind of
 -- | Replace the pattern AND the parameter-pattern map atomically on a
 -- | Discrete voice. Silent no-op on Continuous.
 setPatternWithParams
-  :: Pattern String
+  :: Pattern Pitch
   -> Map String (Pattern String)
   -> State
   -> State
@@ -170,14 +181,26 @@ installFromSpec patStr paramSpecs st@(State s) = case s.kind of
     Left err -> Left (show err)
     Right ast ->
       let
-        pattern = tpatToPattern ast
+        -- Parser produces Pattern String; lift to Pattern Pitch using
+        -- mini-classifier (per-token Note vs Sample shape).  Same
+        -- semantics as `Tidal.Pitch.Parse.mini`, fused inline so we
+        -- avoid re-parsing.
+        stringPat = tpatToPattern ast :: Pattern String
+        pitchPat = map miniToken stringPat
         paramsMap = Map.fromFoldable
           $ Array.mapMaybe
               (\ps -> case parse ps.pat of
-                Right p -> Just (Tuple ps.name (tpatToPattern p))
+                Right p -> Just (Tuple ps.name (tpatToPattern p :: Pattern String))
                 Left _ -> Nothing)
               paramSpecs
-      in Right (setPatternWithParams pattern paramsMap st)
+      in Right (setPatternWithParams pitchPat paramsMap st)
+
+-- | Lift a `Pattern String` produced by the bare mini parser into a
+-- | `Pattern Pitch` using the per-token mini classifier.  Used at the
+-- | Erlang boundary by verbs that parse their pattern body separately
+-- | (e.g. `fh2-trigger`, `kit`) and then hand it to `set_voice_pat`.
+liftStringToPitch :: Pattern String -> Pattern Pitch
+liftStringToPitch = map miniToken
 
 -- | Clear the pattern of a voice regardless of kind. Used by
 -- | `unbind` and by Tidal-compat `hush_all`.
@@ -249,6 +272,12 @@ type Window =
   --   which purerl decodes to this array-of-records shape.  Each
   --   tick gets a fresh snapshot, so all voices in this pass see
   --   the same controls — no cross-voice inconsistency.
+  , activeScale :: Maybe Scale
+  -- ^ Active scale for rendering unresolved `Degree` pitches.  When
+  --   `Nothing`, Degree patterns silently drop (the user hasn't said
+  --   `set-scale ...`).  When `Just s`, every Degree event renders
+  --   through `s` at this tick — global key changes are one ETS
+  --   write away from re-rendering all running degree patterns.
   }
 
 -- | One event the voice wants the dispatcher to send.
@@ -318,7 +347,7 @@ computeDiscrete
   :: Window
   -> ControlMap
   -> State
-  -> { pattern :: Maybe (Pattern String)
+  -> { pattern :: Maybe (Pattern Pitch)
      , params :: Map String (Pattern String)
      , binding :: Binding
      }
@@ -354,20 +383,34 @@ computeDiscrete w controls (State s) d = case d.pattern of
                       Just v -> Just (Tuple paramName v)
                       Nothing -> Nothing)
                   (Map.toUnfoldable d.params :: Array (Tuple String (Pattern String)))
-          toDispatch e =
-            let
-              eventCycle = eventStartCycle e
-              cycleN = R.toNumber eventCycle
-              delayMs = (cycleN - w.currentCycle) * w.cycleDurationMs
-              delayClamped = max 0.0 delayMs
-              wallTimeUs = w.nowUnixUs + delayClamped * 1000.0
-            in
-              DiscreteEvent
-                { token: eventSample e
+          -- Render Pitch → dispatcher-facing token using the active
+          -- scale (if any).  Degree pitches without an active scale
+          -- become silence (token = "" → dispatcher drops).
+          renderToken :: Pitch -> Maybe String
+          renderToken = case _ of
+            Chromatic n -> Just (show n)
+            Sample tok -> Just tok
+            Degree deg -> case w.activeScale of
+              Just scl -> Just (show (renderDegree scl deg))
+              Nothing -> Nothing
+          toDispatch :: Event Pitch -> Maybe EventToDispatch
+          toDispatch e = case renderToken (eventPitch e) of
+            Nothing -> Nothing
+            Just tok ->
+              let
+                eventCycle = eventStartCycle e
+                cycleN = R.toNumber eventCycle
+                delayMs = (cycleN - w.currentCycle) * w.cycleDurationMs
+                delayClamped = max 0.0 delayMs
+                wallTimeUs = w.nowUnixUs + delayClamped * 1000.0
+              in Just $ DiscreteEvent
+                { token: tok
                 , wallTimeUs
                 , params: sampleParamsAt eventCycle
                 }
-          evs = if s.muted then [] else map toDispatch queryEvents
+          evs = if s.muted
+                  then []
+                  else Array.mapMaybe toDispatch queryEvents
           newSt = State (s { lastEmittedUntil = toCycle })
         in
           { newState: newSt, events: evs }
@@ -406,12 +449,12 @@ numberToCycleRat c = fromInt (Int.floor (c * 1000000.0)) / fromInt 1000000
 -- | Start cycle of an event. Digital events use `whole.start`
 -- | (the canonical event boundary, Tidal-style); Analog events fall
 -- | back to `part.start` (analog has no whole).
-eventStartCycle :: Event String -> Rational
+eventStartCycle :: forall a. Event a -> Rational
 eventStartCycle = case _ of
   Digital { whole: Arc { start } } -> start
   Analog { part: Arc { start } } -> start
 
-eventSample :: Event String -> String
-eventSample = case _ of
+eventPitch :: Event Pitch -> Pitch
+eventPitch = case _ of
   Digital { value } -> value
   Analog { value } -> value

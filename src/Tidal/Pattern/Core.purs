@@ -1011,10 +1011,8 @@ silence = pattern \_ -> []
 -- | source mini-notation never reaches this fmap because the parser
 -- | filters rest events out before producing the Pattern).
 -- |
--- | Used by `play-armed` when the bound voice is a continuous one
--- | (`midi-cc-cont`, `cv-cont`): cells always export
--- | `pattern :: Pattern String`, so this helper bridges to the
--- | `Pattern Number` shape `set_voice_cont_pat` expects.
+-- | Legacy helper for the bare-mini parse path; the typed-cue path
+-- | uses `patternPitchToNumber` instead.
 patternStringToNumber :: Pattern String -> Pattern Number
 patternStringToNumber = map parseOrZero
   where

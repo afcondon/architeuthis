@@ -66,6 +66,8 @@ erl: ps
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_state_pub.erl
 	@# Live control bus (knob → ETS → State.controls).
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_control_bus.erl
+	@# Live active-scale bus (set-scale verb → ETS → Window.activeScale).
+	@erlc -disable-feature maybe_expr -o ebin src/tidal_scale_bus.erl
 	@# Per-yarns-cell voice allocator state (yarns macro verb).
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_yarns_state.erl
 	@# Phase 4 typeful-cues Session walker (reload-baseline path).

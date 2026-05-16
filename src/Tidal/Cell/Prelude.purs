@@ -4,8 +4,9 @@
 -- | the surrounding template imports just this module.  Everything
 -- | a cell can reach lives here: the `Pattern` type, the discrete-
 -- | pattern combinators (`fast`, `slow`, `rev`, `fastCat`, `stack`,
--- | `every`, `iter`, …), and a `mini` helper that takes a mini-
--- | notation string and returns a `Pattern String`.
+-- | `every`, `iter`, …), the typed `Pitch` carrier with its `mini` /
+-- | `n` / `d` parsers, and the active-scale operators (`inKey`,
+-- | `transposeDiatonic`, `transposeChromatic`) from `Tidal.Scales`.
 -- |
 -- | Re-exports `Tidal.Pattern.Types` and `Tidal.Pattern.Core` in
 -- | bulk — anything those modules expose is reachable from a cell.
@@ -20,7 +21,9 @@ module Tidal.Cell.Prelude
   , module Tidal.DejaVu
   , module Tidal.LiveControl
   , module Tidal.Random
-  , mini
+  , module Tidal.Pitch
+  , module Tidal.Pitch.Parse
+  , module Tidal.Scales
   , r
   ) where
 
@@ -28,7 +31,6 @@ module Tidal.Cell.Prelude
 -- has a few names (append) that would collide; cells import their
 -- own Prelude through the cell template, which is the right place
 -- for it.
-import Data.Either (Either(..))
 import Data.Rational (Rational, fromInt)
 import Data.Rational (fromInt) as DataRational
 import Tidal.Pattern.Types
@@ -36,27 +38,22 @@ import Tidal.Pattern.Core
 import Tidal.DejaVu
 import Tidal.LiveControl
 import Tidal.Random
-import Tidal.Pattern.Mini (parseMiniPattern)
-
--- | Parse a mini-notation string into a `Pattern String`.  Failed
--- | parses fall back to `silence` so a typo in a cell doesn't kill
--- | the rig — the bad cell just goes quiet until you fix it.  The
--- | parse error itself is currently swallowed; future work surfaces
--- | it through the modal's reply area.
--- |
--- | Examples:
--- |
--- | ```
--- | mini "bd sn cp"     -- three triggers per cycle
--- | mini "bd*4"         -- four kicks per cycle
--- | mini "[bd sn] hh*2" -- grouped sequencing
--- | mini "<a b c>"      -- alternation
--- | mini "bd(3,8)"      -- euclidean
--- | ```
-mini :: String -> Pattern String
-mini src = case parseMiniPattern src of
-  Right p -> p
-  Left _  -> silence
+import Tidal.Pitch (Pitch(..))
+import Tidal.Pitch.Parse (mini, n, d)
+import Tidal.Scales
+  ( Scale(..)
+  , inKey
+  , transposeDiatonic
+  , transposeChromatic
+  , cMajor, cMinor, cMixolydian, cDorian, cPhrygian, cLydian
+  , cAeolian, cLocrian, cHarmonicMinor, cHarmonicMajor, cMelodicMinor
+  , dMajor, dMinor, dDorian, dMixolydian
+  , eMinor, eDorian, eMixolydian, ePhrygian
+  , fMajor, fLydian, fMixolydian
+  , gMajor, gMixolydian, gMinor, gDorian
+  , aMajor, aMinor, aMixolydian, aDorian, aHarmonicMinor
+  , bMinor, bDorian, bLocrian
+  )
 
 -- | Short alias for `Data.Rational.fromInt`.  `fast` and `slow` take
 -- | a `Rational`, so `fast (r 2) (mini "bd sn")` is the cell idiom.
