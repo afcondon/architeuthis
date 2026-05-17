@@ -24,7 +24,7 @@ qd1B :: DrumPart
 qd1B = on "drums" qd1 (every 8 rev (drum "bd ~ bd bd bd ~ ~ bd"))
 
 qd2A :: DrumPart
-qd2A = on "drums" qd2 (drum "~ ~ sn ~ ~ ~ sn ~")
+qd2A = on "drums" qd2 (drum "bd sn hh cp")
 
 -- ---------------------------------------------------------------------------
 -- Pitched parts — `mini` / `d` / `n` produce Pattern Pitch bound to
