@@ -1,7 +1,82 @@
 # DSL Naming Refactor Plan — Instrument/Part Substrate
 
-**Status:** Designed 2026-05-17; PR 1 in progress on branch `dsl-naming-slab-a`.
-**Companion docs:** `per-voice-refactor-plan.md`, `polyvoice-cookbook.md`.
+**Status (end-of-day 2026-05-17):** PR 1 + PR 1.5 + PR 2a landed on
+branch `dsl-naming-slab-a`.  PR 2b and PR 2c remain.
+
+**Branch + commits:**
+- `b74d890` — PR 1 (renames + drop phantom mvoice)
+- `7cd6f2d` — PR 1.5 (walker hoist into PureScript)
+- `728a7cb` — PR 2a (DrumKit + DrumPart + drum parser)
+
+**What landed in PR 2a:**
+- New `DrumKit`, `DrumHit`, `DrumPart` types in `Calypso.Prelude`.
+- `Instrument` keeps its 5-field shape; smart-ctor `midi` hides the
+  system defaults from user-facing Studio declarations.
+- `on` typeclass-resolved across Instrument/DrumKit; `Erase`
+  typeclass extended for DrumPart; `eraseAll` + `<+>` operator for
+  per-kind erasure.
+- `drum` parser in `Tidal.Drum` delegates to `mini` + projects out
+  Sample names; full mini-notation grammar works.
+- Walker emits `RegisterMidiDrumKit` events; Erlang shell registers
+  each kit as one MIDI binding using first-hit defaults.
+- Conductor's `ArmCommand` carries a `Destination` sum
+  (DestInstrument | DestDrumKit); `AnyDrumPart` bodies are
+  `Sample`-coerced at the conductor boundary so the dispatcher's
+  Pattern-Pitch path handles drums unchanged.
+- Handler.erl's `resolve_cue_body` inspects destination tag and
+  calls `drumPatternToPitch` for DrumKit-destined parts.
+
+**End-to-end test passed:** reload-baseline reports
+`(3 device(s), 4 instrument(s), 2 drum kit(s))`; `play-armed qd1
+qd1A` produces MIDI events visible at the FH-2; `drum "bd*4"`,
+`drum "bd(3,8)"`, `drum "[bd sn]*2"` all parse correctly.
+
+**What's left for PR 2b** (next session, queued as task #61
+recreated post-completion if needed):
+- **Per-hit MIDI bindings.**  Today PR 2a registers each DrumKit as
+  *one* MIDI binding using the first-hit's defaults — so all hits
+  fire the same MIDI note.  PR 2b fans out to N per-hit bindings
+  (`<kitAlias>.<hitName>`) so each declared hit's (note, vel,
+  durMs) actually dispatches per-event.
+- **Per-event vel/dur for pitched parts.**  Today's Pitched
+  Instruments still keep a binding-level defNote/defVel/defDurMs.
+  PR 2b drops these — pattern events must carry their own vel/dur
+  (via `# vel 0.7` style attach), and the dispatcher spec
+  `midi-note <alias> <ch>` shrinks accordingly.
+- **Voice supervisor extension or per-hit-binding-split at arm
+  time.**  The current `set_voice_pat(VoiceName, Binding, Pat)`
+  assumes one binding per voice; PR 2b needs either a multi-binding
+  variant or a per-event binding lookup.  Open design question:
+  decompose drum patterns into N sub-arms (one per hit) vs. extend
+  the voice gen_server.
+
+**Boundary additions for PR 2b** (in `Tidal.SessionWalker`):
+- Extend `RegisterMidiDrumKit` with `hits :: Array DrumHit` field
+  (the walker has them but currently drops all but the first).
+- New Erlang `apply_event` clause registers each hit as a binding
+  named `<kitAlias>.<hitName>` via additional
+  `set_binding_from_spec` calls.
+
+**Specific gotchas to remember when resuming:**
+- See `reference_purerl_tidal_silent_routing_check_power` — if
+  modular routing silent and IAC works, suspect rack power; both
+  link-spike (port 57122/udp) and purerl-tidal cache CoreMIDI
+  destinations at startup.
+- See `reference_purerl_array_is_erlang_array_module` — `Array a`
+  on the BEAM is the stdlib `array` module, not a list; FFI
+  primitives must `array:from_list/1` on entry and `array:to_list/1`
+  on exit.
+- See `reference_purs_backend_erl_constructor_encoding` — nullary
+  constructors encode as 1-tuples (`{nothing}`), never bare atoms.
+- Calypso's arm-rebuild path rewrites disk Session.purs based on
+  `cell.source`.  If the user edits a typeful cell to just the
+  inner pattern (`drum "..."` without the `on "mv" kit (...)`
+  wrapper), the disk gets that broken form and compile fails on
+  next ▶ run.  This is a known UX trap of the typeful-cells
+  projection.
+
+**Companion docs:** `per-voice-refactor-plan.md`,
+`polyvoice-cookbook.md`.
 **Companion memory:** `feedback_purerl_erlang_boundary_principle`.
 
 ## Why this exists
