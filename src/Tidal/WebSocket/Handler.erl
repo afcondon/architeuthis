@@ -213,7 +213,7 @@ try_parse_prefixed(<<"reload-baseline ", _/binary>>) ->
     {reload_baseline};
 try_parse_prefixed(<<"play-piece ", Rest/binary>>) ->
     %% play-piece <name> — install the named Section value (a top-level
-    %% `Pattern AnyCue` declaration in Calypso.Generated.Session) into
+    %% `Pattern AnyPart` declaration in Calypso.Generated.Session) into
     %% the conductor.  On each subsequent clock tick the conductor
     %% queries the section over the look-ahead window and fires arms
     %% for events that land in that window — same dispatch path as
@@ -889,11 +889,11 @@ handle_pattern_message(Text, State) ->
                     %% without separate Level-2 wire commands.
                     Summary =
                         case tidal_session_walker:walk_baseline() of
-                            {ok, #{devices := D, channels := C}} ->
+                            {ok, #{devices := D, instruments := C}} ->
                                 iolist_to_binary([
                                     " (",
                                     integer_to_binary(D), " device(s), ",
-                                    integer_to_binary(C), " channel(s))"]);
+                                    integer_to_binary(C), " instrument(s))"]);
                             {error, _} ->
                                 <<>>
                         end,
@@ -908,7 +908,7 @@ handle_pattern_message(Text, State) ->
                     {reply, Reply, State}
             end;
         {play_piece, Name} ->
-            %% Hand the named Pattern AnyCue value to the conductor.
+            %% Hand the named Pattern AnyPart value to the conductor.
             %% The conductor resolves it via
             %%   calypso_generated_session@ps:<Name>/0
             %% and on each subsequent clock tick fires arms for the
@@ -2454,8 +2454,9 @@ fh2_daemon_socket_path() ->
 %% Resolve a typeful cue's body Pattern from the loaded Session module.
 %% Returns {ok, Pat} or {error, ErrBin}. The Calypso server's
 %% /session-source path arranges for calypso_generated_session@ps to be
-%% loaded with the user's cues exported as 0-arity functions returning
-%% #{destination => ..., body => Pat} (newtype Cue elision).
+%% loaded with the user's parts exported as 0-arity functions returning
+%% #{mvoice => ..., destination => ..., body => Pat}
+%% (newtype PitchedPart elision).
 resolve_cue_body(CueName) ->
     SessionAtom = 'calypso_generated_session@ps',
     CueAtom = binary_to_atom(CueName, utf8),

@@ -35,18 +35,18 @@
 -- |     subject :: Pattern Pitch
 -- |     subject = d "1 3 5 8 7 5 3 1"
 -- |
--- |     voice1 :: Cue "fugue"
--- |     voice1 = on bass1 (fugueVoice defaultVoice subject)
+-- |     voice1 :: PitchedPart
+-- |     voice1 = on "fugue" bass1 (fugueVoice defaultVoice subject)
 -- |
--- |     voice2 :: Cue "fugue"
--- |     voice2 = on bass2 (fugueVoice (defaultVoice { transpose = 4 }) subject)
+-- |     voice2 :: PitchedPart
+-- |     voice2 = on "fugue" bass2 (fugueVoice (defaultVoice { transpose = 4 }) subject)
 -- |
--- |     voice3 :: Cue "fugue"
--- |     voice3 = on bass3 (fugueVoice
+-- |     voice3 :: PitchedPart
+-- |     voice3 = on "fugue" bass3 (fugueVoice
 -- |       (defaultVoice { speed = doubleSpeed, transpose = 7 }) subject)
 -- |
--- |     voice4 :: Cue "fugue"
--- |     voice4 = on bass4 (fugueVoice
+-- |     voice4 :: PitchedPart
+-- |     voice4 = on "fugue" bass4 (fugueVoice
 -- |       (defaultVoice { retrograde = true, transpose = -3 }) subject)
 -- |
 -- | Then `set-scale aHarmonicMinor` and the whole fugue plays in

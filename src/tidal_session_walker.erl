@@ -1,32 +1,36 @@
 %% @doc Walks the typeful-cues baseline module (Calypso.Generated.Session)
-%% after a hot reload, registering devices and channels into the existing
-%% tidal_dispatcher so that arming a cue against a typeful tvoice (e.g.
-%% `bass1`) finds the binding without the user having to fire Level-2
-%% wire commands separately.
+%% after a hot reload, registering devices and instruments into the
+%% existing tidal_dispatcher so that arming a part against a typeful
+%% tvoice (e.g. `bass1`) finds the binding without the user having to
+%% fire Level-2 wire commands separately.
 %%
-%% purs-backend-erl encoding:
+%% purs-backend-erl encoding (PR 1, 2026-05-17):
 %%   data MidiDevice = MidiDevice String Int
 %%     → {midiDevice, NameBin, LatencyInt}
-%%   data Channel = Channel MidiDevice Int Int Int Int
-%%     → {channel, DeviceTuple, Ch, Note, Vel, Dur}
-%%   newtype Cue (mvoice :: Symbol) = Cue { destination, body }
-%%     → #{destination => …, body => …}        (newtype elision)
-%%   newtype Session = Session { devices, channels, cues }
-%%     → #{devices => …, channels => …, cues => …}
+%%   data Instrument = Instrument MidiDevice Int Int Int Int    (was Channel)
+%%     → {instrument, DeviceTuple, Ch, Note, Vel, Dur}
+%%   newtype PitchedPart = PitchedPart { mvoice, destination, body }
+%%     → #{mvoice => …, destination => …, body => …}   (newtype elision)
+%%   data AnyPart = AnyPart { mvoice, destination, body }
+%%     → {anyPart, #{mvoice => …, destination => …, body => …}}
+%%   newtype Session = Session { devices, instruments, parts }   (was channels, cues)
+%%     → #{devices => …, instruments => …, parts => …}
 %%
 %% We classify by:
 %%   - constructor tag (first element) for tuple-encoded data
 %%   - keys-present for newtype-elided record maps
 %%
 %% Devices register first (builds a content→alias map keyed by the
-%% device tuple); channels register second, looking up their embedded
-%% device tuple to recover the alias.  We reuse `set_binding_from_spec`
-%% by synthesising the same Level-2 `midi-note <alias> <ch> <note>
-%% <vel> <dur>` strings the parser already handles — no new code path
-%% on the PS side.
+%% device tuple); instruments register second, looking up their
+%% embedded device tuple to recover the alias.  We reuse
+%% `set_binding_from_spec` by synthesising the same Level-2
+%% `midi-note <alias> <ch> <note> <vel> <dur>` strings the parser
+%% already handles — no new code path on the PS side.
 %%
-%% Future binding kinds (Cv, Gate, Cc) become additional Channel
-%% constructors and additional classify/1 + register arms here.
+%% Walker hoist (PR 1.5, planned): the classify clauses below will move
+%% into PureScript via a `Tidal.SessionWalker` module that emits a
+%% flat `RegistrationEvent` ADT; this Erlang module then collapses to a
+%% thin event applier.  See docs/dsl-naming-refactor-plan.md.
 -module(tidal_session_walker).
 
 -export([walk_baseline/0,
@@ -37,16 +41,22 @@
 -define(STUDIO_MODULE,      'studio@ps').
 -define(CHANNEL_ALIAS_ETS,  tidal_channel_aliases).
 
-%% Resolve a Channel tuple (the AnyCue.destination value) back to the
-%% binding name it was registered under by `register_channels/2` (the
-%% PureScript identifier — `bass1`, `qd1`, …).  Used by tidal_conductor
-%% to find the right dispatcher binding for a section-fired arm.
-%% Returns `{just, BinName}` or `nothing`.
-lookup_channel_alias(Channel) ->
+%% Resolve an Instrument tuple (the AnyPart.destination value) back to
+%% the binding name it was registered under by `register_instruments/2`
+%% (the PureScript identifier — `bass1`, `qd1`, …).  Used by
+%% tidal_conductor to find the right dispatcher binding for a
+%% section-fired arm.  Returns `{just, BinName}` or `nothing`.
+%%
+%% The function name and ETS table preserve the legacy
+%% `channel_alias` terminology so callers (tidal_conductor) need not
+%% change in PR 1; PR 1.5 (walker hoist) is the natural moment to
+%% retire the old names as the function will move behind the
+%% RegistrationEvent boundary.
+lookup_channel_alias(Instrument) ->
     case ets:info(?CHANNEL_ALIAS_ETS) of
         undefined -> nothing;
         _ ->
-            case ets:lookup(?CHANNEL_ALIAS_ETS, Channel) of
+            case ets:lookup(?CHANNEL_ALIAS_ETS, Instrument) of
                 [{_, BindName}] -> {just, BindName};
                 _ -> nothing
             end
@@ -66,17 +76,18 @@ walk_baseline() ->
         false ->
             {error, not_loaded};
         true ->
-            %% Walk Studio (rig declarations: devices + channels) and
-            %% Session (the user's cues, which may also redeclare devices
-            %% if running standalone) together.  Studio is optional —
-            %% Session.purs can stand alone if the user prefers.
+            %% Walk Studio (rig declarations: devices + instruments)
+            %% and Session (the user's parts, which may also redeclare
+            %% devices if running standalone) together.  Studio is
+            %% optional — Session.purs can stand alone if the user
+            %% prefers.
             StudioVals = module_values(?STUDIO_MODULE),
             SessionVals = module_values(?BASELINE_MODULE),
             AllVals = StudioVals ++ SessionVals,
             DeviceContentToAlias = register_devices(AllVals),
-            register_channels(AllVals, DeviceContentToAlias),
+            register_instruments(AllVals, DeviceContentToAlias),
             {ok, #{devices => maps:size(DeviceContentToAlias),
-                   channels => count_kind(AllVals, channel)}}
+                   instruments => count_kind(AllVals, instrument)}}
     end.
 
 module_values(Module) ->
@@ -132,16 +143,16 @@ register_devices(Values) ->
         #{},
         Values).
 
-register_channels(Values, DeviceContentToAlias) ->
+register_instruments(Values, DeviceContentToAlias) ->
     ensure_channel_alias_table(),
     %% Drop any aliases from a previous walk: a re-fire could rename
-    %% a channel, and stale entries would point conductor arms at the
-    %% wrong binding.
+    %% an instrument, and stale entries would point conductor arms at
+    %% the wrong binding.
     ets:delete_all_objects(?CHANNEL_ALIAS_ETS),
     lists:foreach(
         fun({Name, V}) ->
             case classify(V) of
-                channel ->
+                instrument ->
                     Device = element(2, V),
                     case maps:find(Device, DeviceContentToAlias) of
                         {ok, Alias} ->
@@ -157,15 +168,15 @@ register_channels(Values, DeviceContentToAlias) ->
                                 integer_to_binary(Dur)
                             ]),
                             BindName = atom_to_binary(Name, utf8),
-                            %% Record the Channel-value → BindName map
-                            %% so the conductor can resolve arm targets
-                            %% from cue destinations.
+                            %% Record the Instrument-value → BindName
+                            %% map so the conductor can resolve arm
+                            %% targets from part destinations.
                             ets:insert(?CHANNEL_ALIAS_ETS, {V, BindName}),
                             tidal_dispatcher:set_binding_from_spec(
                                 BindName, Spec);
                         error ->
                             tidal_log:debug(
-                                "session_walker: channel ~p references "
+                                "session_walker: instrument ~p references "
                                 "unknown device tuple ~p~n",
                                 [Name, Device])
                     end;
@@ -181,16 +192,16 @@ count_kind(Values, Kind) ->
 classify(V) when is_tuple(V), tuple_size(V) >= 1 ->
     case element(1, V) of
         midiDevice -> device;
-        channel    -> channel;
+        instrument -> instrument;
         _          -> unknown
     end;
 classify(V) when is_map(V) ->
     Keys = maps:keys(V),
     Has = fun(K) -> lists:member(K, Keys) end,
-    case {Has(devices) andalso Has(channels) andalso Has(cues),
-          Has(destination) andalso Has(body)} of
+    case {Has(devices) andalso Has(instruments) andalso Has(parts),
+          Has(mvoice) andalso Has(destination) andalso Has(body)} of
         {true, _} -> session;
-        {_, true} -> cue;
+        {_, true} -> part;
         _         -> unknown
     end;
 classify(_) ->

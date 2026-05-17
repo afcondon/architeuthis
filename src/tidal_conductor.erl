@@ -1,6 +1,6 @@
 %% @doc Conductor — section-firing gen_server (MVP-2).
 %%
-%% Holds an optional "current piece" (a `Pattern AnyCue` retrieved from
+%% Holds an optional "current piece" (a `Pattern AnyPart` retrieved from
 %% calypso_generated_session@ps) and, on each `{compute_until, Window}`
 %% cast from the clock, queries the piece via
 %% `tidal_conductor@ps:conductorTick/3` to find arm events that fall
@@ -66,7 +66,7 @@ status() ->
 %% =========================================================================
 
 init([]) ->
-    %% Own the Channel → bind-name ETS map.  The session walker writes
+    %% Own the Instrument → bind-name ETS map.  The session walker writes
     %% to it on each ▶ run, but it has to be owned by a long-lived
     %% process (not a short-lived cowboy WS handler), or it dies along
     %% with the WS connection that triggered the walk.  The conductor
@@ -166,7 +166,7 @@ code_change(_OldVsn, State, _Extra) ->
 %% Internal
 %% =========================================================================
 
-%% Dispatch one arm.  The cue's destination Channel resolves to a
+%% Dispatch one arm.  The part's destination Instrument resolves to a
 %% binding name via the session walker's ETS map; dispatch is then
 %% the same as the `play-armed` WS verb:
 %%   - lookup_binding (discrete) → set_voice_pat

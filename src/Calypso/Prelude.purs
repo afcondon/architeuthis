@@ -1,14 +1,18 @@
--- | Calypso.Prelude — the DSL surface for `.tiderl` (Calypso session)
--- | source files.
+-- | Calypso.Prelude — the DSL surface for Calypso session source files.
 -- |
--- | A `.tiderl` file IS a PureScript module that imports this prelude.
--- | The user authors devices, channels, cues, controls, etc. as
--- | ordinary PureScript declarations; the type system enforces
--- | "cue body targets a real channel", "control name matches a
--- | declared control", etc.
+-- | A Calypso session is a PureScript module that imports this prelude.
+-- | The user authors devices, instruments, parts, sections, etc. as
+-- | ordinary PureScript declarations; the runtime walks the resulting
+-- | `Session` value at baseline-load time to register them.
 -- |
--- | This is the typeful-cues (Level 3) substrate. See
--- | calypso/docs/typeful-cues-plan-2026-05-15.md for the full plan.
+-- | History note (PR 1, 2026-05-17): the original surface used `Cue`
+-- | (with a phantom `mvoice :: Symbol`) and `Channel` (with a 5-field
+-- | tuple `device-ch-note-vel-dur`).  The rename to `PitchedPart` /
+-- | `Instrument`, plus dropping the phantom in favour of a runtime
+-- | String mvoice, is PR 1 of the DSL naming refactor.  The full slab
+-- | plan including PR 1.5 (walker hoist into PureScript) and PR 2
+-- | (destination split + dispatcher protocol) lives at
+-- | `docs/dsl-naming-refactor-plan.md`.
 module Calypso.Prelude
   ( module Tidal.Cell.Prelude
   -- Numeric negation — required so `transpose = -5` (and any other
@@ -18,33 +22,35 @@ module Calypso.Prelude
   , negate
   -- Application
   , applyFn, ($)
+  -- Bulk-erase a typed Part array into AnyParts for the Session bag.
+  , eraseAll
   -- Devices
   , MidiDevice(..)
-  -- Channels
-  , Channel(..)
-  -- Cues
-  , Cue(..)
+  -- Instruments — pitched-routing destinations (was `Channel`)
+  , Instrument(..)
+  -- Parts — Pattern-bound-to-Instrument (was `Cue`)
+  , PitchedPart(..)
   , on
-  , cueOf
+  , partOf
   -- Session bag
   , Session(..)
-  , AnyCue(..)
-  , anyCue
+  , AnyPart(..)
+  , class Erase
+  , erase
   , emptySession
   , addDevice
-  , addChannel
-  , addCue
-  -- Sections (Pattern of cues, fired by the conductor)
+  , addInstrument
+  , addPart
+  -- Sections (Pattern of parts, fired by the conductor)
   , Section
-  , armCue
+  , armPart
   ) where
 
 import Control.Applicative (pure)
+import Data.Functor (map)
 import Data.Semigroup ((<>))
-import Data.Semiring (class Semiring, zero) as PSemiring
+import Data.Semiring (zero) as PSemiring
 import Data.Ring (class Ring, sub) as PRing
-import Data.Symbol (class IsSymbol, reflectSymbol)
-import Type.Proxy (Proxy(..))
 import Tidal.Cell.Prelude
 import Tidal.Pitch (Pitch)
 
@@ -78,107 +84,148 @@ negate x = PRing.sub PSemiring.zero x
 data MidiDevice = MidiDevice String Int
 
 -- ---------------------------------------------------------------------------
--- Channels — destinations for cue patterns
+-- Instruments
 -- ---------------------------------------------------------------------------
 
--- | A binding from a tvoice to a destination on a device.  Today only
--- | `Channel` (MIDI note channel with default articulation) is supported;
--- | future constructors will add `Cv`, `Gate`, `Cc`, etc.
+-- | A pitched-routing destination.  Today (PR 1) `Instrument` is a
+-- | single MIDI variant; PR 2 splits it into a sum
+-- | (`MidiInstrument` + `VPerOctInstrument`) and drops the trailing
+-- | note/vel/dur defaults in favour of per-event articulation.
+-- |
+-- | The 5-tuple is preserved as-is for PR 1 to keep the dispatcher
+-- | spec parser (`midi-note <alias> <ch> <note> <vel> <dur>`)
+-- | working without protocol changes.
 -- |
 -- | ```
--- | qd1   = Channel fh2qd 14 60 100 50   -- channel 14, default note 60, vel 100, dur 50ms
--- | bass1 = Channel iac 1 36 100 50
+-- | qd1   = Instrument fh2qd 14 60 100 50
+-- | bass1 = Instrument iac    1 36 100 50
 -- | ```
-data Channel
-  = Channel MidiDevice Int Int Int Int
+data Instrument
+  = Instrument MidiDevice Int Int Int Int
 
 -- ---------------------------------------------------------------------------
--- Cues
+-- Parts
 -- ---------------------------------------------------------------------------
 
--- | A Cue is a Pattern bound to a Channel, grouped by mvoice.
--- | The mvoice Symbol is type-level for cross-checking + UI grouping.
+-- | A `PitchedPart` is a `Pattern Pitch` bound to an `Instrument`,
+-- | tagged with a runtime mvoice name (`"bass"`, `"fugue"`, …) that
+-- | the conductor uses to dispatch to the right voice supervisor.
 -- |
--- | The body is `Pattern Pitch` — the typed substrate carries pitches
--- | (and samples) all the way to the voice, which renders them to
--- | dispatcher tokens at emit time using the active scale.  See
--- | `Tidal.Pitch` for the variant and `Tidal.Scales` for the
--- | rendering / `inKey` operators.
-newtype Cue (mvoice :: Symbol) = Cue
-  { destination :: Channel
-  , body        :: Pattern Pitch
-  }
-
--- | The standard cue constructor.  The mvoice type variable is usually
--- | inferred from the declared type ascription.
-on :: forall mv. Channel -> Pattern Pitch -> Cue mv
-on c body = Cue { destination: c, body }
-
--- | Alternate name when the mvoice is being specified explicitly
--- | rather than inferred.
-cueOf :: forall mv. Channel -> Pattern Pitch -> Cue mv
-cueOf = on
-
--- ---------------------------------------------------------------------------
--- Session bag
--- ---------------------------------------------------------------------------
-
--- | An mvoice-erased cue, suitable for packing into the Session's cue
--- | array.  The runtime walks this list at baseline-load time.
-newtype AnyCue = AnyCue
+-- | The mvoice is a String (not a phantom Symbol) so that arrays of
+-- | parts targeting different voices are homogeneous and can be
+-- | uniformly erased into the Session's `parts` bag via
+-- | `erase <$> [...]`.
+-- |
+-- | PR 2 will introduce `DrumPart` as a sibling kind; the `Erase`
+-- | class produces the same `AnyPart` regardless of source kind.
+newtype PitchedPart = PitchedPart
   { mvoice      :: String
-  , destination :: Channel
+  , destination :: Instrument
   , body        :: Pattern Pitch
   }
 
--- | Erase the mvoice Symbol into a runtime String.
-anyCue :: forall mv. IsSymbol mv => Cue mv -> AnyCue
-anyCue (Cue r) = AnyCue
-  { mvoice: reflectSymbol (Proxy :: Proxy mv)
-  , destination: r.destination
-  , body: r.body
-  }
-
--- | The Session value: the bag of declarations that the runtime walks
--- | at baseline load to register devices, register channels, and seed
--- | cues.
-newtype Session = Session
-  { devices  :: Array MidiDevice
-  , channels :: Array Channel
-  , cues     :: Array AnyCue
-  }
-
--- ---------------------------------------------------------------------------
--- Sections (Pattern of cues)
--- ---------------------------------------------------------------------------
-
--- | A `Section` is just `Pattern AnyCue` — a pattern whose events are
--- | cues that the BEAM-side conductor will arm on their target mvoice
--- | when each event's cycle arrives.  Composable with every Pattern
--- | combinator (`cat`, `stack`, `every`, `rev`, `fast`, `slow`, …).
+-- | The standard part constructor.  Reads as "play this on bass1 in
+-- | the bass voice":
 -- |
--- | The conductor logic itself lives in `Tidal.Conductor`; this
--- | module re-exports the user-facing surface so authored Session
--- | modules only need `import Calypso.Prelude`.
-type Section = Pattern AnyCue
+-- |     bass1A :: PitchedPart
+-- |     bass1A = on "bass" bass1 (mini "c2 e2 g2 ~")
+-- |
+-- | The mvoice string ("bass" here) is the runtime label the voice
+-- | supervisor matches against.
+on :: String -> Instrument -> Pattern Pitch -> PitchedPart
+on mv i body = PitchedPart { mvoice: mv, destination: i, body }
 
--- | Lift a typed `Cue` into a one-event-per-cycle `Section`.  Reads
--- | the mvoice phantom into a runtime string via `reflectSymbol` so
--- | the conductor knows which voice supervisor to dispatch to.
+-- | Alternate name when you want the call-site to read declaratively:
+-- |     melodyT = partOf "bass" bass2 (tintinnabuli aMinT above1 mPart)
+partOf :: String -> Instrument -> Pattern Pitch -> PitchedPart
+partOf = on
+
+-- ---------------------------------------------------------------------------
+-- Session bag — erased Parts the runtime walks at baseline load
+-- ---------------------------------------------------------------------------
+
+-- | An `AnyPart` is a Part with its specific kind erased.  PR 1 has
+-- | only one Part kind (PitchedPart), so the erasure is structurally
+-- | trivial; PR 2 makes `AnyPart` a sum (`AnyPitchedPart` |
+-- | `AnyDrumPart`) and the conductor pattern-matches on the variant
+-- | at arm time.
+-- |
+-- | Why a `data` type with a named constructor rather than a
+-- | newtype: PR 2's transition is then a single-line constructor
+-- | addition, and the Erlang walker (until PR 1.5 hoists it) gets a
+-- | stable `anyPart` tuple-tag to match on.
+data AnyPart = AnyPart
+  { mvoice      :: String
+  , destination :: Instrument
+  , body        :: Pattern Pitch
+  }
+
+-- | Erase a typed Part into an `AnyPart`.  Typeclass-resolved so PR 2
+-- | can add a `DrumPart` instance without touching call sites
+-- | (`erase <$> [bass1A, fugue1, qd1A]` will keep working as the
+-- | typeclass dispatches per element).
+class Erase a where
+  erase :: a -> AnyPart
+
+instance erasePitched :: Erase PitchedPart where
+  erase (PitchedPart r) = AnyPart r
+
+-- | Bulk-erase a homogeneous Array of typed Parts to the Session's
+-- | `parts` bag.  PR 1 has only PitchedPart, so the call site reads
+-- |
+-- |     parts: eraseAll [bass1A, melodyM, fugue1, fugue2]
+-- |
+-- | When PR 2 adds DrumPart, each Part-kind gets its own `eraseAll
+-- | […]` group, joined with `<>`:
+-- |
+-- |     parts: eraseAll [bass1A, fugue1, fugue2] <> eraseAll [qd1A, qd2A]
+eraseAll :: forall a. Erase a => Array a -> Array AnyPart
+eraseAll = map erase
+
+-- | The Session value: the bag of declarations that the runtime
+-- | walks at baseline load to register devices, register
+-- | instruments, and seed parts.
+-- |
+-- | PR 1 keeps the three-field shape that the Erlang walker expects;
+-- | PR 1.5 will replace the walker's ad-hoc field-keys classification
+-- | with a flat `RegistrationEvent` boundary, after which Session
+-- | can grow more fields (drumKits, cvRouters, polysignals) without
+-- | touching Erlang.
+newtype Session = Session
+  { devices     :: Array MidiDevice
+  , instruments :: Array Instrument
+  , parts       :: Array AnyPart
+  }
+
+-- ---------------------------------------------------------------------------
+-- Sections — patterns whose events arm parts
+-- ---------------------------------------------------------------------------
+
+-- | A `Section` is `Pattern AnyPart` — a pattern whose events carry
+-- | erased parts that the BEAM-side conductor arms on their target
+-- | mvoice when each event's cycle arrives.  Composable with every
+-- | Pattern combinator (`cat`, `stack`, `every`, `rev`, `fast`,
+-- | `slow`, …).
+type Section = Pattern AnyPart
+
+-- | Lift a typed Part into a one-event-per-cycle `Section`:
 -- |
 -- |     intro :: Section
--- |     intro = cat [armCue bass1A, armCue bass1B]
-armCue :: forall mv. IsSymbol mv => Cue mv -> Section
-armCue c = pure (anyCue c)
+-- |     intro = cat [armPart bass1A, armPart bass1B]
+-- |
+-- | The Erase constraint lets this accept any Part-kind that PR 2
+-- | adds.
+armPart :: forall a. Erase a => a -> Section
+armPart x = pure (erase x)
 
 emptySession :: Session
-emptySession = Session { devices: [], channels: [], cues: [] }
+emptySession = Session { devices: [], instruments: [], parts: [] }
 
 addDevice :: MidiDevice -> Session -> Session
 addDevice d (Session s) = Session s { devices = s.devices <> [d] }
 
-addChannel :: Channel -> Session -> Session
-addChannel c (Session s) = Session s { channels = s.channels <> [c] }
+addInstrument :: Instrument -> Session -> Session
+addInstrument i (Session s) = Session s { instruments = s.instruments <> [i] }
 
-addCue :: AnyCue -> Session -> Session
-addCue c (Session s) = Session s { cues = s.cues <> [c] }
+addPart :: AnyPart -> Session -> Session
+addPart p (Session s) = Session s { parts = s.parts <> [p] }

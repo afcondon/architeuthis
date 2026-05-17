@@ -1,7 +1,7 @@
 -- | Tidal.Conductor — the section-firing tick.
 -- |
--- | A `Section` (defined in Calypso.Prelude) is `Pattern AnyCue`:
--- | each event of the outer pattern carries a typed cue body and
+-- | A `Section` (defined in Calypso.Prelude) is `Pattern AnyPart`:
+-- | each event of the outer pattern carries a typed part body and
 -- | the mvoice name to arm it on.  This module exposes the per-tick
 -- | query mirrored on `Tidal.Voice.computeDiscrete` and the BEAM-side
 -- | `tidal_conductor` calls it on each clock tick.
@@ -27,7 +27,7 @@ import Data.Maybe (Maybe(..))
 import Data.Rational (Rational, fromInt)
 import Data.Rational as R
 
-import Calypso.Prelude (AnyCue(..), Channel, Section)
+import Calypso.Prelude (AnyPart(..), Instrument, Section)
 import Tidal.Pattern.Core (queryArcWith)
 import Tidal.Pattern.Types
   ( Event
@@ -44,15 +44,16 @@ import Tidal.Voice (Window) as TV
 -- | moment the arm "should" land; today the BEAM fires arms as it
 -- | sees them, but a future scheduler can use this field.
 -- |
--- | `destination` carries the cue's bound channel (a `Channel` value
--- | like `bass1` / `qd1`); the BEAM-side `tidal_session_walker` keeps
--- | an ETS map from Channel → binding name, which the conductor uses
--- | to find the right voice supervisor.  `mvoice` is the type-level
--- | phantom (`"bass"`, `"drums"`) preserved for logging only.
+-- | `destination` carries the part's bound instrument (an `Instrument`
+-- | value like `bass1` / `qd1`); the BEAM-side `tidal_session_walker`
+-- | keeps an ETS map from Instrument → binding name, which the
+-- | conductor uses to find the right voice supervisor.  `mvoice` is
+-- | the runtime mvoice name (`"bass"`, `"drums"`) used both for
+-- | logging and for dispatcher routing.
 type ArmCommand =
   { wallTimeUs :: Number
   , mvoice :: String
-  , destination :: Channel
+  , destination :: Instrument
   , body :: Pattern Pitch
   }
 
@@ -91,7 +92,7 @@ conductorTick w sec s =
       in
         { arms, newState: { lastEmittedUntil: toCycle } }
 
-eventToArm :: TV.Window -> Event AnyCue -> ArmCommand
+eventToArm :: TV.Window -> Event AnyPart -> ArmCommand
 eventToArm w e =
   let
     startCycle = case eventWhole e of
@@ -102,10 +103,10 @@ eventToArm w e =
     delayMs = (cycleN - w.currentCycle) * w.cycleDurationMs
     delayClamped = max 0.0 delayMs
     wallTimeUs = w.nowUnixUs + delayClamped * 1000.0
-    AnyCue ac = eventValue e
+    AnyPart ap = eventValue e
   in
     { wallTimeUs
-    , mvoice: ac.mvoice
-    , destination: ac.destination
-    , body: ac.body
+    , mvoice: ap.mvoice
+    , destination: ap.destination
+    , body: ap.body
     }

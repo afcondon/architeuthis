@@ -4,7 +4,7 @@
 module Calypso.Voices.Bass1 where
 
 import Calypso.Generated.Session (bass1A)
-import Calypso.Prelude (Cue)
+import Calypso.Prelude (PitchedPart)
 
-armed :: Cue "bass"
+armed :: PitchedPart
 armed = bass1A

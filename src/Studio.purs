@@ -1,10 +1,10 @@
 -- | Studio — Andrew's rig as a typed module.
 -- |
 -- | This is the stable declaration of *what's plugged in*: which
--- | MIDI devices exist, which channels route to what hardware, what
--- | latency each device has.  Sessions import these names; they don't
--- | redeclare them.  When you patch a new module into the rig, add
--- | its Channel here once and every Session can reference it.
+-- | MIDI devices exist, which instruments route to what hardware,
+-- | what latency each device has.  Sessions import these names; they
+-- | don't redeclare them.  When you patch a new module into the rig,
+-- | add its Instrument here once and every Session can reference it.
 -- |
 -- | A `Studio` companion to `Calypso.Generated.Session` — Session is
 -- | "what should play right now"; Studio is "what exists to play on".
@@ -34,32 +34,34 @@ iac :: MidiDevice
 iac = MidiDevice "IAC Driver Tidal" 30
 
 -- ---------------------------------------------------------------------------
--- Channels
+-- Instruments
 -- ---------------------------------------------------------------------------
--- | Channel constructor args: device, channel-num, default-note,
--- | default-velocity, default-duration-ms.
+-- | Instrument constructor args (PR 1 form): device, channel-num,
+-- | default-note, default-velocity, default-duration-ms.  The
+-- | trailing three numbers are temporary — PR 2 moves articulation
+-- | to per-event so this declaration shrinks to just device+channel.
 
-qd1 :: Channel
-qd1 = Channel fh2qd 14 60 100 50
+qd1 :: Instrument
+qd1 = Instrument fh2qd 14 60 100 50
 
-qd2 :: Channel
-qd2 = Channel fh2qd 15 60 100 50
+qd2 :: Instrument
+qd2 = Instrument fh2qd 15 60 100 50
 
-bass1 :: Channel
-bass1 = Channel iac 1 36 100 50
+bass1 :: Instrument
+bass1 = Instrument iac 1 36 100 50
 
--- | Second IAC bass channel — companion to `bass1`.  Used in
+-- | Second IAC bass instrument — companion to `bass1`.  Used in
 -- | tintinnabuli-style two-voice demos where M-voice and T-voice
 -- | need separate destinations (so Live can route them to distinct
 -- | software instruments).
-bass2 :: Channel
-bass2 = Channel iac 2 36 100 50
+bass2 :: Instrument
+bass2 = Instrument iac 2 36 100 50
 
--- | Third + fourth IAC bass channels — for 4-voice fugue / canon
+-- | Third + fourth IAC bass instruments — for 4-voice fugue / canon
 -- | textures where each playhead lands on its own MIDI channel.
 -- | Same default note / velocity / duration as bass1, bass2.
-bass3 :: Channel
-bass3 = Channel iac 3 36 100 50
+bass3 :: Instrument
+bass3 = Instrument iac 3 36 100 50
 
-bass4 :: Channel
-bass4 = Channel iac 4 36 100 50
+bass4 :: Instrument
+bass4 = Instrument iac 4 36 100 50
