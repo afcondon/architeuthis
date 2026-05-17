@@ -22,10 +22,18 @@
 -- | Usage:
 -- |
 -- |     melody :: Pattern Pitch
--- |     melody = mini "a4 b4 c5 b4 a4 g4 f4 e4"
+-- |     melody = d "1 2 3 4 5 4 3 2"     -- degree-based
 -- |
 -- |     tVoice :: Pattern Pitch
--- |     tVoice = tintinnabuli aMinT above1 melody
+-- |     tVoice = tintinnabuli aMinor aMinT above1 melody
+-- |
+-- | The Scale argument is consulted only for `Degree` events; pure
+-- | `Chromatic` patterns are scale-insensitive (any Scale works).
+-- | The Degree resolution is eager — the resulting T-voice is baked,
+-- | so a live wire-level `set-scale` retunes the M-voice (via the
+-- | Voice emit path) but does NOT retune the T-voice.  Re-arm to
+-- | refresh.  See `docs/dsl-naming-refactor-plan.md` for the future
+-- | live-tracking direction.
 -- |
 -- | The function is pure `map`; all time structure (`fast`, `slow`,
 -- | `every`, `rev`, …) applies to the M-voice and the T-voice picks
