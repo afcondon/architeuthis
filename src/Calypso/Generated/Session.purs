@@ -24,7 +24,7 @@ qd1B :: DrumPart
 qd1B = on "drums" qd1 (every 8 rev (drum "bd ~ bd bd bd ~ ~ bd"))
 
 qd2A :: DrumPart
-qd2A = on "drums" qd2 (drum "bd sn hh cp")
+qd2A = on "drums" qd2 (drum "~ ~ sn ~ ~ ~ sn ~")
 
 -- ---------------------------------------------------------------------------
 -- Pitched parts — `mini` / `d` / `n` produce Pattern Pitch bound to
@@ -45,16 +45,20 @@ bass1Mix = on "bass" bass1 (inKey dDorian (d "5 5 5 3 3 7 -1"))
 
 -- ---------------------------------------------------------------------------
 -- MVP-3 Tintinnabuli demo: M-voice + parallel T-voice on A-minor.
+-- Now degree-based: `set-scale aMinor` / `set-scale dDorian` retune the
+-- M-voice live (via the Voice emit path's degree resolution).  The
+-- T-voice eagerly bakes the scale Pärt declared his piece in — re-arm
+-- to refresh against the active scale.
 -- ---------------------------------------------------------------------------
 
 mPart :: Pattern Pitch
-mPart = mini "a4 b4 c5 d5 e5 d5 c5 b4"
+mPart = d "1 2 3 4 5 4 3 2"
 
 melodyM :: PitchedPart
 melodyM = on "bass" bass1 mPart
 
 melodyT :: PitchedPart
-melodyT = on "bass" bass2 (tintinnabuli aMinT above1 mPart)
+melodyT = on "bass" bass2 (tintinnabuli aMinor aMinT above1 mPart)
 
 -- ---------------------------------------------------------------------------
 -- MVP-4 Fugue Machine demo: 4 playheads on a shared subject.

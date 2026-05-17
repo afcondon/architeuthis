@@ -13,6 +13,7 @@ import Test.MidiClaimSpec (runMidiClaimTests)
 import Test.PatternSpec (runPatternTests)
 import Test.PredictiveSpec (runPredictiveTests)
 import Test.SinkSpec (runSinkTests)
+import Test.TintinnabuliSpec (runTintinnabuliTests)
 import Test.UtilSpec (runUtilTests)
 import Data.Array as Array
 import Data.Maybe (Maybe(..))
@@ -175,6 +176,9 @@ main = do
 
   -- Run Tidal.MidiClaim (frontend reservations Phase 1) tests
   runMidiClaimTests
+
+  -- Run Tidal.Tintinnabuli scale-aware tests (task #62)
+  runTintinnabuliTests
 
   log ""
   log "=== All tests completed ==="

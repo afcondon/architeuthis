@@ -59,6 +59,7 @@ import Data.Maybe (fromMaybe)
 import Tidal.Chords (major, minor, dim)
 import Tidal.Pattern.Types (Pattern)
 import Tidal.Pitch (Pitch(..))
+import Tidal.Scales (Scale, renderDegree)
 
 -- ---------------------------------------------------------------------------
 -- Triad
@@ -123,30 +124,36 @@ below3 = Below 3
 -- The mechanical rule
 -- ---------------------------------------------------------------------------
 
--- | Compute the T-voice pitch for a single M-voice pitch.
+-- | Compute the T-voice pitch for a single M-voice pitch under the
+-- | given scale.
 -- |
 -- |   * `Chromatic n` — look up the k-th triad pitch class strictly
 -- |     above (or below) `n` in MIDI space.  Falls back to `n` itself
 -- |     if no candidate is found within ±24 semitones (shouldn't
--- |     happen for any sensible triad).
+-- |     happen for any sensible triad).  The scale parameter is
+-- |     ignored — Chromatic is already absolute.
+-- |   * `Degree d` — resolve `d` against `scale` via `renderDegree` to
+-- |     get an absolute MIDI note, then apply the nearest-triad rule
+-- |     as for `Chromatic`.  This eagerly bakes the scale into the
+-- |     resulting `Chromatic`; a subsequent wire-level `set-scale` does
+-- |     NOT retune the T-voice.  Re-arm to pick up the new scale.
 -- |   * `Sample s` — passes through unchanged.  Drums shouldn't go
 -- |     through tintinnabuli; if they accidentally do, we don't crash.
--- |   * `Degree d` — passes through unchanged.  Degrees don't know
--- |     their MIDI note until emit time, so applying tintinnabuli to
--- |     them is meaningless at substrate level.  If you want a
--- |     degree-based melody to drive a T-voice, render the melody to
--- |     chromatic first via `inKey` and tintinnabuli operates on the
--- |     rendered chromatic stream.
-tintinnabuliPitch :: Triad -> Position -> Pitch -> Pitch
-tintinnabuliPitch t pos = case _ of
+tintinnabuliPitch :: Scale -> Triad -> Position -> Pitch -> Pitch
+tintinnabuliPitch scale t pos = case _ of
   Chromatic n -> Chromatic (nearestTriadNote t pos n)
+  Degree dgr  -> Chromatic (nearestTriadNote t pos (renderDegree scale dgr))
   other       -> other
 
 -- | Map `tintinnabuliPitch` over a pattern.  The pattern's time
--- | structure is untouched — `tintinnabuli t pos (every 4 rev melody)`
+-- | structure is untouched — `tintinnabuli s t pos (every 4 rev melody)`
 -- | works: the M-voice's reverse mirrors into the T-voice naturally.
-tintinnabuli :: Triad -> Position -> Pattern Pitch -> Pattern Pitch
-tintinnabuli t pos = map (tintinnabuliPitch t pos)
+-- |
+-- | The scale argument is consulted only for `Degree` events.  Pure
+-- | `Chromatic` patterns are scale-insensitive in tintinnabuli too,
+-- | so any Scale value is fine (use `cMajor` or whatever's at hand).
+tintinnabuli :: Scale -> Triad -> Position -> Pattern Pitch -> Pattern Pitch
+tintinnabuli scale t pos = map (tintinnabuliPitch scale t pos)
 
 -- | The numeric workhorse.  Walk MIDI space outward from `melody` in
 -- | the chosen direction and pick the k-th note whose pitch class is
