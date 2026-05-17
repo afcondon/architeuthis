@@ -863,6 +863,19 @@ handle_pattern_message(Text, State) ->
             %% and need re-arming — that's the trade-off for keeping
             %% fire-typeful idempotent.
             BaselineAtom = 'calypso_generated_session@ps',
+            %% Also reload Studio (the rig declaration) so newly
+            %% added devices / channels are picked up by the walker
+            %% on the same ▶ run that mentions them.  Without this,
+            %% adding a channel to Studio.purs requires a manual
+            %% purerl-tidal restart even though the .beam is on disk —
+            %% Erlang doesn't auto-reload, so a stale in-memory Studio
+            %% silently masks the new exports.
+            StudioAtom = 'studio@ps',
+            _ = case code:soft_purge(StudioAtom) of
+                    true -> ok;
+                    false -> code:purge(StudioAtom)
+                end,
+            _ = code:load_file(StudioAtom),
             _ = case code:soft_purge(BaselineAtom) of
                     true -> ok;
                     false -> code:purge(BaselineAtom)
