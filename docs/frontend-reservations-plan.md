@@ -278,6 +278,13 @@ Smallest possible useful slice.
   same-channel-different-device, instrument×instrument duplicate,
   instrument×drumkit duplicate, three-way collision,
   `describeClaimError` output stability.
+- Live end-to-end verified 2026-05-17: with a deliberate
+  `bass1b = midi iac 1` added to `Studio.purs`, a
+  `reload-baseline` WS call returns `OK: reload-baseline
+  (... 5 instrument(s) ...)` AND `tidal_log:err` writes the line
+  `session_walker: duplicate MIDI claim on \`iac\` ch 1 — claimed
+  by instrument \`bass1b\`, instrument \`bass1\``.  Both bindings
+  install (warn-only).
 
 **Phase 1b — Calypso composition-pane surface (pending):**
 
