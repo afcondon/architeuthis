@@ -37,22 +37,12 @@ bass1Mix = on bass1 (inKey dDorian (d "5 5 5 3 3 7 -1"))
 -- MVP-3 Tintinnabuli demo: M-voice + parallel T-voice on A-minor.
 -- ---------------------------------------------------------------------------
 
--- | Stepwise melody fragment in A natural minor.  Up to E5, back down
--- | through the home tone.  Arm `melodyM` and `melodyT` together to
--- | hear Pärt's 1→1 rule: each M-voice note paired with the nearest
--- | A-minor triad pitch above it.
 mPart :: Pattern Pitch
 mPart = mini "a4 b4 c5 d5 e5 d5 c5 b4"
 
--- | The M-voice — the melody, sent to `bass1`.
 melodyM :: Cue "bass"
 melodyM = on bass1 mPart
 
--- | The T-voice — `tintinnabuli` over `aMinT` (the A-minor triad) at
--- | Position 1 Superior, sent to `bass2` so Live can route it to a
--- | second instrument.  Pure `map` over the melody — no scheduling,
--- | no shared state.  Time structure (`every`, `rev`, `fast`, …)
--- | applied to `mPart` would carry through to `melodyT` automatically.
 melodyT :: Cue "bass"
 melodyT = on bass2 (tintinnabuli aMinT above1 mPart)
 
