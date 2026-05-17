@@ -9,7 +9,7 @@
 module Calypso.Voices.Qd1 where
 
 import Calypso.Generated.Session (qd1B)
-import Calypso.Prelude (PitchedPart)
+import Calypso.Prelude (DrumPart)
 
-armed :: PitchedPart
+armed :: DrumPart
 armed = qd1B

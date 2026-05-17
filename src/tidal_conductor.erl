@@ -166,16 +166,18 @@ code_change(_OldVsn, State, _Extra) ->
 %% Internal
 %% =========================================================================
 
-%% Dispatch one arm.  The part's destination Instrument resolves to a
-%% binding name via the session walker's ETS map; dispatch is then
-%% the same as the `play-armed` WS verb:
+%% Dispatch one arm.  The part's destination (Instrument or DrumKit,
+%% wrapped in a `Destination` sum by Conductor.purs since PR 2a)
+%% resolves to a binding name via the session walker's ETS map;
+%% dispatch is then the same as the `play-armed` WS verb:
 %%   - lookup_binding (discrete) → set_voice_pat
 %%   - else lookup_continuous_binding → set_voice_cont_pat (Pattern
 %%     Pitch coerced to Pattern Number via patternPitchToNumber).
 %% Errors are logged at debug level; the conductor doesn't crash on
 %% individual arm failures so a missing-binding for one voice doesn't
 %% take down the whole section.
-fire_arm(#{destination := Dest, body := Body, mvoice := Mvoice}) ->
+fire_arm(#{destination := WrappedDest, body := Body, mvoice := Mvoice}) ->
+    Dest = unwrap_destination(WrappedDest),
     case tidal_session_walker:lookup_channel_alias(Dest) of
         {just, BindName} ->
             install_armed(BindName, Body);
@@ -223,3 +225,11 @@ install_armed(BindName, Body) ->
             end
     end.
 
+%% Unwrap PR 2a's `Destination` sum from Conductor.purs.  The
+%% wrapper carries either an Instrument or DrumKit raw tuple; the
+%% ETS table is keyed on the raw value, so we peel the tag here
+%% before lookup.  Backwards-compat fall-through for any code path
+%% still passing a raw value directly.
+unwrap_destination({destInstrument, Inst}) -> Inst;
+unwrap_destination({destDrumKit, Kit})     -> Kit;
+unwrap_destination(Other)                  -> Other.

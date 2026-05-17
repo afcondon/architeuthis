@@ -15,6 +15,7 @@ module Tidal.Conductor
   ( State
   , initialState
   , ArmCommand
+  , Destination(..)
   , TickResult
   , conductorTick
   ) where
@@ -27,7 +28,7 @@ import Data.Maybe (Maybe(..))
 import Data.Rational (Rational, fromInt)
 import Data.Rational as R
 
-import Calypso.Prelude (AnyPart(..), Instrument, Section)
+import Calypso.Prelude (AnyPart(..), DrumKit, Instrument, Section)
 import Tidal.Pattern.Core (queryArcWith)
 import Tidal.Pattern.Types
   ( Event
@@ -36,24 +37,39 @@ import Tidal.Pattern.Types
   , eventPart
   , Arc(..)
   )
-import Tidal.Pitch (Pitch)
+import Tidal.Pitch (Pitch(..))
 import Tidal.Pattern.Types (Pattern)
 import Tidal.Voice (Window) as TV
+
+-- | The discriminated destination an arm command targets.  PR 2a
+-- | introduced this sum so the Erlang conductor can unwrap to the
+-- | right ETS key on its side without inspecting PureScript-encoded
+-- | shapes.  PR 2b will rebalance: each drum hit becomes its own
+-- | binding under `<kitAlias>.<hitName>`, at which point `DestDrumKit`
+-- | grows a hit-name field (or the discriminator moves to per-event).
+data Destination
+  = DestInstrument Instrument
+  | DestDrumKit DrumKit
 
 -- | One arm command surfaced to the BEAM.  Wall time is the precise
 -- | moment the arm "should" land; today the BEAM fires arms as it
 -- | sees them, but a future scheduler can use this field.
 -- |
--- | `destination` carries the part's bound instrument (an `Instrument`
--- | value like `bass1` / `qd1`); the BEAM-side `tidal_session_walker`
--- | keeps an ETS map from Instrument → binding name, which the
--- | conductor uses to find the right voice supervisor.  `mvoice` is
--- | the runtime mvoice name (`"bass"`, `"drums"`) used both for
--- | logging and for dispatcher routing.
+-- | `destination` carries the part's bound `Instrument` or `DrumKit`
+-- | (wrapped in the `Destination` sum); the BEAM-side walker keeps an
+-- | ETS map from destination-value → binding name, which the conductor
+-- | unwraps and uses to find the right voice supervisor.
+-- |
+-- | `body` is always `Pattern Pitch`: PitchedParts pass theirs through
+-- | unchanged; DrumParts have their `Pattern DrumHitRef` (Pattern
+-- | String) coerced here to `Pattern Pitch` via the `Sample` variant
+-- | so the existing dispatcher emit path handles them.  This Sample
+-- | coercion is the PR 2a runtime-compat shim; PR 2b replaces it with
+-- | per-hit binding lookups.
 type ArmCommand =
   { wallTimeUs :: Number
   , mvoice :: String
-  , destination :: Instrument
+  , destination :: Destination
   , body :: Pattern Pitch
   }
 
@@ -103,10 +119,17 @@ eventToArm w e =
     delayMs = (cycleN - w.currentCycle) * w.cycleDurationMs
     delayClamped = max 0.0 delayMs
     wallTimeUs = w.nowUnixUs + delayClamped * 1000.0
-    AnyPart ap = eventValue e
   in
-    { wallTimeUs
-    , mvoice: ap.mvoice
-    , destination: ap.destination
-    , body: ap.body
-    }
+    case eventValue e of
+      AnyPitchedPart p ->
+        { wallTimeUs
+        , mvoice: p.mvoice
+        , destination: DestInstrument p.destination
+        , body: p.body
+        }
+      AnyDrumPart d ->
+        { wallTimeUs
+        , mvoice: d.mvoice
+        , destination: DestDrumKit d.destination
+        , body: map Sample d.body
+        }

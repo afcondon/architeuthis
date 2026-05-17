@@ -1,8 +1,8 @@
 -- | The current session — what's playing right now.
 -- |
--- | Devices + instruments are factored out into Studio (the rig
--- | declaration).  Edit Studio.purs when the rig changes; edit
--- | this file every time you change which notes go where.
+-- | Devices, instruments, and drum kits are factored out into Studio
+-- | (the rig declaration).  Edit Studio.purs when the rig changes;
+-- | edit this file every time you change which notes go where.
 module Calypso.Generated.Session where
 
 import Calypso.Prelude
@@ -13,17 +13,23 @@ import Tidal.Fugue
   )
 
 -- ---------------------------------------------------------------------------
--- Parts
+-- Drum parts — `drum "..."` produces Pattern DrumHitRef bound to a
+-- DrumKit destination.
 -- ---------------------------------------------------------------------------
 
-qd1A :: PitchedPart
-qd1A = on "drums" qd1 (mini "bd bd ~ ~ bd ~ bd ~")
+qd1A :: DrumPart
+qd1A = on "drums" qd1 (drum "bd bd ~ ~ bd ~ bd ~")
 
-qd1B :: PitchedPart
-qd1B = on "drums" qd1 (every 8 rev (mini "bd ~ bd bd bd ~ ~ bd"))
+qd1B :: DrumPart
+qd1B = on "drums" qd1 (every 8 rev (drum "bd ~ bd bd bd ~ ~ bd"))
 
-qd2A :: PitchedPart
-qd2A = on "drums" qd2 (mini "~ ~ sn ~ ~ ~ sn ~")
+qd2A :: DrumPart
+qd2A = on "drums" qd2 (drum "~ ~ sn ~ ~ ~ sn ~")
+
+-- ---------------------------------------------------------------------------
+-- Pitched parts — `mini` / `d` / `n` produce Pattern Pitch bound to
+-- an Instrument.
+-- ---------------------------------------------------------------------------
 
 bass1A :: PitchedPart
 bass1A = on "bass" bass1 (mini "c2 e2 g2 ~ b2 ~ g2 e2")
@@ -54,10 +60,6 @@ melodyT = on "bass" bass2 (tintinnabuli aMinT above1 mPart)
 -- MVP-4 Fugue Machine demo: 4 playheads on a shared subject.
 -- ---------------------------------------------------------------------------
 
--- Subject in RAW DEGREES (no `inKey` wrap) so the global scale bus
--- governs rendering and diatonic transpose can operate.  Fire
--- `set-scale aHarmonicMinor` once at boot; `set-scale dDorian` etc.
--- to modulate the whole fugue live.
 subject :: Pattern Pitch
 subject = d "1 5 3 5 1 3 5 -1"
 
@@ -81,17 +83,17 @@ intro = slow (r 8) (cat [armPart bass1A, armPart bass1B])
 -- The Session value
 -- ---------------------------------------------------------------------------
 --
--- After PR 1: a single `map erase` over a homogeneous Part array.
--- The phantom-mvoice per-element `anyCue` wrapping is gone.
+-- One `eraseAll` per Part-kind, joined with `<>`.  The split mirrors
+-- the destination split — pitched parts go to Instruments, drum parts
+-- go to DrumKits.
 session :: Session
 session = Session
   { devices:     [fh2, fh2qd, iac]
-  , instruments: [qd1, qd2, bass1, bass2, bass3, bass4]
-  , parts: eraseAll
-      [ qd1A, qd1B, qd2A
-      , bass1A, bass1B
-      , bass1Deg, bass1Mix
-      , melodyM, melodyT
-      , fugue1, fugue2, fugue3, fugue4
-      ]
+  , instruments: [bass1, bass2, bass3, bass4]
+  , drumKits:    [qd1, qd2]
+  , parts: eraseAll [ bass1A, bass1B, bass1Deg, bass1Mix
+                    , melodyM, melodyT
+                    , fugue1, fugue2, fugue3, fugue4
+                    ]
+       <+> eraseAll [ qd1A, qd1B, qd2A ]
   }

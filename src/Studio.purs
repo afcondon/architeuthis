@@ -1,15 +1,14 @@
 -- | Studio — Andrew's rig as a typed module.
 -- |
--- | This is the stable declaration of *what's plugged in*: which
--- | MIDI devices exist, which instruments route to what hardware,
--- | what latency each device has.  Sessions import these names; they
--- | don't redeclare them.  When you patch a new module into the rig,
--- | add its Instrument here once and every Session can reference it.
+-- | The stable declaration of *what's plugged in*: MIDI devices,
+-- | pitched instruments, drum kits.  Sessions import these names;
+-- | they don't redeclare.  When the rig changes, edit Studio.purs
+-- | once.
 -- |
--- | A `Studio` companion to `Calypso.Generated.Session` — Session is
--- | "what should play right now"; Studio is "what exists to play on".
--- | Both live on disk; only Session gets rewritten by Calypso, while
--- | Studio is edited by hand when the rig changes.
+-- | After PR 2a (2026-05-17): pitched instruments use the smart
+-- | constructor `midi` which hides system note/vel/dur defaults;
+-- | drum destinations declare their hit table via `midiDrumKit` +
+-- | `hit`.
 module Studio where
 
 import Calypso.Prelude
@@ -18,8 +17,7 @@ import Calypso.Prelude
 -- Devices
 -- ---------------------------------------------------------------------------
 
--- | The FH-2 module's main MIDI input.  Drives gates + envelopes
--- | declared via its SysEx config.  Latency 0 (no software path).
+-- | The FH-2 module's main MIDI input.  Latency 0 (no software path).
 fh2 :: MidiDevice
 fh2 = MidiDevice "FH-2" 0
 
@@ -34,34 +32,52 @@ iac :: MidiDevice
 iac = MidiDevice "IAC Driver Tidal" 30
 
 -- ---------------------------------------------------------------------------
--- Instruments
+-- Pitched instruments — routing only.  Per-event vel/dur arrives in
+-- PR 2b; for now the smart constructor `midi` fills in system
+-- defaults (note 60, vel 100, dur 50).
 -- ---------------------------------------------------------------------------
--- | Instrument constructor args (PR 1 form): device, channel-num,
--- | default-note, default-velocity, default-duration-ms.  The
--- | trailing three numbers are temporary — PR 2 moves articulation
--- | to per-event so this declaration shrinks to just device+channel.
-
-qd1 :: Instrument
-qd1 = Instrument fh2qd 14 60 100 50
-
-qd2 :: Instrument
-qd2 = Instrument fh2qd 15 60 100 50
 
 bass1 :: Instrument
-bass1 = Instrument iac 1 36 100 50
+bass1 = midi iac 1
 
 -- | Second IAC bass instrument — companion to `bass1`.  Used in
--- | tintinnabuli-style two-voice demos where M-voice and T-voice
--- | need separate destinations (so Live can route them to distinct
--- | software instruments).
+-- | tintinnabuli-style two-voice demos where M-voice and T-voice need
+-- | separate destinations.
 bass2 :: Instrument
-bass2 = Instrument iac 2 36 100 50
+bass2 = midi iac 2
 
 -- | Third + fourth IAC bass instruments — for 4-voice fugue / canon
 -- | textures where each playhead lands on its own MIDI channel.
--- | Same default note / velocity / duration as bass1, bass2.
 bass3 :: Instrument
-bass3 = Instrument iac 3 36 100 50
+bass3 = midi iac 3
 
 bass4 :: Instrument
-bass4 = Instrument iac 4 36 100 50
+bass4 = midi iac 4
+
+-- ---------------------------------------------------------------------------
+-- Drum kits — the Quad Drum / sample-bank destinations.  Each hit
+-- declares its MIDI note + vel + duration; PR 2b will dispatch each
+-- hit to its own MIDI binding (`<kitAlias>.<hitName>`).  For PR 2a
+-- the kit registers as a single binding (using the first hit's
+-- defaults) — runtime behaviour matches today's `Channel fh2qd 14 60
+-- 100 50` shape until per-hit dispatch lands.
+-- ---------------------------------------------------------------------------
+
+-- | QD channel 14 — the primary drum kit.  Standard GM mapping.
+qd1 :: DrumKit
+qd1 = midiDrumKit fh2qd 14
+  [ hit "bd" 36 100 50
+  , hit "sn" 38 100 50
+  , hit "hh" 42  80 30
+  , hit "cp" 39 100 30
+  ]
+
+-- | QD channel 15 — secondary kit.  Same hit table as `qd1` so
+-- | patterns are portable between them.
+qd2 :: DrumKit
+qd2 = midiDrumKit fh2qd 15
+  [ hit "bd" 36 100 50
+  , hit "sn" 38 100 50
+  , hit "hh" 42  80 30
+  , hit "cp" 39 100 30
+  ]

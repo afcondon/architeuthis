@@ -21,6 +21,7 @@
         , tupleArg/2
         , asBinary/1
         , asInt/1
+        , firstHitDefaults/1
         ]).
 
 %% --------------------------------------------------------------------
@@ -132,3 +133,33 @@ asBinary(_) -> {nothing}.
 %% --------------------------------------------------------------------
 asInt(V) when is_integer(V) -> {just, V};
 asInt(_) -> {nothing}.
+
+%% --------------------------------------------------------------------
+%% firstHitDefaults/1 — pure.
+%%
+%% A `DrumKit`'s hits field is an Erlang stdlib `array` of DrumHit
+%% records.  Read element 0 (the first hit) and pull its
+%% (note, vel, durMs) fields out.  Returns a record where each field
+%% is Maybe Int — `{nothing}` for an empty array, missing field, or
+%% non-array input.
+%%
+%% PR 2a uses this to derive the kit's binding-level defaults from
+%% the first hit; PR 2b iterates the whole array.
+%% --------------------------------------------------------------------
+firstHitDefaults(HitsForeign) ->
+    Hit = try array:get(0, HitsForeign)
+          catch _:_ -> undefined
+          end,
+    case Hit of
+        #{note := N, vel := V, durMs := D}
+          when is_integer(N), is_integer(V), is_integer(D) ->
+            #{ note   => {just, N}
+             , vel    => {just, V}
+             , durMs  => {just, D}
+             };
+        _ ->
+            #{ note   => {nothing}
+             , vel    => {nothing}
+             , durMs  => {nothing}
+             }
+    end.

@@ -62,7 +62,7 @@ walk_baseline() ->
 
             Stats = lists:foldl(
                 fun apply_event/2,
-                #{devices => 0, instruments => 0},
+                #{devices => 0, instruments => 0, drumKits => 0},
                 Events),
             {ok, Stats}
     end.
@@ -129,6 +129,36 @@ apply_event({registerMidiInstrument,
     ets:insert(?CHANNEL_ALIAS_ETS, {IV, A}),
     tidal_dispatcher:set_binding_from_spec(A, Spec),
     bump(instruments, Acc);
+
+%% A drum-kit event (PR 2a) registers the kit as a single MIDI
+%% binding using the first-hit defaults — same shape as
+%% `registerMidiInstrument`, just with a different binding alias.
+%% PR 2b will replace this with N per-hit bindings (`qd1.bd`,
+%% `qd1.sn`, …) once the dispatch path handles per-event hit lookup.
+%%
+%% The `drumKitValue` field is the opaque DrumKit BEAM term — same
+%% role as `instrumentValue`: it goes into the alias ETS so the
+%% conductor can resolve section-fired arms whose destination is a
+%% DrumKit value.
+apply_event({registerMidiDrumKit,
+             #{ alias        := A
+              , deviceAlias  := D
+              , channel      := Ch
+              , defNote      := Note
+              , defVel       := Vel
+              , defDurMs     := Dur
+              , drumKitValue := KV
+              }}, Acc) ->
+    Spec = iolist_to_binary([
+        "midi-note ", D, " ",
+        integer_to_binary(Ch), " ",
+        integer_to_binary(Note), " ",
+        integer_to_binary(Vel), " ",
+        integer_to_binary(Dur)
+    ]),
+    ets:insert(?CHANNEL_ALIAS_ETS, {KV, A}),
+    tidal_dispatcher:set_binding_from_spec(A, Spec),
+    bump(drumKits, Acc);
 
 %% Unknown event — log and skip.  Forward-compat for any
 %% RegistrationEvent constructors added on the PureScript side

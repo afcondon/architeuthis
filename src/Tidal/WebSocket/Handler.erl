@@ -889,11 +889,12 @@ handle_pattern_message(Text, State) ->
                     %% without separate Level-2 wire commands.
                     Summary =
                         case tidal_session_walker:walk_baseline() of
-                            {ok, #{devices := D, instruments := C}} ->
+                            {ok, #{devices := D, instruments := I, drumKits := K}} ->
                                 iolist_to_binary([
                                     " (",
                                     integer_to_binary(D), " device(s), ",
-                                    integer_to_binary(C), " instrument(s))"]);
+                                    integer_to_binary(I), " instrument(s), ",
+                                    integer_to_binary(K), " drum kit(s))"]);
                             {error, _} ->
                                 <<>>
                         end,
@@ -2476,6 +2477,8 @@ resolve_cue_body(CueName) ->
             end;
         true ->
             try erlang:apply(SessionAtom, CueAtom, []) of
+                #{destination := Dest, body := Pat} ->
+                    {ok, coerce_body_for_dispatch(Dest, Pat)};
                 #{body := Pat} -> {ok, Pat};
                 Other ->
                     OtherBin = list_to_binary(io_lib:format("~p", [Other])),
@@ -2491,6 +2494,23 @@ resolve_cue_body(CueName) ->
                      <<"cue '", CueName/binary, "' raised ",
                        ClassBin/binary, ": ", WhatBin/binary>>}
             end
+    end.
+
+%% PR 2a runtime-compat shim: if the part's destination is a DrumKit
+%% (purs-backend-erl encoding: `{midiDrumKit, ...}`), the body is
+%% `Pattern String` from `Tidal.Drum:drum/1`; coerce each event's
+%% String value to a `Sample` variant via the PureScript helper so the
+%% voice gen_server's existing Pattern-Pitch emit path handles it.
+%%
+%% Only the destination's *tag atom* is inspected here — a minor
+%% boundary violation that PR 2b retires once drum dispatch flows
+%% through per-hit MIDI bindings without needing the Sample shim.
+coerce_body_for_dispatch(Dest, Pat) ->
+    case is_tuple(Dest) andalso tuple_size(Dest) >= 1 andalso element(1, Dest) of
+        midiDrumKit ->
+            ('tidal_drum@ps':drumPatternToPitch())(Pat);
+        _ ->
+            Pat
     end.
 
 fh2_daemon_call(Command) ->

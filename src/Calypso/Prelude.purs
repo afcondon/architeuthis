@@ -1,45 +1,62 @@
 -- | Calypso.Prelude — the DSL surface for Calypso session source files.
 -- |
 -- | A Calypso session is a PureScript module that imports this prelude.
--- | The user authors devices, instruments, parts, sections, etc. as
--- | ordinary PureScript declarations; the runtime walks the resulting
--- | `Session` value at baseline-load time to register them.
+-- | The user authors devices, instruments, drum kits, parts, sections,
+-- | etc. as ordinary PureScript declarations; the runtime walks the
+-- | resulting `Session` value at baseline-load time to register them.
 -- |
--- | History note (PR 1, 2026-05-17): the original surface used `Cue`
--- | (with a phantom `mvoice :: Symbol`) and `Channel` (with a 5-field
--- | tuple `device-ch-note-vel-dur`).  The rename to `PitchedPart` /
--- | `Instrument`, plus dropping the phantom in favour of a runtime
--- | String mvoice, is PR 1 of the DSL naming refactor.  The full slab
--- | plan including PR 1.5 (walker hoist into PureScript) and PR 2
--- | (destination split + dispatcher protocol) lives at
--- | `docs/dsl-naming-refactor-plan.md`.
+-- | History notes:
+-- | - PR 1 (2026-05-17): `Cue` → `PitchedPart`, `Channel` → `Instrument`,
+-- |   dropped the phantom Symbol-typed mvoice.
+-- | - PR 2a (2026-05-17): Added `DrumKit` + `DrumPart` as the
+-- |   destination/part for sample-keyed drum sequences.  Smart
+-- |   constructor `midi` hides the per-binding note/vel/dur defaults
+-- |   behind system constants — Studio reads `midi iac 1` rather than
+-- |   the inscrutable old `Channel iac 1 36 100 50`.  Runtime hot
+-- |   path unchanged: drum events flow through the existing
+-- |   Pattern Pitch dispatcher via Sample-coerce at the conductor
+-- |   boundary.  Per-hit MIDI bindings + per-event vel/dur are PR 2b.
+-- |
+-- | Plan: docs/dsl-naming-refactor-plan.md.
 module Calypso.Prelude
   ( module Tidal.Cell.Prelude
   -- Numeric negation — required so `transpose = -5` (and any other
   -- unary-minus literal) desugars to a real `negate` call rather
-  -- than failing with an Unknown-value error.  Cells get this via
-  -- their own Prelude; sessions import from us directly.
+  -- than failing with an Unknown-value error.
   , negate
   -- Application
   , applyFn, ($)
-  -- Bulk-erase a typed Part array into AnyParts for the Session bag.
-  , eraseAll
+  -- Array concat for joining `eraseAll […]` arrays across part-kinds
+  -- in the Session bag.  Re-exported because Cell.Prelude
+  -- deliberately skips `import Prelude` (`append` collision).
+  , appendParts, (<+>)
   -- Devices
   , MidiDevice(..)
-  -- Instruments — pitched-routing destinations (was `Channel`)
+  -- Instruments — pitched routing destinations
   , Instrument(..)
-  -- Parts — Pattern-bound-to-Instrument (was `Cue`)
+  , midi
+  , midiWith
+  -- Drum kits — sample-keyed destinations with per-hit defaults
+  , DrumKit(..)
+  , DrumHit
+  , DrumHitRef
+  , midiDrumKit
+  , hit
+  -- Parts
   , PitchedPart(..)
+  , DrumPart(..)
+  , class On
   , on
-  , partOf
   -- Session bag
   , Session(..)
   , AnyPart(..)
   , class Erase
   , erase
+  , eraseAll
   , emptySession
   , addDevice
   , addInstrument
+  , addDrumKit
   , addPart
   -- Sections (Pattern of parts, fired by the conductor)
   , Section
@@ -48,16 +65,14 @@ module Calypso.Prelude
 
 import Control.Applicative (pure)
 import Data.Functor (map)
-import Data.Semigroup ((<>))
+import Data.Semigroup (append, (<>)) as DataSemigroup
 import Data.Semiring (zero) as PSemiring
 import Data.Ring (class Ring, sub) as PRing
 import Tidal.Cell.Prelude
 import Tidal.Pitch (Pitch)
 
 -- | Right-associative function application — Haskell/Tidal idiom for
--- | avoiding nested parens: `f $ g $ x` reads as `f (g x)`.  Defined
--- | locally because re-exporting the prelude's `($)` collides with
--- | `class Apply`'s `apply` method that comes in via Tidal.Pattern.
+-- | avoiding nested parens: `f $ g $ x` reads as `f (g x)`.
 infixr 0 applyFn as $
 
 applyFn :: forall a b. (a -> b) -> a -> b
@@ -87,21 +102,95 @@ data MidiDevice = MidiDevice String Int
 -- Instruments
 -- ---------------------------------------------------------------------------
 
--- | A pitched-routing destination.  Today (PR 1) `Instrument` is a
--- | single MIDI variant; PR 2 splits it into a sum
--- | (`MidiInstrument` + `VPerOctInstrument`) and drops the trailing
--- | note/vel/dur defaults in favour of per-event articulation.
+-- | A pitched-routing destination.  The internal 5-tuple shape is
+-- | preserved from PR 1 so the BEAM dispatcher's spec parser keeps
+-- | working without protocol changes; the user-facing surface hides
+-- | the trailing note/vel/dur via the `midi` smart constructor.
 -- |
--- | The 5-tuple is preserved as-is for PR 1 to keep the dispatcher
--- | spec parser (`midi-note <alias> <ch> <note> <vel> <dur>`)
--- | working without protocol changes.
--- |
--- | ```
--- | qd1   = Instrument fh2qd 14 60 100 50
--- | bass1 = Instrument iac    1 36 100 50
--- | ```
+-- | PR 2c will split this into a sum (`MidiInstrument` +
+-- | `VPerOctInstrument`); PR 2b will drop the trailing defaults
+-- | entirely once the pattern emit path carries vel/dur per event.
 data Instrument
   = Instrument MidiDevice Int Int Int Int
+
+-- | The plain-MIDI instrument smart constructor.  Fills in system
+-- | defaults (note 60, vel 100, dur 50ms) so the user-facing
+-- | declaration reads as pure routing:
+-- |
+-- | ```
+-- | bass1 = midi iac 1
+-- | ```
+-- |
+-- | Use `midiWith` when you need a specific default note (e.g. a
+-- | mono synth that wants a particular triggered pitch when the
+-- | pattern doesn't override).
+midi :: MidiDevice -> Int -> Instrument
+midi device channel = Instrument device channel 60 100 50
+
+-- | The full-control MIDI instrument constructor for cases where
+-- | the system defaults aren't right.  Per-event vel/dur arrives in
+-- | PR 2b — at that point the `defNote`/`defVel`/`defDurMs` fields
+-- | will be retired.
+-- |
+-- | ```
+-- | sub1 = midiWith iac 5 { defNote: 24, defVel: 110, defDurMs: 200 }
+-- | ```
+midiWith
+  :: MidiDevice
+  -> Int
+  -> { defNote :: Int, defVel :: Int, defDurMs :: Int }
+  -> Instrument
+midiWith device channel { defNote, defVel, defDurMs } =
+  Instrument device channel defNote defVel defDurMs
+
+-- ---------------------------------------------------------------------------
+-- Drum kits
+-- ---------------------------------------------------------------------------
+
+-- | A single drum-hit declaration: a named token bound to its MIDI
+-- | note / velocity / duration.  Lives in the kit's hit table; at
+-- | runtime (PR 2b) each hit will register as its own MIDI binding
+-- | under `<kitAlias>.<hitName>`.  For PR 2a the kit registers as
+-- | one binding (using the first hit's defaults) and per-hit
+-- | dispatch is deferred.
+type DrumHit =
+  { name :: String
+  , note :: Int
+  , vel :: Int
+  , durMs :: Int
+  }
+
+-- | Construct a drum hit.  Reads as:
+-- |
+-- | ```
+-- | hit "bd" 36 100 50   -- "bd" → MIDI note 36, vel 100, 50ms
+-- | ```
+hit :: String -> Int -> Int -> Int -> DrumHit
+hit name note vel durMs = { name, note, vel, durMs }
+
+-- | A reference to a drum hit by name; the body type of `DrumPart`.
+type DrumHitRef = String
+
+-- | A drum / sample destination, distinct from `Instrument` because
+-- | (a) it carries a per-hit table where pitched instruments have
+-- | only routing, and (b) PR 2b will dispatch each hit through its
+-- | own MIDI binding.  PR 2c will add `GateDrumKit` for CV/Gate
+-- | output through cv-router.
+-- |
+-- | ```
+-- | qd1 = midiDrumKit fh2qd 14
+-- |   [ hit "bd" 36 100 50
+-- |   , hit "sn" 38 100 50
+-- |   , hit "hh" 42  80 30
+-- |   ]
+-- | ```
+data DrumKit
+  = MidiDrumKit MidiDevice Int (Array DrumHit)
+
+-- | Smart constructor — direct mirror of `MidiDrumKit` for symmetry
+-- | with the `midi` / `midiWith` instrument constructors.
+midiDrumKit :: MidiDevice -> Int -> Array DrumHit -> DrumKit
+midiDrumKit = MidiDrumKit
 
 -- ---------------------------------------------------------------------------
 -- Parts
@@ -110,90 +199,94 @@ data Instrument
 -- | A `PitchedPart` is a `Pattern Pitch` bound to an `Instrument`,
 -- | tagged with a runtime mvoice name (`"bass"`, `"fugue"`, …) that
 -- | the conductor uses to dispatch to the right voice supervisor.
--- |
--- | The mvoice is a String (not a phantom Symbol) so that arrays of
--- | parts targeting different voices are homogeneous and can be
--- | uniformly erased into the Session's `parts` bag via
--- | `erase <$> [...]`.
--- |
--- | PR 2 will introduce `DrumPart` as a sibling kind; the `Erase`
--- | class produces the same `AnyPart` regardless of source kind.
 newtype PitchedPart = PitchedPart
   { mvoice      :: String
   , destination :: Instrument
   , body        :: Pattern Pitch
   }
 
--- | The standard part constructor.  Reads as "play this on bass1 in
--- | the bass voice":
+-- | A `DrumPart` is a `Pattern DrumHitRef` (sequence of named drum
+-- | hits — `"bd"`, `"sn"`, `"~"` for rest) bound to a `DrumKit`.
+-- | Authored as:
 -- |
--- |     bass1A :: PitchedPart
--- |     bass1A = on "bass" bass1 (mini "c2 e2 g2 ~")
--- |
--- | The mvoice string ("bass" here) is the runtime label the voice
--- | supervisor matches against.
-on :: String -> Instrument -> Pattern Pitch -> PitchedPart
-on mv i body = PitchedPart { mvoice: mv, destination: i, body }
+-- | ```
+-- | qd1A :: DrumPart
+-- | qd1A = on "drums" qd1 (drum "bd bd ~ ~ bd ~ sn ~")
+-- | ```
+newtype DrumPart = DrumPart
+  { mvoice      :: String
+  , destination :: DrumKit
+  , body        :: Pattern DrumHitRef
+  }
 
--- | Alternate name when you want the call-site to read declaratively:
--- |     melodyT = partOf "bass" bass2 (tintinnabuli aMinT above1 mPart)
-partOf :: String -> Instrument -> Pattern Pitch -> PitchedPart
-partOf = on
+-- | The polymorphic `on` constructor — typeclass-dispatched on the
+-- | destination type so `on "bass" bass1 (mini "...")` builds a
+-- | `PitchedPart` and `on "drums" qd1 (drum "...")` builds a
+-- | `DrumPart`.  Functional dependency on dest → body, part keeps
+-- | inference clean.
+class On dest body part | dest -> body part where
+  on :: String -> dest -> Pattern body -> part
+
+instance onInstrument :: On Instrument Pitch PitchedPart where
+  on mvoice destination body =
+    PitchedPart { mvoice, destination, body }
+
+instance onDrumKit :: On DrumKit DrumHitRef DrumPart where
+  on mvoice destination body =
+    DrumPart { mvoice, destination, body }
 
 -- ---------------------------------------------------------------------------
 -- Session bag — erased Parts the runtime walks at baseline load
 -- ---------------------------------------------------------------------------
 
--- | An `AnyPart` is a Part with its specific kind erased.  PR 1 has
--- | only one Part kind (PitchedPart), so the erasure is structurally
--- | trivial; PR 2 makes `AnyPart` a sum (`AnyPitchedPart` |
--- | `AnyDrumPart`) and the conductor pattern-matches on the variant
--- | at arm time.
--- |
--- | Why a `data` type with a named constructor rather than a
--- | newtype: PR 2's transition is then a single-line constructor
--- | addition, and the Erlang walker (until PR 1.5 hoists it) gets a
--- | stable `anyPart` tuple-tag to match on.
-data AnyPart = AnyPart
-  { mvoice      :: String
-  , destination :: Instrument
-  , body        :: Pattern Pitch
-  }
+-- | A part with its specific kind erased.  PR 2a makes this a sum
+-- | (PitchedPart's record + DrumPart's record); the conductor
+-- | dispatches on the variant at arm time.
+data AnyPart
+  = AnyPitchedPart
+      { mvoice      :: String
+      , destination :: Instrument
+      , body        :: Pattern Pitch
+      }
+  | AnyDrumPart
+      { mvoice      :: String
+      , destination :: DrumKit
+      , body        :: Pattern DrumHitRef
+      }
 
--- | Erase a typed Part into an `AnyPart`.  Typeclass-resolved so PR 2
--- | can add a `DrumPart` instance without touching call sites
--- | (`erase <$> [bass1A, fugue1, qd1A]` will keep working as the
--- | typeclass dispatches per element).
+-- | Erase a typed Part into an `AnyPart`.  Typeclass-resolved so a
+-- | uniform `erase <$> [parts]` works across mixed kinds.
 class Erase a where
   erase :: a -> AnyPart
 
 instance erasePitched :: Erase PitchedPart where
-  erase (PitchedPart r) = AnyPart r
+  erase (PitchedPart r) = AnyPitchedPart r
+
+instance eraseDrum :: Erase DrumPart where
+  erase (DrumPart r) = AnyDrumPart r
 
 -- | Bulk-erase a homogeneous Array of typed Parts to the Session's
--- | `parts` bag.  PR 1 has only PitchedPart, so the call site reads
+-- | `parts` bag.  Use one `eraseAll [...]` per Part-kind, joined
+-- | with `<>`:
 -- |
--- |     parts: eraseAll [bass1A, melodyM, fugue1, fugue2]
--- |
--- | When PR 2 adds DrumPart, each Part-kind gets its own `eraseAll
--- | […]` group, joined with `<>`:
--- |
--- |     parts: eraseAll [bass1A, fugue1, fugue2] <> eraseAll [qd1A, qd2A]
+-- |     parts: eraseAll [fugue1, melodyM] <> eraseAll [qd1A, qd2A]
 eraseAll :: forall a. Erase a => Array a -> Array AnyPart
 eraseAll = map erase
 
--- | The Session value: the bag of declarations that the runtime
--- | walks at baseline load to register devices, register
--- | instruments, and seed parts.
+-- | Join two `Array AnyPart` groups (typically one per Part-kind).
 -- |
--- | PR 1 keeps the three-field shape that the Erlang walker expects;
--- | PR 1.5 will replace the walker's ad-hoc field-keys classification
--- | with a flat `RegistrationEvent` boundary, after which Session
--- | can grow more fields (drumKits, cvRouters, polysignals) without
--- | touching Erlang.
+-- |     parts: eraseAll [pitchedParts ...] `appendParts` eraseAll [drumParts ...]
+appendParts :: Array AnyPart -> Array AnyPart -> Array AnyPart
+appendParts = DataSemigroup.append
+
+infixr 5 appendParts as <+>
+
+-- | The Session value: devices, instruments, drum kits, and the bag
+-- | of erased parts.  Walked at baseline load.
 newtype Session = Session
   { devices     :: Array MidiDevice
   , instruments :: Array Instrument
+  , drumKits    :: Array DrumKit
   , parts       :: Array AnyPart
   }
 
@@ -201,31 +294,27 @@ newtype Session = Session
 -- Sections — patterns whose events arm parts
 -- ---------------------------------------------------------------------------
 
--- | A `Section` is `Pattern AnyPart` — a pattern whose events carry
--- | erased parts that the BEAM-side conductor arms on their target
--- | mvoice when each event's cycle arrives.  Composable with every
--- | Pattern combinator (`cat`, `stack`, `every`, `rev`, `fast`,
--- | `slow`, …).
 type Section = Pattern AnyPart
 
--- | Lift a typed Part into a one-event-per-cycle `Section`:
--- |
--- |     intro :: Section
--- |     intro = cat [armPart bass1A, armPart bass1B]
--- |
--- | The Erase constraint lets this accept any Part-kind that PR 2
--- | adds.
 armPart :: forall a. Erase a => a -> Section
 armPart x = pure (erase x)
 
 emptySession :: Session
-emptySession = Session { devices: [], instruments: [], parts: [] }
+emptySession = Session
+  { devices: []
+  , instruments: []
+  , drumKits: []
+  , parts: []
+  }
 
 addDevice :: MidiDevice -> Session -> Session
-addDevice d (Session s) = Session s { devices = s.devices <> [d] }
+addDevice d (Session s) = Session s { devices = s.devices `DataSemigroup.append` [d] }
 
 addInstrument :: Instrument -> Session -> Session
-addInstrument i (Session s) = Session s { instruments = s.instruments <> [i] }
+addInstrument i (Session s) = Session s { instruments = s.instruments `DataSemigroup.append` [i] }
+
+addDrumKit :: DrumKit -> Session -> Session
+addDrumKit k (Session s) = Session s { drumKits = s.drumKits `DataSemigroup.append` [k] }
 
 addPart :: AnyPart -> Session -> Session
-addPart p (Session s) = Session s { parts = s.parts <> [p] }
+addPart p (Session s) = Session s { parts = s.parts `DataSemigroup.append` [p] }
