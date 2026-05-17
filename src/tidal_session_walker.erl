@@ -33,7 +33,13 @@
 
 -define(WALKER_PS_MODULE,  'tidal_sessionWalker@ps').
 -define(CHANNEL_ALIAS_ETS, tidal_channel_aliases).
--define(STUDIO_STATE_ETS,  tidal_studio_state).
+%% Studio snapshot lives in persistent_term (not ETS) so reads work
+%% from any process — including a fresh cowboy WS handler that didn't
+%% participate in the most-recent walk_baseline.  ETS named tables are
+%% owned by the process that creates them and die on owner exit, which
+%% would empty the table the moment the wscat / Calypso-side reload-
+%% baseline session closes.
+-define(STUDIO_STATE_KEY,  {tidal_studio_state, events}).
 
 %% ====================================================================
 %% Public API
@@ -70,8 +76,8 @@ walk_baseline() ->
             %% Capture a Studio-pane snapshot from the raw event list so
             %% `get-studio` (and any future Studio-state queries) can
             %% read it without re-walking the PureScript modules.
-            ensure_studio_state_table(),
-            ets:insert(?STUDIO_STATE_ETS, {events, Events}),
+            %% persistent_term, not ETS — see STUDIO_STATE_KEY note above.
+            persistent_term:put(?STUDIO_STATE_KEY, Events),
             {ok, Stats}
     end.
 
@@ -98,15 +104,6 @@ ensure_channel_alias_table() ->
         _ -> ok
     end.
 
-ensure_studio_state_table() ->
-    case ets:info(?STUDIO_STATE_ETS) of
-        undefined ->
-            ets:new(?STUDIO_STATE_ETS,
-                    [named_table, public, set,
-                     {read_concurrency, true}]);
-        _ -> ok
-    end.
-
 %% @doc Format the current Studio snapshot as a list of tab-delimited
 %% binary lines, one per device / instrument / drum kit / claim
 %% conflict.  Used by the `get-studio` WS verb to populate Calypso's
@@ -122,15 +119,8 @@ ensure_studio_state_table() ->
 %%                              <TAB> <kind>:<owner>,<kind>:<owner>
 %%                              <TAB> <human-readable message>
 studio_lines() ->
-    case ets:info(?STUDIO_STATE_ETS) of
-        undefined -> [];
-        _ ->
-            case ets:lookup(?STUDIO_STATE_ETS, events) of
-                [{_, Events}] ->
-                    lists:filtermap(fun event_to_line/1, Events);
-                _ -> []
-            end
-    end.
+    Events = persistent_term:get(?STUDIO_STATE_KEY, []),
+    lists:filtermap(fun event_to_line/1, Events).
 
 event_to_line({registerMidiDevice,
                #{alias := A, name := N, latencyMs := L}}) ->
