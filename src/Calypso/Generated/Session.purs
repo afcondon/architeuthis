@@ -68,10 +68,10 @@ fugue2 :: Cue "fugue"
 fugue2 = on bass2 (fugueVoice (defaultVoice { transpose = 7 }) subject)
 
 fugue3 :: Cue "fugue"
-fugue3 = on bass3 (fugueVoice (defaultVoice { transpose = 12, speed = doubleSpeed }) subject)
+fugue3 = on bass3 (fugueVoice (defaultVoice { transpose = 7, speed = doubleSpeed }) subject)
 
 fugue4 :: Cue "fugue"
-fugue4 = on bass4 (fugueVoice (defaultVoice { transpose = -5, retrograde = true, speed = halfSpeed })
+fugue4 = on bass4 (fugueVoice (defaultVoice { transpose = -3, retrograde = true, speed = halfSpeed }) subject)
 
 intro :: Section
 intro = slow (r 8) (cat [armCue bass1A, armCue bass1B])
