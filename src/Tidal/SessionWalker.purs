@@ -34,13 +34,11 @@ import Data.Tuple (Tuple(..))
 import Effect (Effect)
 import Foreign (Foreign)
 import Tidal.MidiClaim
-  ( ClaimError(..)
-  , ClaimOwnerKind(..)
-  , MidiClaim
-  , claimOwnerKindLabel
-  , describeClaimError
+  ( MidiClaim
+  , claimErrorToBoundary
   , validateMidiClaims
   )
+import Tidal.PortClaim (ClaimError, OwnerKind(..))
 
 -- ---------------------------------------------------------------------------
 -- The boundary ADT
@@ -128,7 +126,7 @@ walkBaseline = do
     -- BEFORE registration events so the Erlang log shows them ahead
     -- of the binding installs they conflict with.
     claims = Array.mapMaybe registrationToClaim (instrEvents <> kitEvents)
-    claimErrorEvents = map claimErrorToEvent (validateMidiClaims claims)
+    claimErrorEvents = Array.mapMaybe claimErrorToEvent (validateMidiClaims claims)
   pure (claimErrorEvents <> devEvents <> instrEvents <> kitEvents)
 
 registrationToClaim :: RegistrationEvent -> Maybe MidiClaim
@@ -147,18 +145,15 @@ registrationToClaim = case _ of
     }
   _ -> Nothing
 
-claimErrorToEvent :: ClaimError -> RegistrationEvent
-claimErrorToEvent err@(DuplicateMidiClaim r) =
-  ReportClaimError
-    { errorKind: "duplicate-midi-channel"
-    , deviceAlias: r.deviceAlias
-    , channel: r.channel
-    , owners:
-        map
-          (\o -> { name: o.owner, kind: claimOwnerKindLabel o.ownerKind })
-          r.owners
-    , message: describeClaimError err
-    }
+-- | Lift a `Tidal.PortClaim.ClaimError` into a wire-shaped
+-- | `ReportClaimError` registration event.  Drops claim errors that
+-- | don't flatten to MIDI's (device, channel) shape — Phase 2 only
+-- | walks MIDI claims, but the machinery accepts richer shapes for
+-- | when ES-9 / FH-2 claims start flowing through here.
+claimErrorToEvent :: ClaimError -> Maybe RegistrationEvent
+claimErrorToEvent err = case claimErrorToBoundary err of
+  Just r -> Just $ ReportClaimError r
+  Nothing -> Nothing
 
 -- | The classifier — the only place that knows what purs-backend-erl
 -- | tags map to what application meaning.  Returns Nothing for any

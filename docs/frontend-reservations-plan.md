@@ -332,27 +332,63 @@ Composition pane that mirrors this split.
 - The gate-flash confirmation verb (FH-2 / ES-9 hardware ports)
   triggered from a "verify" button on each device.
 
-**Diverged from original plan: no `Bank`/`BankMask` for MIDI.**  The
-original Phase 1 sketch called for extending `Bank` with
-`BankMidi { device :: String }` and widening `BankMask` to 16 bits.
-For Phase 1a I used a flat `MidiClaim` record instead, on the grounds
-that the bitmask + capability machinery from `port-claims-design.md`
-is over-engineering for the MIDI case (each claim is single-slot,
-capabilities are trivially equal).  When Phase 2 introduces ES-9
-banks — which DO want the bitmask model (partial-overlap detection
-across panel jacks) — that's the right moment to port the larger
-machinery in and thread MIDI claims through it.  Until then,
-`Tidal.MidiClaim` is the smaller load-bearing layer.
+**Phase 1a → Phase 2 transition (2026-05-17).**  Phase 1a's flat
+`MidiClaim` record + group-and-count validator has been **retired**
+in Phase 2 in favour of threading MIDI claims through the unified
+`Tidal.PortClaim` machinery (per `port-claims-design.md`).  MIDI
+claims are now single-slot claims on `BankMidi <alias>` banks whose
+`SwapPolicy = SwapError`; same-channel duplicates surface as
+`ExactMatchRejected` errors from the unified `applyClaim`.  The
+`Tidal.MidiClaim` module remains as the MIDI-specific adapter
+(translates SessionWalker registration events to PortClaim claims,
+flattens errors back to the wire shape) but no longer carries its
+own validator or its own error ADT.
 
-### Phase 2: ES-9 banks
+### Phase 2: unified port-claim framework + ES-9 banks (✓ shipped 2026-05-17)
 
-- Add `BankEs9` constructors per `port-claims-design.md` section
-  on cross-device extension.
-- Register existing ES-9 tvoices as single-slot claims so
-  partial-conflict detection covers them.
+**Phase 2a — Tidal.PortClaim framework + ES-9 bank declarations (shipped):**
 
-Acceptance: declaring two voices on the same ES-9 panel jack
-produces an error.
+- New module `Tidal.PortClaim` ports the full bitmask / capability /
+  overlap-shape machinery from `port-claims-design.md` to purerl-tidal.
+  Device-agnostic core: `BankMask`, `ClaimMask`, `OwnerKind`,
+  `OwnerId`, `Claim`, `ClaimTable`, `OverlapShape`, `classifyOverlap`,
+  `ClaimError`, `applyClaim`.
+- `Bank` ADT covers `BankMidi <alias>` (16 slots per MIDI device) plus
+  the four `BankEs9*` constructors (`BankEs9Panel`, `BankEs9Cv n`,
+  `BankEs9Gt n`, `BankEs9Es5 n`, 8 slots each).  Each bank declares
+  its `bankCapability` (Gate / CV / GateOrCV) and `bankWidth`.
+- New `SwapPolicy` machinery per bank: `BankMidi` = `SwapError`
+  (two synths on iac ch 1 is chaos, not a swap); ES-9 banks =
+  `SwapOk` (polylfo → polyenv on the same panel is the natural
+  live-coding gesture).  Same `applyClaim` function, per-bank
+  semantics.
+- `Tidal.MidiClaim` refactored to thread through `Tidal.PortClaim`:
+  each MidiClaim becomes a single-slot `Claim` on a `BankMidi` bank;
+  `validateMidiClaims` folds claims through `applyClaim` against a
+  running `ClaimTable`, producing `ExactMatchRejected` errors for
+  same-channel duplicates.  Boundary helper `claimErrorToBoundary`
+  flattens errors to the SessionWalker's wire shape — Erlang log line
+  + Calypso Studio pane parser keep working unchanged.
+- Semantics shift vs Phase 1a: a three-way collision now produces two
+  errors (claim 2 vs accepted claim 1, claim 3 vs accepted claim 1)
+  rather than one grouped error.  Matches the actual "first
+  declaration wins, later ones flagged" model.
+- Tests: 53 new `Test.PortClaimSpec` cases covering BankMask
+  arithmetic, capability rule, classifyOverlap (5 shapes), applyClaim
+  MIDI (SwapError) and ES-9 (SwapOk) paths, capability errors,
+  partial-conflict detection, idempotent same-owner update.
+  `Test.MidiClaimSpec` updated to the new error semantics; all green.
+
+**Phase 2b — typed ES-9 Studio surface (deferred):**
+
+- A typed declaration form for ES-9 instruments/voices in Studio.purs
+  (`gate kick es9 8`, `cv-cont bass1cv es9 9`, etc.) so the walker can
+  emit ES-9 claims and partial-overlap detection covers them.
+- Acceptance still aspirational: declaring two voices on the same
+  ES-9 panel jack produces an error.  Achievable today by hand-
+  constructing claims; deferred until the typed-surface design lands
+  (probably alongside Phase 3 — explicit `reserve` for setup-cell
+  claims, which has overlap).
 
 ### Phase 3: explicit `reserve` for setup-cell-style claims
 
