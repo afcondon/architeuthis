@@ -24,6 +24,7 @@ module Tidal.Cell.Prelude
   , module Tidal.Pitch
   , module Tidal.Pitch.Parse
   , module Tidal.Scales
+  , module Tidal.Tintinnabuli
   , r
   ) where
 
@@ -54,6 +55,21 @@ import Tidal.Scales
   , gMajor, gMixolydian, gMinor, gDorian
   , aMajor, aMinor, aMixolydian, aDorian, aHarmonicMinor
   , bMinor, bDorian, bLocrian
+  )
+import Tidal.Tintinnabuli
+  ( Triad
+  , triad
+  , Position(..)
+  , above1, above2, above3
+  , below1, below2, below3
+  , tintinnabuli
+  , cMajT, cMinT
+  , dMajT, dMinT
+  , eMajT, eMinT
+  , fMajT, fMinT
+  , gMajT, gMinT
+  , aMajT, aMinT
+  , bMajT, bMinT, bDimT
   )
 
 -- | Short alias for `Data.Rational.fromInt`.  `fast` and `slow` take

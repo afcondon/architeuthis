@@ -47,3 +47,10 @@ qd2 = Channel fh2qd 15 60 100 50
 
 bass1 :: Channel
 bass1 = Channel iac 1 36 100 50
+
+-- | Second IAC bass channel — companion to `bass1`.  Used in
+-- | tintinnabuli-style two-voice demos where M-voice and T-voice
+-- | need separate destinations (so Live can route them to distinct
+-- | software instruments).
+bass2 :: Channel
+bass2 = Channel iac 2 36 100 50

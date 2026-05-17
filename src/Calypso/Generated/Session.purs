@@ -6,7 +6,7 @@
 module Calypso.Generated.Session where
 
 import Calypso.Prelude
-import Studio (fh2, fh2qd, iac, qd1, qd2, bass1)
+import Studio (fh2, fh2qd, iac, qd1, qd2, bass1, bass2)
 
 -- ---------------------------------------------------------------------------
 -- Cues
@@ -31,18 +31,34 @@ bass1Deg :: Cue "bass"
 bass1Deg = on bass1 (inKey aHarmonicMinor (d "1 5 3 5 1 3 5 -1"))
 
 bass1Mix :: Cue "bass"
-bass1Mix = on bass1 (inKey dDorian (d "5 2 5 3 3 7 -1"))
+bass1Mix = on bass1 (inKey dDorian (d "5 5 5 3 3 7 -1"))
 
 -- ---------------------------------------------------------------------------
--- Sections (MVP-2: Pattern of cues, fired by the conductor)
+-- MVP-3 Tintinnabuli demo: M-voice + parallel T-voice on A-minor.
 -- ---------------------------------------------------------------------------
 
--- A two-event section that arms bass1A in the first half of every
--- cycle and bass1B in the second half.  Wrap with `slow N` to spread
--- the swap over more cycles:  intro = slow 8 (cat [...]) gives 4
--- cycles of each.  Fire with the `play-piece intro` WS verb.
+-- | Stepwise melody fragment in A natural minor.  Up to E5, back down
+-- | through the home tone.  Arm `melodyM` and `melodyT` together to
+-- | hear Pärt's 1→1 rule: each M-voice note paired with the nearest
+-- | A-minor triad pitch above it.
+mPart :: Pattern Pitch
+mPart = mini "a4 b4 c5 d5 e5 d5 c5 b4"
+
+-- | The M-voice — the melody, sent to `bass1`.
+melodyM :: Cue "bass"
+melodyM = on bass1 mPart
+
+-- | The T-voice — `tintinnabuli` over `aMinT` (the A-minor triad) at
+-- | Position 1 Superior, sent to `bass2` so Live can route it to a
+-- | second instrument.  Pure `map` over the melody — no scheduling,
+-- | no shared state.  Time structure (`every`, `rev`, `fast`, …)
+-- | applied to `mPart` would carry through to `melodyT` automatically.
+melodyT :: Cue "bass"
+melodyT = on bass2 (tintinnabuli aMinT above1 mPart)
+
 intro :: Section
 intro = slow (r 8) (cat [armCue bass1A, armCue bass1B])
+
 
 -- ---------------------------------------------------------------------------
 -- The Session value
@@ -51,9 +67,10 @@ intro = slow (r 8) (cat [armCue bass1A, armCue bass1B])
 session :: Session
 session = Session
   { devices:  [fh2, fh2qd, iac]
-  , channels: [qd1, qd2, bass1]
+  , channels: [qd1, qd2, bass1, bass2]
   , cues:     [ anyCue qd1A, anyCue qd1B, anyCue qd2A
               , anyCue bass1A, anyCue bass1B
               , anyCue bass1Deg, anyCue bass1Mix
+              , anyCue melodyM, anyCue melodyT
               ]
   }
