@@ -137,7 +137,13 @@ defaultVoice =
 -- | Apply one Voice's transforms to a source pattern.  The fields
 -- | are stacked left-to-right: speed first (rescales the time axis),
 -- | then retrograde (mirrors the rescaled stream), then transpose
--- | (chromatic semitone shift).
+-- | (diatonic scale-degree shift — see `transposeDiatonic`).
+-- |
+-- | Transpose and retrograde commute (transpose is a pointwise
+-- | function over values; retrograde is a time-axis flip), so the
+-- | order between them is a stylistic implementation detail.  Speed
+-- | comes first because rescaling time before mirroring is the form
+-- | musicians read off the staff.
 -- |
 -- | Identity short-cuts when fields are at their defaults avoid
 -- | wrapping the source in no-op functors — useful when the

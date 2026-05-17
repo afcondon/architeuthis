@@ -8,6 +8,7 @@ import Effect.Console (log)
 import Test.BranchedSpec (runBranchedTests)
 import Test.ControlSpec (runControlTests)
 import Test.DejaVuSpec (runDejaVuTests)
+import Test.FugueSpec (runFugueTests)
 import Test.LawSpec (runLawTests)
 import Test.MidiClaimSpec (runMidiClaimTests)
 import Test.PatternSpec (runPatternTests)
@@ -179,6 +180,9 @@ main = do
 
   -- Run Tidal.Tintinnabuli scale-aware tests (task #62)
   runTintinnabuliTests
+
+  -- Run Tidal.Fugue scale-aware transposition tests (task #62 sibling)
+  runFugueTests
 
   log ""
   log "=== All tests completed ==="
