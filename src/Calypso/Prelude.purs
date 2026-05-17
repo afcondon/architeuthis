@@ -11,6 +11,11 @@
 -- | calypso/docs/typeful-cues-plan-2026-05-15.md for the full plan.
 module Calypso.Prelude
   ( module Tidal.Cell.Prelude
+  -- Numeric negation — required so `transpose = -5` (and any other
+  -- unary-minus literal) desugars to a real `negate` call rather
+  -- than failing with an Unknown-value error.  Cells get this via
+  -- their own Prelude; sessions import from us directly.
+  , negate
   -- Application
   , applyFn, ($)
   -- Devices
@@ -36,6 +41,8 @@ module Calypso.Prelude
 
 import Control.Applicative (pure)
 import Data.Semigroup ((<>))
+import Data.Semiring (class Semiring, zero) as PSemiring
+import Data.Ring (class Ring, sub) as PRing
 import Data.Symbol (class IsSymbol, reflectSymbol)
 import Type.Proxy (Proxy(..))
 import Tidal.Cell.Prelude
@@ -49,6 +56,13 @@ infixr 0 applyFn as $
 
 applyFn :: forall a b. (a -> b) -> a -> b
 applyFn f x = f x
+
+-- | Numeric negation — required so a literal `-5` desugars to a real
+-- | `negate` call.  Reimplemented locally rather than re-exporting
+-- | `Data.Ring.negate` because we don't `import Prelude` at this
+-- | module (collision with `append` in `Tidal.Pattern.Core`).
+negate :: forall a. PRing.Ring a => a -> a
+negate x = PRing.sub PSemiring.zero x
 
 -- ---------------------------------------------------------------------------
 -- Devices

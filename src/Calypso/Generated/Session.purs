@@ -6,7 +6,11 @@
 module Calypso.Generated.Session where
 
 import Calypso.Prelude
-import Studio (fh2, fh2qd, iac, qd1, qd2, bass1, bass2)
+import Studio (fh2, fh2qd, iac, qd1, qd2, bass1, bass2, bass3, bass4)
+import Tidal.Fugue
+  ( Voice, defaultVoice, fugueVoice
+  , doubleSpeed, halfSpeed, quarterSpeed
+  )
 
 -- ---------------------------------------------------------------------------
 -- Cues
@@ -46,6 +50,28 @@ melodyM = on bass1 mPart
 melodyT :: Cue "bass"
 melodyT = on bass2 (tintinnabuli aMinT above1 mPart)
 
+-- ---------------------------------------------------------------------------
+-- MVP-4 Fugue Machine demo: 4 playheads on a shared subject.
+-- ---------------------------------------------------------------------------
+
+subject :: Pattern Pitch
+subject = mini "c4 e4 g4 c5 b4 g4 e4 c4"
+
+fugue1 :: Cue "fugue"
+fugue1 = on bass1 (fugueVoice defaultVoice subject)
+
+fugue2 :: Cue "fugue"
+fugue2 = on bass2 (fugueVoice (defaultVoice { transpose = 7 }) subject)
+
+fugue3 :: Cue "fugue"
+fugue3 = on bass3 (fugueVoice
+  (defaultVoice { transpose = 12, speed = doubleSpeed }) subject)
+
+fugue4 :: Cue "fugue"
+fugue4 = on bass4 (fugueVoice
+  (defaultVoice { transpose = -5, retrograde = true, speed = halfSpeed })
+  subject)
+
 intro :: Section
 intro = slow (r 8) (cat [armCue bass1A, armCue bass1B])
 
@@ -57,10 +83,11 @@ intro = slow (r 8) (cat [armCue bass1A, armCue bass1B])
 session :: Session
 session = Session
   { devices:  [fh2, fh2qd, iac]
-  , channels: [qd1, qd2, bass1, bass2]
+  , channels: [qd1, qd2, bass1, bass2, bass3, bass4]
   , cues:     [ anyCue qd1A, anyCue qd1B, anyCue qd2A
               , anyCue bass1A, anyCue bass1B
               , anyCue bass1Deg, anyCue bass1Mix
               , anyCue melodyM, anyCue melodyT
+              , anyCue fugue1, anyCue fugue2, anyCue fugue3, anyCue fugue4
               ]
   }

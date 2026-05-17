@@ -54,3 +54,12 @@ bass1 = Channel iac 1 36 100 50
 -- | software instruments).
 bass2 :: Channel
 bass2 = Channel iac 2 36 100 50
+
+-- | Third + fourth IAC bass channels — for 4-voice fugue / canon
+-- | textures where each playhead lands on its own MIDI channel.
+-- | Same default note / velocity / duration as bass1, bass2.
+bass3 :: Channel
+bass3 = Channel iac 3 36 100 50
+
+bass4 :: Channel
+bass4 = Channel iac 4 36 100 50
