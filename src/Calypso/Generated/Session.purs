@@ -54,23 +54,24 @@ melodyT = on bass2 (tintinnabuli aMinT above1 mPart)
 -- MVP-4 Fugue Machine demo: 4 playheads on a shared subject.
 -- ---------------------------------------------------------------------------
 
+-- Subject in RAW DEGREES (no `inKey` wrap) so the global scale bus
+-- governs rendering and diatonic transpose can operate.  Fire
+-- `set-scale aHarmonicMinor` once at boot; `set-scale dDorian` etc.
+-- to modulate the whole fugue live.
 subject :: Pattern Pitch
-subject = mini "c4 e4 g4 c5 b4 g4 e4 c4"
+subject = d "1 5 3 5 1 3 5 -1"
 
 fugue1 :: Cue "fugue"
 fugue1 = on bass1 (fugueVoice defaultVoice subject)
 
 fugue2 :: Cue "fugue"
-fugue2 = on bass2 (fugueVoice (defaultVoice { transpose = 7 }) subject)
+fugue2 = on bass2 (fugueVoice (defaultVoice { transpose = 4 }) subject)
 
 fugue3 :: Cue "fugue"
-fugue3 = on bass3 (fugueVoice
-  (defaultVoice { transpose = 12, speed = doubleSpeed }) subject)
+fugue3 = on bass3 (fugueVoice (defaultVoice { transpose = 7, speed = doubleSpeed }) subject)
 
 fugue4 :: Cue "fugue"
-fugue4 = on bass4 (fugueVoice
-  (defaultVoice { transpose = -5, retrograde = true, speed = halfSpeed })
-  subject)
+fugue4 = on bass4 (fugueVoice (defaultVoice { transpose = -3, retrograde = true, speed = halfSpeed }) subject)
 
 intro :: Section
 intro = slow (r 8) (cat [armCue bass1A, armCue bass1B])

@@ -25,27 +25,33 @@
 -- |     so a Session can declare four playheads on a shared subject
 -- |     in four short lines.
 -- |
--- | Usage:
+-- | Usage (degree-based subject + live scale):
 -- |
 -- |     import Tidal.Fugue (Voice, defaultVoice, fugueVoice,
 -- |                        doubleSpeed, halfSpeed)
 -- |
+-- |     -- Raw scale degrees; the active scale (set live via
+-- |     -- `set-scale aHarmonicMinor` etc.) governs rendering.
 -- |     subject :: Pattern Pitch
--- |     subject = mini "c4 e4 g4 c5 b4 g4 e4 c4"
+-- |     subject = d "1 3 5 8 7 5 3 1"
 -- |
 -- |     voice1 :: Cue "fugue"
 -- |     voice1 = on bass1 (fugueVoice defaultVoice subject)
 -- |
 -- |     voice2 :: Cue "fugue"
--- |     voice2 = on bass2 (fugueVoice (defaultVoice { transpose = 7 }) subject)
+-- |     voice2 = on bass2 (fugueVoice (defaultVoice { transpose = 4 }) subject)
 -- |
 -- |     voice3 :: Cue "fugue"
 -- |     voice3 = on bass3 (fugueVoice
--- |       (defaultVoice { speed = doubleSpeed, transpose = 12 }) subject)
+-- |       (defaultVoice { speed = doubleSpeed, transpose = 7 }) subject)
 -- |
 -- |     voice4 :: Cue "fugue"
 -- |     voice4 = on bass4 (fugueVoice
--- |       (defaultVoice { retrograde = true, transpose = -5 }) subject)
+-- |       (defaultVoice { retrograde = true, transpose = -3 }) subject)
+-- |
+-- | Then `set-scale aHarmonicMinor` and the whole fugue plays in
+-- | A harmonic minor; `set-scale dDorian` shifts it (almost) anywhere
+-- | else with one wire verb — no re-arming.
 -- |
 -- | Limits today:
 -- |
@@ -78,7 +84,7 @@ import Data.Rational (Rational, fromInt, (%))
 import Tidal.Pattern.Core (fast, rev)
 import Tidal.Pattern.Types (Pattern)
 import Tidal.Pitch (Pitch)
-import Tidal.Scales (transposeChromatic)
+import Tidal.Scales (transposeDiatonic)
 
 -- ---------------------------------------------------------------------------
 -- The Voice record
@@ -93,10 +99,17 @@ import Tidal.Scales (transposeChromatic)
 -- | (`doubleSpeed`, `halfSpeed`, …) for readability, or any
 -- | `Rational` literal via `r` / `(% )`.
 -- |
--- | `transpose` is in semitones — chromatic, not diatonic.  For
--- | diatonic transposition over an active scale, post-compose with
--- | `transposeDiatonic` from `Tidal.Scales` at the cue site rather
--- | than adding a second transpose field here.
+-- | `transpose` is in **scale degrees** (diatonic), not semitones.
+-- | This keeps the fugue holding together under live `set-scale`
+-- | changes: each voice stays the same degree-shift away from the
+-- | subject, so modulating the whole rig with one wire verb shifts
+-- | the entire fugue coherently.  Feed the subject as raw degrees
+-- | (`d "1 3 5 8 7 5 3 1"`, no `inKey` wrapper) so the global scale
+-- | bus governs rendering at emit time.  For chromatic alterations
+-- | inside the subject itself, write the chromatic notes there;
+-- | `Chromatic` events pass through `transposeDiatonic` untouched.
+-- | +1 = up one scale degree, +4 ≈ a fifth, +7 ≈ an octave (in a
+-- | heptatonic scale).
 -- |
 -- | `retrograde` plays the underlying pattern backwards — voice 4 of
 -- | a canon-by-retrograde, for example.
@@ -139,7 +152,7 @@ fugueVoice v src =
       if v.retrograde then rev withSpeed else withSpeed
     withTrans =
       if v.transpose == 0 then withDir
-      else transposeChromatic v.transpose withDir
+      else transposeDiatonic v.transpose withDir
   in
     withTrans
 
