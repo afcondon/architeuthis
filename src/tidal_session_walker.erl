@@ -130,32 +130,56 @@ apply_event({registerMidiInstrument,
     tidal_dispatcher:set_binding_from_spec(A, Spec),
     bump(instruments, Acc);
 
-%% A drum-kit event (PR 2a) registers the kit as a single MIDI
-%% binding using the first-hit defaults — same shape as
-%% `registerMidiInstrument`, just with a different binding alias.
-%% PR 2b will replace this with N per-hit bindings (`qd1.bd`,
-%% `qd1.sn`, …) once the dispatch path handles per-event hit lookup.
+%% A drum-kit event (PR 2b) registers ONE binding per kit, of the
+%% new `MidiDrumKit` PrimAction kind: per-event dispatch consults
+%% the binding's hits map at the dispatcher emit path (classic
+%% Tidal/SuperDirt per-orbit `s`-keyed lookup, ported to typed
+%% MIDI dispatch).
 %%
-%% The `drumKitValue` field is the opaque DrumKit BEAM term — same
-%% role as `instrumentValue`: it goes into the alias ETS so the
-%% conductor can resolve section-fired arms whose destination is a
-%% DrumKit value.
+%% The spec encoding is `midi-drum-kit <device> <channel>` for an
+%% empty kit, or `midi-drum-kit <device> <channel> <name>:<note>:
+%% <vel>:<dur>,…` for a populated one.  The dispatcher's
+%% `parseAction` recognises both forms.
+%%
+%% Like `registerMidiInstrument`, the `drumKitValue` field goes
+%% into the alias ETS so the conductor can resolve section-fired
+%% arms whose destination is a DrumKit value.
 apply_event({registerMidiDrumKit,
              #{ alias        := A
               , deviceAlias  := D
               , channel      := Ch
-              , defNote      := Note
-              , defVel       := Vel
-              , defDurMs     := Dur
+              , hits         := HitsArr
               , drumKitValue := KV
               }}, Acc) ->
-    Spec = iolist_to_binary([
-        "midi-note ", D, " ",
-        integer_to_binary(Ch), " ",
-        integer_to_binary(Note), " ",
-        integer_to_binary(Vel), " ",
-        integer_to_binary(Dur)
-    ]),
+    %% Hits arrive as an Erlang stdlib `array` (PureScript Array
+    %% convention).  Walk to a list, encode each entry as
+    %% `name:note:vel:dur`, join with commas.
+    HitsList = try array:to_list(HitsArr)
+               catch _:_ -> []
+               end,
+    HitSpecs = [ iolist_to_binary([
+                     N, ":",
+                     integer_to_binary(Nt), ":",
+                     integer_to_binary(V), ":",
+                     integer_to_binary(Dur)
+                 ])
+              || #{name := N, note := Nt, vel := V, durMs := Dur}
+                   <- HitsList ],
+    HitsBin = case HitSpecs of
+                  [] -> <<>>;
+                  _  -> iolist_to_binary(
+                          lists:join(<<",">>, HitSpecs))
+              end,
+    Spec = case HitsBin of
+               <<>> ->
+                   iolist_to_binary([
+                       "midi-drum-kit ", D, " ",
+                       integer_to_binary(Ch)]);
+               _ ->
+                   iolist_to_binary([
+                       "midi-drum-kit ", D, " ",
+                       integer_to_binary(Ch), " ", HitsBin])
+           end,
     ets:insert(?CHANNEL_ALIAS_ETS, {KV, A}),
     tidal_dispatcher:set_binding_from_spec(A, Spec),
     bump(drumKits, Acc);

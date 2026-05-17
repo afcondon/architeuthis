@@ -56,11 +56,11 @@ bass4 = midi iac 4
 
 -- ---------------------------------------------------------------------------
 -- Drum kits — the Quad Drum / sample-bank destinations.  Each hit
--- declares its MIDI note + vel + duration; PR 2b will dispatch each
--- hit to its own MIDI binding (`<kitAlias>.<hitName>`).  For PR 2a
--- the kit registers as a single binding (using the first hit's
--- defaults) — runtime behaviour matches today's `Channel fh2qd 14 60
--- 100 50` shape until per-hit dispatch lands.
+-- declares its MIDI note + vel + duration; the session walker
+-- registers the kit as a single `MidiDrumKit` binding carrying a
+-- hits map keyed by hit name.  At dispatch, each event's token
+-- ("bd", "sn", …) looks up its (note, vel, durMs) triple — classic
+-- Tidal/SuperDirt per-orbit `s`-keyed lookup, ported to typed MIDI.
 -- ---------------------------------------------------------------------------
 
 -- | QD channel 14 — the primary drum kit.  Standard GM mapping.

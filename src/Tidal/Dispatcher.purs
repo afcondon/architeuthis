@@ -339,6 +339,35 @@ dispatchPrimAction (State s) name token wallUs delayMs _delayInt params = case _
             Log.debug $ "◇ [" <> name <> "] midi " <> dev.name <> " ch" <> show m.channel <> " cc" <> show m.cc <> " = " <> show value7bit
             scheduleCCAt s.bridgeClient dev.name m.channel m.cc value7bit adjustedUnixUs
 
+  MidiDrumKit m ->
+    -- Token = hit name (`bd`, `sn`, …).  Look up the hit's declared
+    -- (note, velocity, durationMs) in the binding's hits map.  Unknown
+    -- tokens silently skip (consistent with KitDispatch / unknown-bind
+    -- behaviour); rests skip via the outer `when`.  `# vel` overrides
+    -- the hit's velocity per event.
+    when (token /= "~") do
+      case Map.lookup token m.hits of
+        Nothing ->
+          Log.debug $ "  · [" <> name <> "] midi-drum-kit: unknown hit '"
+            <> token <> "'"
+        Just hit ->
+          case Map.lookup m.device s.midiDevices of
+            Nothing ->
+              Log.debug $ "✗ [" <> name <> "] midi-drum-kit: unknown device alias '"
+                <> m.device <> "'"
+            Just dev -> do
+              let velocity = case Map.lookup "vel" params of
+                    Nothing -> hit.velocity
+                    Just velTok -> case param7bit velTok of
+                      Just v -> v
+                      Nothing -> hit.velocity
+              let adjustedUnixUs = wallUs - dev.latencyMs * 1000.0
+              Log.debug $ "♪ [" <> name <> "] drum " <> dev.name
+                <> " ch" <> show m.channel <> " hit " <> token
+                <> " → note " <> show hit.note <> " vel " <> show velocity
+              scheduleNoteAt s.bridgeClient dev.name m.channel hit.note
+                velocity hit.durationMs adjustedUnixUs
+
   Fh2Trigger f ->
     -- FH-2 trigger: resolve the voice's MIDI channel via
     -- `fh2VoiceChannels` (populated by the `fh2-envelope` verb).
@@ -566,10 +595,11 @@ setLinkTempo bpm (State s) =
 -- | actions. Extend as more slots become pattern-driven.
 isSlotOverride :: String -> Binding -> Boolean
 isSlotOverride paramName binding = case paramName of
-  "vel" -> Array.any isMidiNote binding
+  "vel" -> Array.any consumesVel binding
     where
-    isMidiNote = case _ of
+    consumesVel = case _ of
       MidiNote _ -> true
+      MidiDrumKit _ -> true
       _ -> false
   _ -> false
 

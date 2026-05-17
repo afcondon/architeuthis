@@ -104,6 +104,27 @@ data PrimAction
   --   use what works for its destination.
   | MidiCC { device :: String, channel :: Int, cc :: Int }
   -- ^ Sends a MIDI CC. Numeric tokens 0..1 scale to 0..127.
+  | MidiDrumKit
+      { device :: String
+      , channel :: Int
+      , hits :: Map String { note :: Int, velocity :: Int, durationMs :: Int }
+      }
+  -- ^ MIDI drum kit — one binding per kit, with a hits map keyed by
+  --   hit-name token (`bd`, `sn`, …).  Each event's token resolves to
+  --   its declared (note, velocity, durationMs) triple via the map;
+  --   unknown tokens silently skip (same convention as KitDispatch).
+  --   Rests (`~`) skip the whole dispatch.
+  --
+  --   Modelled on classic Tidal/SuperDirt's per-orbit `s`-keyed
+  --   sample lookup: one stream, one voice, per-event destination
+  --   detail.  Lets `every 8 rev (drum "bd ~ sn ~")` work
+  --   unambiguously — all transformations apply to the unified
+  --   pattern; the per-hit dispatch happens at the emit boundary.
+  --
+  --   *Server-only*: not constructable via the user-facing `bind`
+  --   text verb at the WS layer (the spec is reserved for
+  --   `tidal_session_walker`'s `registerMidiDrumKit` event, which
+  --   builds it from the typed `DrumKit` declaration in Studio).
   | Fh2Trigger { voice :: Int, defaultNote :: Int }
   -- ^ Fires an FH-2 envelope trigger. The MIDI channel is resolved at
   --   dispatch time from the dispatcher's `fh2VoiceChannels` map
@@ -332,6 +353,15 @@ parseAction s =
         Nothing, _ -> Left ("midi-cc: expected integer channel, got '" <> chStr <> "'")
         _, Nothing -> Left ("midi-cc: expected integer cc, got '" <> ccStr <> "'")
 
+    -- midi-drum-kit <alias> <ch> [<hit>:<note>:<vel>:<dur>,...]
+    -- Hits encoding: comma-separated 4-tuples (no spaces).  Three-arg
+    -- form ⇒ empty kit (silent on every event).  Reserved for the
+    -- session walker — users never type this.
+    ["midi-drum-kit", device, chStr] ->
+      parseMidiDrumKit device chStr ""
+    ["midi-drum-kit", device, chStr, hitsStr] ->
+      parseMidiDrumKit device chStr hitsStr
+
     other ->
       Left ("unrecognized action: '" <> String.joinWith " " other <> "'")
 
@@ -382,6 +412,55 @@ parseMidiNote device chStr noteStr velStr durStr =
       Left ("midi-note: expected integer velocity, got '" <> velStr <> "'")
     _, _, _, Nothing ->
       Left ("midi-note: expected integer duration ms, got '" <> durStr <> "'")
+
+-- | Build a MidiDrumKit PrimAction from a channel string + encoded hits
+-- | spec.  Hits encoding is `name:note:vel:dur` 4-tuples joined by
+-- | commas; empty string = empty kit.  Hit-names containing `:` or
+-- | `,` are unsupported (none of the conventional drum-kit names do).
+parseMidiDrumKit :: String -> String -> String -> Either String PrimAction
+parseMidiDrumKit device chStr hitsStr =
+  case Int.fromString chStr of
+    Nothing ->
+      Left ("midi-drum-kit: expected integer channel, got '" <> chStr <> "'")
+    Just ch ->
+      case parseHits hitsStr of
+        Left err -> Left ("midi-drum-kit: " <> err)
+        Right hits -> Right (MidiDrumKit { device, channel: ch, hits })
+
+parseHits
+  :: String
+  -> Either String
+       (Map String { note :: Int, velocity :: Int, durationMs :: Int })
+parseHits "" = Right Map.empty
+parseHits s =
+  let
+    parts = map trim (String.split (Pattern ",") s)
+    step acc part = case acc of
+      Left e -> Left e
+      Right m -> case parseHit part of
+        Left e -> Left e
+        Right (Tuple k v) -> Right (Map.insert k v m)
+  in
+    Array.foldl step (Right Map.empty) parts
+
+parseHit
+  :: String
+  -> Either String
+       (Tuple String { note :: Int, velocity :: Int, durationMs :: Int })
+parseHit s =
+  case String.split (Pattern ":") s of
+    [name, noteStr, velStr, durStr] ->
+      case Int.fromString noteStr, Int.fromString velStr, Int.fromString durStr of
+        Just note, Just vel, Just dur ->
+          Right (Tuple name { note, velocity: vel, durationMs: dur })
+        Nothing, _, _ ->
+          Left ("hit '" <> name <> "': expected integer note, got '" <> noteStr <> "'")
+        _, Nothing, _ ->
+          Left ("hit '" <> name <> "': expected integer velocity, got '" <> velStr <> "'")
+        _, _, Nothing ->
+          Left ("hit '" <> name <> "': expected integer duration ms, got '" <> durStr <> "'")
+    _ ->
+      Left ("expected hit shape <name>:<note>:<vel>:<dur>, got '" <> s <> "'")
 
 parseMapping :: String -> Maybe CVMapping
 parseMapping = case _ of

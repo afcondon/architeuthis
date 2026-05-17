@@ -44,6 +44,7 @@ import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Foldable (foldl)
 import Data.Int as Int
+import Data.Map as Map
 import Data.Maybe (Maybe(..), isJust)
 import Data.Number (fromString) as Number
 import Data.String as String
@@ -131,6 +132,14 @@ data SinkType
       , channel :: Int
       , cc :: Int
       }
+  | SinkMidiDrumKit
+      { device :: String
+      , channel :: Int
+      , hits :: Int
+      -- ^ Just a hit-count for the snapshot; the full map lives in the
+      --   underlying PrimAction.  Surfaces in the Voices pane as e.g.
+      --   "drum-kit fh2qd ch 14 (5 hits)".
+      }
   | SinkGate
       { channel :: Int
       , latencyMs :: Int
@@ -217,6 +226,9 @@ inferPrimSinkType = case _ of
   ES5Gate r -> SinkES5Gate r
   MidiNote r -> SinkMidiNote r
   MidiCC r -> SinkMidiCC r
+  MidiDrumKit r ->
+    SinkMidiDrumKit
+      { device: r.device, channel: r.channel, hits: Map.size r.hits }
   Fh2Trigger r -> SinkFh2Trigger r
   KitDispatch -> SinkKitDispatch
   ChordDispatch r -> SinkChordDispatch r
@@ -248,6 +260,7 @@ sinkElement :: SinkType -> Element
 sinkElement = case _ of
   SinkMidiNote _ -> SampleOrNote
   SinkMidiCC _ -> Number
+  SinkMidiDrumKit _ -> Sample
   SinkGate _ -> Trigger
   SinkCVLiteral _ -> Number
   SinkCVVoct _ -> Note
@@ -266,6 +279,7 @@ sinkDestKind :: SinkType -> DestKind
 sinkDestKind = case _ of
   SinkMidiNote _ -> ToMidi
   SinkMidiCC _ -> ToMidi
+  SinkMidiDrumKit _ -> ToMidi
   SinkContMidiCC _ -> ToMidi
   SinkGate _ -> ToGate
   SinkCVLiteral _ -> ToCV
@@ -447,6 +461,12 @@ checkPattern sink pat = case sink of
     PatString ContentNote ->
       Left $ "midi-cc voice expects numeric tokens, got note tokens"
 
+  SinkMidiDrumKit _ -> case pat of
+    PatNumber ->
+      Left $ "drum-kit voice expects hit-name tokens (e.g., \"bd ~ sn ~\"), \
+             \got a numeric pattern"
+    PatString _ -> Right unit  -- unknown hits silently skip; permissive
+
   SinkGate _ -> case pat of
     PatNumber ->
       Left $ "gate voice expects discrete tokens, got a continuous numeric pattern \
@@ -555,6 +575,10 @@ renderSinkType st =
         "ToMidi device=" <> show r.device
           <> " ch=" <> show r.channel
           <> " cc=" <> show r.cc
+      SinkMidiDrumKit r ->
+        "ToMidi drum-kit device=" <> show r.device
+          <> " ch=" <> show r.channel
+          <> " hits=" <> show r.hits
       SinkContMidiCC r ->
         "ToMidi device=" <> show r.device
           <> " ch=" <> show r.channel
@@ -614,6 +638,10 @@ renderSinkTypeJSON st =
         "{\"device\":" <> jsStr r.device
           <> ",\"channel\":" <> show r.channel
           <> ",\"cc\":" <> show r.cc <> "}"
+      SinkMidiDrumKit r ->
+        "{\"device\":" <> jsStr r.device
+          <> ",\"channel\":" <> show r.channel
+          <> ",\"hits\":" <> show r.hits <> "}"
       SinkContMidiCC r ->
         "{\"device\":" <> jsStr r.device
           <> ",\"channel\":" <> show r.channel

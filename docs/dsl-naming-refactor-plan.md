@@ -1,12 +1,15 @@
 # DSL Naming Refactor Plan — Instrument/Part Substrate
 
-**Status (end-of-day 2026-05-17):** PR 1 + PR 1.5 + PR 2a landed on
-branch `dsl-naming-slab-a`.  PR 2b and PR 2c remain.
+**Status (2026-05-17, after PR 2b):** PR 1 + PR 1.5 + PR 2a + PR 2b
+landed on branch `dsl-naming-slab-a`.  Per-hit drum dispatch works
+end-to-end.  Only PR 2c (V/oct + cv-router CV/Gate) and the
+deferred per-event vel/dur for pitched parts remain in Slab A.
 
 **Branch + commits:**
 - `b74d890` — PR 1 (renames + drop phantom mvoice)
 - `7cd6f2d` — PR 1.5 (walker hoist into PureScript)
 - `728a7cb` — PR 2a (DrumKit + DrumPart + drum parser)
+- PR 2b — DrumKit binding kind (per-hit dispatch)
 
 **What landed in PR 2a:**
 - New `DrumKit`, `DrumHit`, `DrumPart` types in `Calypso.Prelude`.
@@ -31,31 +34,70 @@ branch `dsl-naming-slab-a`.  PR 2b and PR 2c remain.
 qd1A` produces MIDI events visible at the FH-2; `drum "bd*4"`,
 `drum "bd(3,8)"`, `drum "[bd sn]*2"` all parse correctly.
 
-**What's left for PR 2b** (next session, queued as task #61
-recreated post-completion if needed):
-- **Per-hit MIDI bindings.**  Today PR 2a registers each DrumKit as
-  *one* MIDI binding using the first-hit's defaults — so all hits
-  fire the same MIDI note.  PR 2b fans out to N per-hit bindings
-  (`<kitAlias>.<hitName>`) so each declared hit's (note, vel,
-  durMs) actually dispatches per-event.
-- **Per-event vel/dur for pitched parts.**  Today's Pitched
-  Instruments still keep a binding-level defNote/defVel/defDurMs.
-  PR 2b drops these — pattern events must carry their own vel/dur
-  (via `# vel 0.7` style attach), and the dispatcher spec
-  `midi-note <alias> <ch>` shrinks accordingly.
-- **Voice supervisor extension or per-hit-binding-split at arm
-  time.**  The current `set_voice_pat(VoiceName, Binding, Pat)`
-  assumes one binding per voice; PR 2b needs either a multi-binding
-  variant or a per-event binding lookup.  Open design question:
-  decompose drum patterns into N sub-arms (one per hit) vs. extend
-  the voice gen_server.
+**What landed in PR 2b:**
+- New `MidiDrumKit` PrimAction constructor in `Tidal.Binding`
+  with a `hits :: Map String { note, velocity, durationMs }` field.
+  One binding per kit (named just the kit alias, e.g. `qd1`); the
+  hits map carries per-hit detail.  No `<kitAlias>.<hitName>` fan-out
+  — see *Design choice* below.
+- New `midi-drum-kit <device> <ch> [<name>:<note>:<vel>:<dur>,…]`
+  spec in `parseAction`.  Empty kit form is supported (3-arg).
+- New dispatch arm in `Tidal.Dispatcher` matching the same shape as
+  `MidiNote` but with a per-event `Map.lookup token hits`.  `# vel`
+  override applies to the hit's velocity.  Unknown hits silently
+  skip; rests skip via the outer guard.
+- `isSlotOverride` extended so `# vel` is consumed (not double-
+  fired by the compositional fanout) when a binding contains
+  `MidiDrumKit`.
+- New `SinkMidiDrumKit` SinkType (with `Element = Sample`,
+  `DestKind = ToMidi`); state snapshot renders as `drum-kit
+  device="…" ch=N hits=K`.
+- `RegisterMidiDrumKit` now carries a `hits :: Array { name, note,
+  vel, durMs }` field (PR 2a kept only the first hit's defaults).
+  FFI `firstHitDefaults` is retired; replaced by `drumKitHits`
+  which decodes the whole `Array DrumHit`.
+- `tidal_session_walker.erl`'s `apply_event` clause for
+  `registerMidiDrumKit` builds the new `midi-drum-kit …`
+  textual spec from the hits array, joining 4-tuples with `,`.
+- Voice supervisor is **unchanged**.  No fan-out, no multi-binding-
+  per-voice, no per-hit arm-time split.
+- `Handler.erl`'s `coerce_body_for_dispatch` is preserved (still
+  needed for the `Pattern String → Pattern Pitch` carrier coercion
+  at the conductor boundary, though its retirement-comment was
+  removed — the actual retirement is Slab B's polymorphic note
+  type).
 
-**Boundary additions for PR 2b** (in `Tidal.SessionWalker`):
-- Extend `RegisterMidiDrumKit` with `hits :: Array DrumHit` field
-  (the walker has them but currently drops all but the first).
-- New Erlang `apply_event` clause registers each hit as a binding
-  named `<kitAlias>.<hitName>` via additional
-  `set_binding_from_spec` calls.
+**Design choice — why no per-hit bindings.**  The plan originally
+called for fanning out to N `<kitAlias>.<hitName>` bindings with
+either a multi-binding voice gen_server or a per-hit arm-time
+split.  PR 2b instead adds a new *binding kind* (`MidiDrumKit`)
+that does per-event hit lookup at the dispatcher's emit boundary,
+preserving "one voice = one binding" and leaving the voice
+supervisor untouched.  This mirrors classic Tidal/SuperDirt: one
+orbit, one stream, per-event `s`-keyed dispatch.  Hits aren't
+independently arm-addressable, which matches the user's mental
+model where the *kit* is the destination.
+
+**End-to-end test passed:** `reload-baseline` reports
+`(3 device(s), 4 instrument(s), 2 drum kit(s))` with `qd1` /
+`qd2` registered as `Sink Discrete Sample (ToMidi drum-kit
+device="fh2qd" ch=14 hits=4)`.  `play-armed qd1 qd1A` (pattern
+`"bd bd ~ ~ bd ~ bd ~"`) dispatches each `bd` to note 36, vel
+100, dur 50; `play-armed qd2 qd2A` (pattern `"~ ~ sn ~ ~ ~ sn
+~"`) dispatches each `sn` to note 38.  Different hit names map
+to different MIDI notes through the new binding's per-event
+hits-map lookup.
+
+**Still deferred:**
+- **Per-event vel/dur for pitched parts.**  Pitched Instruments
+  still keep binding-level defNote/defVel/defDurMs; the
+  drop-defaults work is unbundled from PR 2b and queued
+  separately (touches `# vel`/`# dur` attach plumbing, no
+  drum-side overlap).
+- **PR 2c — V/oct + CV/Gate via cv-router.**  Introduces
+  `VPerOctInstrument` + `GateDrumKit` variants; routes through
+  cv-router's OSC interface.  Needs rack hardware for full
+  end-to-end test.
 
 **Specific gotchas to remember when resuming:**
 - See `reference_purerl_tidal_silent_routing_check_power` — if

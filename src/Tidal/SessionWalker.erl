@@ -21,7 +21,7 @@
         , tupleArg/2
         , asBinary/1
         , asInt/1
-        , firstHitDefaults/1
+        , drumKitHits/1
         ]).
 
 %% --------------------------------------------------------------------
@@ -135,31 +135,26 @@ asInt(V) when is_integer(V) -> {just, V};
 asInt(_) -> {nothing}.
 
 %% --------------------------------------------------------------------
-%% firstHitDefaults/1 — pure.
+%% drumKitHits/1 — pure.
 %%
 %% A `DrumKit`'s hits field is an Erlang stdlib `array` of DrumHit
-%% records.  Read element 0 (the first hit) and pull its
-%% (note, vel, durMs) fields out.  Returns a record where each field
-%% is Maybe Int — `{nothing}` for an empty array, missing field, or
-%% non-array input.
+%% records (purs-backend-erl encodes the PureScript record as the
+%% Erlang map `#{name, note, vel, durMs}`).  Walk the whole array,
+%% keep well-shaped entries, and return as a PureScript `Array`
+%% (BEAM stdlib `array`) — `array:from_list/1` on the way out to
+%% satisfy the PureScript ↔ Erlang Array convention.  See memory
+%% `reference_purerl_array_is_erlang_array_module`.
 %%
-%% PR 2a uses this to derive the kit's binding-level defaults from
-%% the first hit; PR 2b iterates the whole array.
+%% Empty / non-array / malformed input returns an empty array.
+%% PR 2b: the walker shell then iterates these to build the
+%% `midi-drum-kit … name:note:vel:dur,…` binding spec.
 %% --------------------------------------------------------------------
-firstHitDefaults(HitsForeign) ->
-    Hit = try array:get(0, HitsForeign)
-          catch _:_ -> undefined
-          end,
-    case Hit of
-        #{note := N, vel := V, durMs := D}
-          when is_integer(N), is_integer(V), is_integer(D) ->
-            #{ note   => {just, N}
-             , vel    => {just, V}
-             , durMs  => {just, D}
-             };
-        _ ->
-            #{ note   => {nothing}
-             , vel    => {nothing}
-             , durMs  => {nothing}
-             }
-    end.
+drumKitHits(HitsForeign) ->
+    List = try array:to_list(HitsForeign)
+           catch _:_ -> []
+           end,
+    Decoded = [ #{ name => N, note => Nt, vel => V, durMs => D }
+              || #{name := N, note := Nt, vel := V, durMs := D} <- List,
+                 is_binary(N), is_integer(Nt),
+                 is_integer(V), is_integer(D) ],
+    array:from_list(Decoded).

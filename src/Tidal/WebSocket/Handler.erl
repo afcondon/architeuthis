@@ -2496,15 +2496,19 @@ resolve_cue_body(CueName) ->
             end
     end.
 
-%% PR 2a runtime-compat shim: if the part's destination is a DrumKit
+%% Body-type shim: if the part's destination is a DrumKit
 %% (purs-backend-erl encoding: `{midiDrumKit, ...}`), the body is
-%% `Pattern String` from `Tidal.Drum:drum/1`; coerce each event's
-%% String value to a `Sample` variant via the PureScript helper so the
-%% voice gen_server's existing Pattern-Pitch emit path handles it.
+%% `Pattern String` from `Tidal.Drum:drum/1`.  Coerce each event's
+%% String value to a `Sample` variant via the PureScript helper so
+%% the voice gen_server's `Pattern Pitch` carrier handles it; the
+%% dispatcher's `MidiDrumKit` arm (PR 2b) then renders `Sample s`
+%% back to the hit-name token `s` and looks up its (note, vel,
+%% durMs) in the binding's hits map.
 %%
-%% Only the destination's *tag atom* is inspected here — a minor
-%% boundary violation that PR 2b retires once drum dispatch flows
-%% through per-hit MIDI bindings without needing the Sample shim.
+%% The destination's tag atom is the only thing inspected here — a
+%% minor boundary violation that survives because the alternative
+%% (parameterising the voice gen_server over a polymorphic note
+%% type) is Slab B work.
 coerce_body_for_dispatch(Dest, Pat) ->
     case is_tuple(Dest) andalso tuple_size(Dest) >= 1 andalso element(1, Dest) of
         midiDrumKit ->
