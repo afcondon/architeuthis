@@ -286,19 +286,51 @@ Smallest possible useful slice.
   by instrument \`bass1b\`, instrument \`bass1\``.  Both bindings
   install (warn-only).
 
-**Phase 1b — Calypso composition-pane surface (pending):**
+**Mental model (added 2026-05-17):** the reservation system separates
+into two usage modes:
 
-- A WS verb (`get-claim-errors` or piggyback on the existing
-  boot-summary reply) returns the structured `ReportClaimError`
-  payload to Calypso.
-- The composition pane decorates lines that participate in a claim
-  conflict (or shows a banner above the source) so the error is
-  visible without `make logs`.
-- The acceptance criterion ("two `Instrument`s claiming `iac` ch 1
-  produces a clear error at composition-load time naming both
-  aliases") is *met* for the log surface but only *partly* met for
-  the Calypso surface — the WS reply is structured, the UI affordance
-  is the missing piece.
+- **Studio mode** — one-time wiring setup, validated at session load.
+  The analogue is macOS Audio/MIDI Setup: a static configuration view
+  where you declare what's plugged in and the system tells you if
+  it's contradictory.  Phase 1a's warn-only MIDI dup check is exactly
+  this shape.
+- **Live mode** — running changes during performance, where the user
+  is reaching at hardware mid-flight.  The analogue is a DAW
+  (Ableton/Logic/Bitwig): the dynamic surface that *uses* the static
+  configuration.  Force-acquire (`polysignal!` / `tvoice!` from
+  `port-claims-design.md`) is the escape hatch here.  No live-mode
+  rejections exist for MIDI yet because Phase 1a is warn-only.
+
+Calypso eventually wants a dedicated **Studio pane** alongside the
+Composition pane that mirrors this split.
+
+**Phase 1b — Studio pane in Calypso (pending):**
+
+- New WS verb `get-studio` returns a multi-line tab-delimited
+  payload: one line per device/instrument/drum kit/conflict, each
+  line shape `KIND<tab>field1<tab>field2…`.  Studio snapshot is
+  cached in ETS by `walk_baseline`; the verb just reads it.
+- New Calypso pane (`Panes/Studio.purs`) plotted alongside the
+  existing seven, toggled by its own Cmd shortcut, shows devices ·
+  instruments · drum kits · conflicts as a read-mostly reference
+  view.  Visual chrome aims at the Audio/MIDI Setup analogue: spare,
+  table-shaped, no "fire" actions on it.
+- `reload-baseline` reply gains `… N claim-error(s)` so the count
+  is visible without a follow-up round-trip.  Calypso fires
+  `get-studio` after each successful `reload-baseline` to keep
+  the pane fresh.
+- Acceptance: two `Instrument`s on `iac` ch 1 produces a visible
+  conflict row in the Studio pane naming both aliases; a clean
+  Studio shows OK status.
+
+**Phase 1b-2 — aspirational visual Studio (future):**
+
+- Graphical device rendering (FH-2 with eight labelled panel jacks,
+  ES-9 with its full panel, MIDI device with 1-16 channel grid)
+  with claim glyphs on each port showing which alias owns it.
+- Click a port → highlight the Studio.purs line that claims it.
+- The gate-flash confirmation verb (FH-2 / ES-9 hardware ports)
+  triggered from a "verify" button on each device.
 
 **Diverged from original plan: no `Bank`/`BankMask` for MIDI.**  The
 original Phase 1 sketch called for extending `Bank` with

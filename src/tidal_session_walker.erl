@@ -28,10 +28,12 @@
 
 -export([walk_baseline/0,
          lookup_channel_alias/1,
-         ensure_channel_alias_table/0]).
+         ensure_channel_alias_table/0,
+         studio_lines/0]).
 
 -define(WALKER_PS_MODULE,  'tidal_sessionWalker@ps').
 -define(CHANNEL_ALIAS_ETS, tidal_channel_aliases).
+-define(STUDIO_STATE_ETS,  tidal_studio_state).
 
 %% ====================================================================
 %% Public API
@@ -65,6 +67,11 @@ walk_baseline() ->
                 #{devices => 0, instruments => 0,
                   drumKits => 0, claimErrors => 0},
                 Events),
+            %% Capture a Studio-pane snapshot from the raw event list so
+            %% `get-studio` (and any future Studio-state queries) can
+            %% read it without re-walking the PureScript modules.
+            ensure_studio_state_table(),
+            ets:insert(?STUDIO_STATE_ETS, {events, Events}),
             {ok, Stats}
     end.
 
@@ -90,6 +97,81 @@ ensure_channel_alias_table() ->
                      {read_concurrency, true}]);
         _ -> ok
     end.
+
+ensure_studio_state_table() ->
+    case ets:info(?STUDIO_STATE_ETS) of
+        undefined ->
+            ets:new(?STUDIO_STATE_ETS,
+                    [named_table, public, set,
+                     {read_concurrency, true}]);
+        _ -> ok
+    end.
+
+%% @doc Format the current Studio snapshot as a list of tab-delimited
+%% binary lines, one per device / instrument / drum kit / claim
+%% conflict.  Used by the `get-studio` WS verb to populate Calypso's
+%% Studio pane.  Empty list if walk_baseline hasn't run yet.
+%%
+%% Line shapes:
+%%   device      <TAB> <alias> <TAB> <name>       <TAB> <latencyMs>
+%%   instrument  <TAB> <alias> <TAB> <deviceAlias> <TAB> <channel>
+%%                              <TAB> <defNote> <TAB> <defVel> <TAB> <defDurMs>
+%%   drumkit     <TAB> <alias> <TAB> <deviceAlias> <TAB> <channel>
+%%                              <TAB> <name>:<note>:<vel>:<dur>,...
+%%   conflict    <TAB> <deviceAlias> <TAB> <channel>
+%%                              <TAB> <kind>:<owner>,<kind>:<owner>
+%%                              <TAB> <human-readable message>
+studio_lines() ->
+    case ets:info(?STUDIO_STATE_ETS) of
+        undefined -> [];
+        _ ->
+            case ets:lookup(?STUDIO_STATE_ETS, events) of
+                [{_, Events}] ->
+                    lists:filtermap(fun event_to_line/1, Events);
+                _ -> []
+            end
+    end.
+
+event_to_line({registerMidiDevice,
+               #{alias := A, name := N, latencyMs := L}}) ->
+    {true,
+     iolist_to_binary([<<"device\t">>, A, <<"\t">>, N, <<"\t">>,
+                       integer_to_binary(L)])};
+event_to_line({registerMidiInstrument,
+               #{alias := A, deviceAlias := D, channel := Ch,
+                 defNote := Note, defVel := Vel, defDurMs := Dur}}) ->
+    {true,
+     iolist_to_binary([<<"instrument\t">>, A, <<"\t">>, D, <<"\t">>,
+                       integer_to_binary(Ch), <<"\t">>,
+                       integer_to_binary(Note), <<"\t">>,
+                       integer_to_binary(Vel), <<"\t">>,
+                       integer_to_binary(Dur)])};
+event_to_line({registerMidiDrumKit,
+               #{alias := A, deviceAlias := D, channel := Ch,
+                 hits := HitsArr}}) ->
+    HitsList = try array:to_list(HitsArr) catch _:_ -> [] end,
+    HitSpecs = [ iolist_to_binary([N, ":", integer_to_binary(Nt), ":",
+                                   integer_to_binary(V), ":",
+                                   integer_to_binary(DurH)])
+              || #{name := N, note := Nt, vel := V, durMs := DurH}
+                   <- HitsList ],
+    HitsBin = iolist_to_binary(lists:join(<<",">>, HitSpecs)),
+    {true,
+     iolist_to_binary([<<"drumkit\t">>, A, <<"\t">>, D, <<"\t">>,
+                       integer_to_binary(Ch), <<"\t">>, HitsBin])};
+event_to_line({reportClaimError,
+               #{deviceAlias := D, channel := Ch,
+                 owners := OwnersArr, message := Msg}}) ->
+    OwnersList = try array:to_list(OwnersArr) catch _:_ -> [] end,
+    OwnerSpecs = [ iolist_to_binary([K, ":", Name])
+                || #{name := Name, kind := K} <- OwnersList ],
+    OwnersBin = iolist_to_binary(lists:join(<<",">>, OwnerSpecs)),
+    {true,
+     iolist_to_binary([<<"conflict\t">>, D, <<"\t">>,
+                       integer_to_binary(Ch), <<"\t">>, OwnersBin,
+                       <<"\t">>, Msg])};
+event_to_line(_) ->
+    false.
 
 %% ====================================================================
 %% Event application — one clause per RegistrationEvent constructor

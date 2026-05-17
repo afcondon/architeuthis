@@ -211,6 +211,15 @@ try_parse_prefixed(<<"reload-baseline">>) ->
     {reload_baseline};
 try_parse_prefixed(<<"reload-baseline ", _/binary>>) ->
     {reload_baseline};
+try_parse_prefixed(<<"get-studio">>) ->
+    %% get-studio — return a snapshot of the current Studio state
+    %% (devices, instruments, drum kits, claim conflicts) as a
+    %% tab-delimited multi-line payload.  Calypso's Studio pane
+    %% consumes this after each successful reload-baseline.  See
+    %% `tidal_session_walker:studio_lines/0` for the wire format.
+    {get_studio};
+try_parse_prefixed(<<"get-studio ", _/binary>>) ->
+    {get_studio};
 try_parse_prefixed(<<"play-piece ", Rest/binary>>) ->
     %% play-piece <name> — install the named Section value (a top-level
     %% `Pattern AnyPart` declaration in Calypso.Generated.Session) into
@@ -889,12 +898,21 @@ handle_pattern_message(Text, State) ->
                     %% without separate Level-2 wire commands.
                     Summary =
                         case tidal_session_walker:walk_baseline() of
-                            {ok, #{devices := D, instruments := I, drumKits := K}} ->
+                            {ok, #{devices := D, instruments := I,
+                                   drumKits := K, claimErrors := CE}} ->
+                                ConflictPart = case CE of
+                                    0 -> <<>>;
+                                    _ -> iolist_to_binary([
+                                            ", ", integer_to_binary(CE),
+                                            " claim-error(s)"])
+                                end,
                                 iolist_to_binary([
                                     " (",
                                     integer_to_binary(D), " device(s), ",
                                     integer_to_binary(I), " instrument(s), ",
-                                    integer_to_binary(K), " drum kit(s))"]);
+                                    integer_to_binary(K), " drum kit(s)",
+                                    ConflictPart,
+                                    ")"]);
                             {error, _} ->
                                 <<>>
                         end,
@@ -927,6 +945,20 @@ handle_pattern_message(Text, State) ->
         {stop_piece} ->
             ok = tidal_conductor:stop_piece(),
             {reply, {text, <<"OK: stop-piece">>}, State};
+        {get_studio} ->
+            %% Return the Studio snapshot captured by the most recent
+            %% walk_baseline.  Calypso's Studio pane parses the
+            %% tab-delimited payload — see studio_lines/0 in
+            %% tidal_session_walker for the wire format.
+            Lines = tidal_session_walker:studio_lines(),
+            Body = case Lines of
+                       [] -> <<>>;
+                       _  -> iolist_to_binary([<<"\n">>,
+                                lists:join(<<"\n">>, Lines)])
+                   end,
+            {reply,
+             {text, iolist_to_binary([<<"OK: get-studio">>, Body])},
+             State};
         {play_armed, MvoiceName, CueName} ->
             %% Install a typeful cue's body into the named mvoice's
             %% voice gen_server.  Pre-condition: the user has fired
