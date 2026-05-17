@@ -207,6 +207,49 @@ FH-2's 8 jacks both fit.)
    it touches (channel, output, polysignal bank) match a claim
    under that owner.  Mismatch → arm fails with a clear message.
 
+### Confirmation feedback — optional gate-flash on hardware claims
+
+Phase 2+ feature, only for hardware-port banks (FH-2 panel, ES-9
+panel; not MIDI channels — channels don't have LEDs).  On user
+demand, the fh2-config daemon briefly raises the gate on each claimed
+output port, producing a visible LED flash on the Expert Sleepers
+hardware.
+
+**Why opt-in**: a flash is a click/trigger on the output.  If a
+synth/envelope is patched downstream it will react audibly.  So this
+is a `verify-reservations` verb (CLI or Calypso button), not an
+on-every-load behaviour.  The user invokes it when they want to
+double-check the rig is patched the way the declarations expect.
+
+**Why useful**:
+
+- Confirms "yes, the daemon sees your reservation" — closes the
+  feedback loop between Studio.purs declaration and hardware.
+- Helps localise a typo: declaring `BankCv 3` while expecting jack 4
+  flashes the wrong jack, instantly visible.
+- Works as a rig sanity-check before a session (am I patched into
+  the right cables?).
+
+**Shape**: a new fh2-config daemon verb over the Unix control socket.
+Takes a claim mask + bank + flash duration; daemon issues the gate
+pulse, returns ack.  Composable: one verb per bank, or a
+"flash-all-claims-for-owner X" convenience.
+
+**Design considerations**:
+
+- Verb should be **device-agnostic** in shape — ES-9 will want this
+  once Phase 2 lands.  Likely lives in cv-router, not fh2-config, by
+  the time ES-9 banks exist.  Worth designing the protocol once.
+- The flash should be **short** (e.g. 20-50ms) and **bipolar-safe**
+  (don't drive 5V into something CV-expecting) — gate semantics only,
+  rely on the bank's capability typing to refuse a flash on a
+  bank that doesn't naturally produce gates.
+- Optional **flash pattern** parameter (single pulse vs short burst)
+  so multiple banks can be told apart visually when a "flash all"
+  walks the rig.
+
+Defer the detailed protocol until Phase 2 (when ES-9 banks land).
+
 ---
 
 ## Phasing
@@ -215,15 +258,52 @@ FH-2's 8 jacks both fit.)
 
 Smallest possible useful slice.
 
-- Generalise `Bank` to include `BankMidi { device :: String }`.
-- Generalise `BankMask` (or its slot indexing) to handle 16-channel
-  banks.
-- Run a load-time pass that builds a `ClaimTable` from Studio.purs
-  declarations alone (no `reserve` form yet) and reports duplicates.
-- Surface errors in Calypso's composition pane.
+**Phase 1a — validator + BEAM-log surface (✓ shipped 2026-05-17):**
 
-Acceptance: two `Instrument`s claiming `iac` ch 1 produces a clear
-error at composition-load time naming both aliases.
+- New module `Tidal.MidiClaim`: `MidiClaim` record, `ClaimError`,
+  `validateMidiClaims` (group by `(deviceAlias, channel)`, flag
+  groups of size ≥ 2), `describeClaimError` (one-line render).
+- `Tidal.SessionWalker` extracts claims from `RegisterMidiInstrument`
+  + `RegisterMidiDrumKit` events, runs the validator, prepends a new
+  `ReportClaimError` event for each conflict (with pre-rendered
+  message + structured fields).
+- `tidal_session_walker.erl` gains an `apply_event/2` clause for
+  `reportClaimError`: logs the message via `tidal_log:err/2`, bumps
+  a `claimErrors` counter in the boot summary.
+- Warn-only — registration of the conflicting bindings still
+  proceeds, last-write-wins as before.  The user just sees the
+  collision in the log now instead of inferring it from chaos in the
+  destination synth.
+- Unit tests in `test/Test/MidiClaimSpec.purs` cover: disjoint,
+  same-channel-different-device, instrument×instrument duplicate,
+  instrument×drumkit duplicate, three-way collision,
+  `describeClaimError` output stability.
+
+**Phase 1b — Calypso composition-pane surface (pending):**
+
+- A WS verb (`get-claim-errors` or piggyback on the existing
+  boot-summary reply) returns the structured `ReportClaimError`
+  payload to Calypso.
+- The composition pane decorates lines that participate in a claim
+  conflict (or shows a banner above the source) so the error is
+  visible without `make logs`.
+- The acceptance criterion ("two `Instrument`s claiming `iac` ch 1
+  produces a clear error at composition-load time naming both
+  aliases") is *met* for the log surface but only *partly* met for
+  the Calypso surface — the WS reply is structured, the UI affordance
+  is the missing piece.
+
+**Diverged from original plan: no `Bank`/`BankMask` for MIDI.**  The
+original Phase 1 sketch called for extending `Bank` with
+`BankMidi { device :: String }` and widening `BankMask` to 16 bits.
+For Phase 1a I used a flat `MidiClaim` record instead, on the grounds
+that the bitmask + capability machinery from `port-claims-design.md`
+is over-engineering for the MIDI case (each claim is single-slot,
+capabilities are trivially equal).  When Phase 2 introduces ES-9
+banks — which DO want the bitmask model (partial-overlap detection
+across panel jacks) — that's the right moment to port the larger
+machinery in and thread MIDI claims through it.  Until then,
+`Tidal.MidiClaim` is the smaller load-bearing layer.
 
 ### Phase 2: ES-9 banks
 

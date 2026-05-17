@@ -9,6 +9,7 @@ import Test.BranchedSpec (runBranchedTests)
 import Test.ControlSpec (runControlTests)
 import Test.DejaVuSpec (runDejaVuTests)
 import Test.LawSpec (runLawTests)
+import Test.MidiClaimSpec (runMidiClaimTests)
 import Test.PatternSpec (runPatternTests)
 import Test.PredictiveSpec (runPredictiveTests)
 import Test.SinkSpec (runSinkTests)
@@ -171,6 +172,9 @@ main = do
 
   -- Run DejaVu / LiveControl / Random tests
   runDejaVuTests
+
+  -- Run Tidal.MidiClaim (frontend reservations Phase 1) tests
+  runMidiClaimTests
 
   log ""
   log "=== All tests completed ==="

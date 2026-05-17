@@ -62,7 +62,8 @@ walk_baseline() ->
 
             Stats = lists:foldl(
                 fun apply_event/2,
-                #{devices => 0, instruments => 0, drumKits => 0},
+                #{devices => 0, instruments => 0,
+                  drumKits => 0, claimErrors => 0},
                 Events),
             {ok, Stats}
     end.
@@ -183,6 +184,17 @@ apply_event({registerMidiDrumKit,
     ets:insert(?CHANNEL_ALIAS_ETS, {KV, A}),
     tidal_dispatcher:set_binding_from_spec(A, Spec),
     bump(drumKits, Acc);
+
+%% A claim-error event surfaces a Phase-1 reservation-validation
+%% finding (e.g. duplicate MIDI channel claim).  The PureScript walker
+%% pre-renders a human-readable line in `message`; we log it via
+%% tidal_log:err and bump a counter for the boot-summary.  Registration
+%% of the conflicting bindings is NOT blocked — warn-only is the v1
+%% policy; the last-write-wins behaviour of the dispatcher is preserved.
+apply_event({reportClaimError,
+             #{ message := Msg }}, Acc) ->
+    tidal_log:err("session_walker: ~s~n", [Msg]),
+    bump(claimErrors, Acc);
 
 %% Unknown event — log and skip.  Forward-compat for any
 %% RegistrationEvent constructors added on the PureScript side

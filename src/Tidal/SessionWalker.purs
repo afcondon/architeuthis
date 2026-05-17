@@ -33,6 +33,14 @@ import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Tuple (Tuple(..))
 import Effect (Effect)
 import Foreign (Foreign)
+import Tidal.MidiClaim
+  ( ClaimError(..)
+  , ClaimOwnerKind(..)
+  , MidiClaim
+  , claimOwnerKindLabel
+  , describeClaimError
+  , validateMidiClaims
+  )
 
 -- ---------------------------------------------------------------------------
 -- The boundary ADT
@@ -76,6 +84,19 @@ data RegistrationEvent
       -- `lookup_channel_alias(DrumKitValue)` for arm dispatch.
       , drumKitValue :: Foreign
       }
+  -- | Front-end reservations Phase 1: emitted when two or more Studio
+  -- | declarations land on the same MIDI (device, channel).  Erlang
+  -- | shell logs the `message` via `tidal_log:err` and bumps a
+  -- | claimErrors counter; registration of the conflicting bindings
+  -- | still proceeds (warn-only — the last write wins as before, the
+  -- | user just learns about the collision now).
+  | ReportClaimError
+      { errorKind :: String
+      , deviceAlias :: String
+      , channel :: Int
+      , owners :: Array { name :: String, kind :: String }
+      , message :: String
+      }
 
 -- ---------------------------------------------------------------------------
 -- Walk
@@ -101,7 +122,43 @@ walkBaseline = do
     devEvents = map (\d -> RegisterMidiDevice d) devices
     instrEvents = Array.mapMaybe (pickInstrument deviceAliases) allPairs
     kitEvents = Array.mapMaybe (pickDrumKit deviceAliases) allPairs
-  pure (devEvents <> instrEvents <> kitEvents)
+    -- Phase 1: collect implicit (device, channel) claims from
+    -- registration events, group by (device, channel), report any
+    -- duplicates as `ReportClaimError` events.  Errors are emitted
+    -- BEFORE registration events so the Erlang log shows them ahead
+    -- of the binding installs they conflict with.
+    claims = Array.mapMaybe registrationToClaim (instrEvents <> kitEvents)
+    claimErrorEvents = map claimErrorToEvent (validateMidiClaims claims)
+  pure (claimErrorEvents <> devEvents <> instrEvents <> kitEvents)
+
+registrationToClaim :: RegistrationEvent -> Maybe MidiClaim
+registrationToClaim = case _ of
+  RegisterMidiInstrument r -> Just
+    { owner: r.alias
+    , deviceAlias: r.deviceAlias
+    , channel: r.channel
+    , ownerKind: OwnInstrument
+    }
+  RegisterMidiDrumKit r -> Just
+    { owner: r.alias
+    , deviceAlias: r.deviceAlias
+    , channel: r.channel
+    , ownerKind: OwnDrumKit
+    }
+  _ -> Nothing
+
+claimErrorToEvent :: ClaimError -> RegistrationEvent
+claimErrorToEvent err@(DuplicateMidiClaim r) =
+  ReportClaimError
+    { errorKind: "duplicate-midi-channel"
+    , deviceAlias: r.deviceAlias
+    , channel: r.channel
+    , owners:
+        map
+          (\o -> { name: o.owner, kind: claimOwnerKindLabel o.ownerKind })
+          r.owners
+    , message: describeClaimError err
+    }
 
 -- | The classifier — the only place that knows what purs-backend-erl
 -- | tags map to what application meaning.  Returns Nothing for any
