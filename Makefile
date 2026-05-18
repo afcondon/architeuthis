@@ -74,6 +74,9 @@ erl: ps
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_session_walker.erl
 	@# Section conductor (MVP-2 play-piece path).
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_conductor.erl
+	@# Grids virtual module (BEAM-native MI Grids clone).
+	@erlc -disable-feature maybe_expr -o ebin src/grids_tables.erl
+	@erlc -disable-feature maybe_expr -o ebin src/grids_engine.erl
 	@echo "==> Build complete. BEAM files in ebin/"
 
 # Run tests
