@@ -92,6 +92,13 @@ plaits = vPerOct cvRouter { gateChannel: 6, voctBus: 15 }
 -- ---------------------------------------------------------------------------
 
 -- | QD channel 14 — the primary drum kit.  Standard GM mapping.
+-- |
+-- | NOTE 2026-05-18 evening: also shared with studioGrids for the
+-- | vmod demo.  Both register a (fh2qd, ch14) claim; the framework
+-- | logs a duplicate-claim warning but both bindings stay live —
+-- | qd1's `bd`/`sn`/`hh`/`cp` patterns and Grids' autonomous output
+-- | both emit on the same channel.  Interleaved firing on the FH-2
+-- | is the musician's responsibility (no software arbitration).
 qd1 :: DrumKit
 qd1 = midiDrumKit fh2qd 14
   [ hit "bd" 36 100 50
@@ -210,7 +217,12 @@ studioCMajorScale = polyPresetNote (BankCv 1)
 -- the new patterns.
 -- ---------------------------------------------------------------------------
 
-studioGrids = grids fh2qd 13 $ gridsConfig
+-- Channel 14: rides FH-2's existing QD MIDI→gate routing.  Notes
+-- 36/38/42 (BD/SD/HH) become triggers on FH-2 panel gates 1/2/3 →
+-- whatever the rig has patched there (QD module, Rample triggers,
+-- ES-5 expander, …).  qd1 is commented out above to free the claim.
+studioGrids :: Grids "studioGrids"
+studioGrids = grids fh2qd 14 $ gridsConfig
   { x          = liveIntOr 128 "grids.x"
   , y          = liveIntOr 128 "grids.y"
   , fillBd     = liveIntOr 220 "grids.fillBd"
