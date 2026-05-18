@@ -77,6 +77,8 @@ erl: ps
 	@# Grids virtual module (BEAM-native MI Grids clone).
 	@erlc -disable-feature maybe_expr -o ebin src/grids_tables.erl
 	@erlc -disable-feature maybe_expr -o ebin src/grids_engine.erl
+	@erlc -disable-feature maybe_expr -o ebin src/grids_voice_sup.erl
+	@erlc -disable-feature maybe_expr -o ebin src/grids_voice.erl
 	@echo "==> Build complete. BEAM files in ebin/"
 
 # Run tests
