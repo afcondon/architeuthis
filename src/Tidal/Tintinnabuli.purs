@@ -4,7 +4,7 @@
 -- | a parallel T-voice in which each note is the nearest triad pitch
 -- | in a chosen `Position` relative to its M-voice partner.  This is
 -- | the simplest possible illustration of the pitch substrate: just
--- | `map` over a `Pattern Pitch` with a function `Pitch -> Pitch`.
+-- | `map` over a `Pattern PitchedNote12` with a function `PitchedNote12 -> PitchedNote12`.
 -- |
 -- | Background: in Pärt's tintinnabuli style (Tabula Rasa, Spiegel im
 -- | Spiegel, Cantus, …) two voices move together — the M-voice plays
@@ -21,10 +21,10 @@
 -- |
 -- | Usage:
 -- |
--- |     melody :: Pattern Pitch
+-- |     melody :: Pattern PitchedNote12
 -- |     melody = d "1 2 3 4 5 4 3 2"     -- degree-based
 -- |
--- |     tVoice :: Pattern Pitch
+-- |     tVoice :: Pattern PitchedNote12
 -- |     tVoice = tintinnabuli aMinor aMinT above1 melody
 -- |
 -- | The Scale argument is consulted only for `Degree` events; pure
@@ -66,7 +66,7 @@ import Data.Maybe (fromMaybe)
 
 import Tidal.Chords (major, minor, dim)
 import Tidal.Pattern.Types (Pattern)
-import Tidal.Pitch (Pitch(..))
+import Tidal.Pitch (PitchedNote12(..))
 import Tidal.Scales (Scale, renderDegree)
 
 -- ---------------------------------------------------------------------------
@@ -147,7 +147,7 @@ below3 = Below 3
 -- |     NOT retune the T-voice.  Re-arm to pick up the new scale.
 -- |   * `Sample s` — passes through unchanged.  Drums shouldn't go
 -- |     through tintinnabuli; if they accidentally do, we don't crash.
-tintinnabuliPitch :: Scale -> Triad -> Position -> Pitch -> Pitch
+tintinnabuliPitch :: Scale -> Triad -> Position -> PitchedNote12 -> PitchedNote12
 tintinnabuliPitch scale t pos = case _ of
   Chromatic n -> Chromatic (nearestTriadNote t pos n)
   Degree dgr  -> Chromatic (nearestTriadNote t pos (renderDegree scale dgr))
@@ -160,7 +160,7 @@ tintinnabuliPitch scale t pos = case _ of
 -- | The scale argument is consulted only for `Degree` events.  Pure
 -- | `Chromatic` patterns are scale-insensitive in tintinnabuli too,
 -- | so any Scale value is fine (use `cMajor` or whatever's at hand).
-tintinnabuli :: Scale -> Triad -> Position -> Pattern Pitch -> Pattern Pitch
+tintinnabuli :: Scale -> Triad -> Position -> Pattern PitchedNote12 -> Pattern PitchedNote12
 tintinnabuli scale t pos = map (tintinnabuliPitch scale t pos)
 
 -- | The numeric workhorse.  Walk MIDI space outward from `melody` in

@@ -1,19 +1,19 @@
 -- | Tests for `Tidal.Tintinnabuli` — task #62 (scale-aware tintinnabuli).
 -- |
 -- | Red-then-green: the existing `tintinnabuli :: Triad -> Position ->
--- | Pattern Pitch -> Pattern Pitch` is a no-op on `Degree` values
+-- | Pattern PitchedNote12 -> Pattern PitchedNote12` is a no-op on `Degree` values
 -- | (passes them through unchanged).  The MVP-3 demo therefore can't
 -- | follow a live `set-scale` — the M-voice's degrees retune but the
 -- | T-voice is identical to the M-voice (both go through the Voice
 -- | emit path's degree-resolution; no triad rule is applied).
 -- |
 -- | The desired shape: `tintinnabuli :: Scale -> Triad -> Position ->
--- | Pattern Pitch -> Pattern Pitch` resolves degrees eagerly against
+-- | Pattern PitchedNote12 -> Pattern PitchedNote12` resolves degrees eagerly against
 -- | the given scale and applies the nearest-triad rule to the resulting
 -- | chromatic.  Live `set-scale` retunes the M-voice (Voice emit path)
 -- | but NOT the T-voice — the user re-arms when they want the T-voice
 -- | to follow.  This is intentional for v1; full live-tracking via a
--- | new emit-time-resolved Pitch variant is queued separately.
+-- | new emit-time-resolved PitchedNote12 variant is queued separately.
 module Test.TintinnabuliSpec
   ( runTintinnabuliTests
   ) where
@@ -27,7 +27,7 @@ import Effect.Console (log)
 
 import Tidal.Pattern.Core (fastCat, queryArc)
 import Tidal.Pattern.Types (Pattern, eventValue)
-import Tidal.Pitch (Pitch(..))
+import Tidal.Pitch (PitchedNote12(..))
 import Tidal.Pitch.Parse (d, mini)
 import Tidal.Scales (cMajor, dDorian)
 import Tidal.Tintinnabuli (above1, below1, cMajT, tintinnabuli)
@@ -105,7 +105,7 @@ runTintinnabuliTests = do
     [Chromatic 64, Chromatic 67, Sample "bd"]
     mixedOut
 
-expectPitches :: String -> Array Pitch -> Pattern Pitch -> Effect Unit
+expectPitches :: String -> Array PitchedNote12 -> Pattern PitchedNote12 -> Effect Unit
 expectPitches desc expected pat =
   let events = queryArc pat (fromInt 0) (fromInt 1)
       actual = map eventValue events

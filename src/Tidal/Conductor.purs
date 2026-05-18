@@ -7,7 +7,7 @@
 -- | `tidal_conductor` calls it on each clock tick.
 -- |
 -- | An ArmCommand is the per-event surface returned to the BEAM —
--- | wall-time, mvoice name, and a `Pattern Pitch` body suitable for
+-- | wall-time, mvoice name, and a `Pattern PitchedNote12` body suitable for
 -- | the same dispatch path that the `play-armed` WS verb uses.
 -- | Today the BEAM fires arms as it sees them; the wallTimeUs is
 -- | preserved so a future cycle-accurate scheduler can use it.
@@ -37,7 +37,7 @@ import Tidal.Pattern.Types
   , eventPart
   , Arc(..)
   )
-import Tidal.Pitch (Pitch(..))
+import Tidal.Pitch (PitchedNote12(..))
 import Tidal.Pattern.Types (Pattern)
 import Tidal.Voice (Window) as TV
 
@@ -60,9 +60,9 @@ data Destination
 -- | ETS map from destination-value → binding name, which the conductor
 -- | unwraps and uses to find the right voice supervisor.
 -- |
--- | `body` is always `Pattern Pitch`: PitchedParts pass theirs through
+-- | `body` is always `Pattern PitchedNote12`: PitchedParts pass theirs through
 -- | unchanged; DrumParts have their `Pattern DrumHitRef` (Pattern
--- | String) coerced here to `Pattern Pitch` via the `Sample` variant
+-- | String) coerced here to `Pattern PitchedNote12` via the `Sample` variant
 -- | so the existing dispatcher emit path handles them.  This Sample
 -- | coercion is the PR 2a runtime-compat shim; PR 2b replaces it with
 -- | per-hit binding lookups.
@@ -70,7 +70,7 @@ type ArmCommand =
   { wallTimeUs :: Number
   , mvoice :: String
   , destination :: Destination
-  , body :: Pattern Pitch
+  , body :: Pattern PitchedNote12
   }
 
 -- | Conductor state.  `lastEmittedUntil` is an integer-rational cycle

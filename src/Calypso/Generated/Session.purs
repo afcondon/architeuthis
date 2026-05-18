@@ -27,7 +27,7 @@ qd2A :: DrumPart
 qd2A = on "drums" qd2 (drum "~ ~ sn ~ ~ ~ sn ~")
 
 -- ---------------------------------------------------------------------------
--- Pitched parts — `mini` / `d` / `n` produce Pattern Pitch bound to
+-- Pitched parts — `mini` / `d` / `n` produce Pattern PitchedNote12 bound to
 -- an Instrument.
 -- ---------------------------------------------------------------------------
 
@@ -51,7 +51,7 @@ bass1Mix = on "bass" bass1 (inKey dDorian (d "5 5 5 3 3 7 -1"))
 -- to refresh against the active scale.
 -- ---------------------------------------------------------------------------
 
-mPart :: Pattern Pitch
+mPart :: Pattern PitchedNote12
 mPart = d "1 2 3 4 5 4 3 2"
 
 melodyM :: PitchedPart
@@ -64,7 +64,7 @@ melodyT = on "bass" bass2 (tintinnabuli aMinor aMinT above1 mPart)
 -- MVP-4 Fugue Machine demo: 4 playheads on a shared subject.
 -- ---------------------------------------------------------------------------
 
-subject :: Pattern Pitch
+subject :: Pattern PitchedNote12
 subject = d "1 5 3 5 1 3 5 -1"
 
 fugue1 :: PitchedPart

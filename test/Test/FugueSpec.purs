@@ -26,7 +26,7 @@ import Effect.Console (log)
 import Tidal.Fugue (defaultVoice, doubleSpeed, fugueVoice)
 import Tidal.Pattern.Core (queryArc)
 import Tidal.Pattern.Types (Pattern, arcStart, eventPart, eventValue)
-import Tidal.Pitch (Pitch(..))
+import Tidal.Pitch (PitchedNote12(..))
 import Tidal.Pitch.Parse (d, mini)
 import Tidal.Scales (cMajor, dDorian, inKey)
 
@@ -107,7 +107,7 @@ runFugueTests = do
 -- | moves events' whole/part positions in time but doesn't reshuffle
 -- | the result array — so musical-order checks (what a listener hears)
 -- | must sort by `part.start` before extracting values.
-expectPitches :: String -> Array Pitch -> Pattern Pitch -> Effect Unit
+expectPitches :: String -> Array PitchedNote12 -> Pattern PitchedNote12 -> Effect Unit
 expectPitches desc expected pat =
   let
     events = queryArc pat (fromInt 0) (fromInt 1)

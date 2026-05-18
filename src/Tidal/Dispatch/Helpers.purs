@@ -92,7 +92,7 @@ noteNameMidi = Map.fromFoldable (entries <> sharpAliases entries)
 -- |   1. If the token matches a note name (`c4`, `fs3`), use that.
 -- |   2. Otherwise, if the token parses as an integer (`60`, `36`),
 -- |      use that directly — this is the path taken when the typed
--- |      `Pitch` substrate has rendered a `Chromatic n` or
+-- |      `PitchedNote12` substrate has rendered a `Chromatic n` or
 -- |      `Degree d`-via-active-scale event into a number-string.
 -- |   3. Otherwise fall back to the binding's `defaultNote` — bare
 -- |      sample tokens (`bd`, `sn`) hit this leg.

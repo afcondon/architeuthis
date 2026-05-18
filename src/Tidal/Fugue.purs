@@ -17,7 +17,7 @@
 -- |         defaultVoice { speed = doubleSpeed }        -- twice as fast
 -- |         defaultVoice { retrograde = true, transpose = 12 }
 -- |
--- |   * `fugueVoice` — apply a `Voice` to a `Pattern Pitch`.  Pure
+-- |   * `fugueVoice` — apply a `Voice` to a `Pattern PitchedNote12`.  Pure
 -- |     function composition: the time-structure and pitch-substrate
 -- |     combinators already in scope (`fast`, `slow`, `rev`,
 -- |     `transposeChromatic`) do all the work.  This module adds no
@@ -32,7 +32,7 @@
 -- |
 -- |     -- Raw scale degrees; the active scale (set live via
 -- |     -- `set-scale aHarmonicMinor` etc.) governs rendering.
--- |     subject :: Pattern Pitch
+-- |     subject :: Pattern PitchedNote12
 -- |     subject = d "1 3 5 8 7 5 3 1"
 -- |
 -- |     voice1 :: PitchedPart
@@ -83,7 +83,7 @@ import Data.Rational (Rational, fromInt, (%))
 
 import Tidal.Pattern.Core (fast, rev)
 import Tidal.Pattern.Types (Pattern)
-import Tidal.Pitch (Pitch)
+import Tidal.Pitch (PitchedNote12)
 import Tidal.Scales (transposeDiatonic)
 
 -- ---------------------------------------------------------------------------
@@ -149,7 +149,7 @@ defaultVoice =
 -- | wrapping the source in no-op functors — useful when the
 -- | `Voice` is `defaultVoice` itself (voice 1 of a fugue: the
 -- | unprocessed subject).
-fugueVoice :: Voice -> Pattern Pitch -> Pattern Pitch
+fugueVoice :: Voice -> Pattern PitchedNote12 -> Pattern PitchedNote12
 fugueVoice v src =
   let
     withSpeed =

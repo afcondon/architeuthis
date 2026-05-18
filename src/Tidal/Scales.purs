@@ -164,7 +164,7 @@ import Data.Int as Int
 import Data.Maybe (Maybe(..))
 import Data.Tuple (Tuple(..))
 import Tidal.Pattern.Types (Pattern)
-import Tidal.Pitch (Pitch(..))
+import Tidal.Pitch (PitchedNote12(..))
 
 -------------------------------------------------------------------------------
 -- Scale lookup
@@ -754,7 +754,7 @@ renderDegree (Scale s) degree =
     s.root + offset + 12 * octave
 
 -------------------------------------------------------------------------------
--- Operators on Pattern Pitch
+-- Operators on Pattern PitchedNote12
 -------------------------------------------------------------------------------
 
 -- | Pin a sub-pattern to a specific scale.  Eagerly renders every
@@ -767,10 +767,10 @@ renderDegree (Scale s) degree =
 -- | it on a pattern you want to follow live `set-scale` mutation —
 -- | the whole point of leaving Degrees unresolved is that the voice
 -- | renders them on every tick using the current scale.
-inKey :: Scale -> Pattern Pitch -> Pattern Pitch
+inKey :: Scale -> Pattern PitchedNote12 -> Pattern PitchedNote12
 inKey scale = map (renderPitchIn scale)
   where
-    renderPitchIn :: Scale -> Pitch -> Pitch
+    renderPitchIn :: Scale -> PitchedNote12 -> PitchedNote12
     renderPitchIn s = case _ of
       Degree d    -> Chromatic (renderDegree s d)
       Chromatic n -> Chromatic n
@@ -784,10 +784,10 @@ inKey scale = map (renderPitchIn scale)
 -- | Composes with `inKey` the obvious way: `inKey s . transposeDiatonic n`
 -- | renders to the scale after stepping; `transposeDiatonic n . inKey s`
 -- | pins the scale first (so the transpose is a no-op).
-transposeDiatonic :: Int -> Pattern Pitch -> Pattern Pitch
+transposeDiatonic :: Int -> Pattern PitchedNote12 -> Pattern PitchedNote12
 transposeDiatonic offset = map step
   where
-    step :: Pitch -> Pitch
+    step :: PitchedNote12 -> PitchedNote12
     step = case _ of
       Degree d -> Degree (d + offset)
       other    -> other
@@ -799,10 +799,10 @@ transposeDiatonic offset = map step
 -- |
 -- | For chromatic transposition of a degree pattern, render first:
 -- | `transposeChromatic 5 (inKey cMajor (d "1 3 5"))`.
-transposeChromatic :: Int -> Pattern Pitch -> Pattern Pitch
+transposeChromatic :: Int -> Pattern PitchedNote12 -> Pattern PitchedNote12
 transposeChromatic offset = map step
   where
-    step :: Pitch -> Pitch
+    step :: PitchedNote12 -> PitchedNote12
     step = case _ of
       Chromatic n -> Chromatic (n + offset)
       other       -> other

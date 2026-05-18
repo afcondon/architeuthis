@@ -4,7 +4,7 @@
 -- | the surrounding template imports just this module.  Everything
 -- | a cell can reach lives here: the `Pattern` type, the discrete-
 -- | pattern combinators (`fast`, `slow`, `rev`, `fastCat`, `stack`,
--- | `every`, `iter`, …), the typed `Pitch` carrier with its `mini` /
+-- | `every`, `iter`, …), the typed `PitchedNote12` carrier with its `mini` /
 -- | `n` / `d` parsers, and the active-scale operators (`inKey`,
 -- | `transposeDiatonic`, `transposeChromatic`) from `Tidal.Scales`.
 -- |
@@ -40,7 +40,7 @@ import Tidal.Pattern.Core
 import Tidal.DejaVu
 import Tidal.LiveControl
 import Tidal.Random
-import Tidal.Pitch (Pitch(..))
+import Tidal.Pitch (PitchedNote12(..))
 import Tidal.Pitch.Parse (mini, n, d)
 import Tidal.Scales
   ( Scale(..)

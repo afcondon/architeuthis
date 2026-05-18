@@ -1,11 +1,11 @@
--- | Pitch-typed parsers — the user-facing entry points for cell and
+-- | PitchedNote12-typed parsers — the user-facing entry points for cell and
 -- | cue bodies.
 -- |
 -- | Three parsers, three semantic intents, all producing
--- | `Pattern Pitch`:
+-- | `Pattern PitchedNote12`:
 -- |
 -- |   * `mini` — Tidal's mini-notation.  Per-token shape decides the
--- |     `Pitch` variant: note-shaped (`c4`, `fs3`) → `Chromatic`;
+-- |     `PitchedNote12` variant: note-shaped (`c4`, `fs3`) → `Chromatic`;
 -- |     integer-shaped (`60`) → `Chromatic`; anything else (`bd`,
 -- |     `sn`) → `Sample`.  Same back-compat surface as the legacy
 -- |     `mini :: String -> Pattern String` it replaces, but the
@@ -24,7 +24,7 @@
 -- | The parser itself produces `Pattern String` (Tidal's mini-notation
 -- | doesn't know about pitches).  Each entry point fmaps a
 -- | token-classification step over the result; that's where the
--- | `String → Pitch` decision lives.  Failures from the parser become
+-- | `String → PitchedNote12` decision lives.  Failures from the parser become
 -- | `silence` — a typo in a cell goes quiet rather than killing the
 -- | rig.
 module Tidal.Pitch.Parse
@@ -48,10 +48,10 @@ import Data.String.CodeUnits as SCU
 import Tidal.Dispatch.Helpers (noteNameMidi)
 import Tidal.Pattern.Mini (parseMiniPattern)
 import Tidal.Pattern.Types (Pattern, silence)
-import Tidal.Pitch (Pitch(..))
+import Tidal.Pitch (PitchedNote12(..))
 
--- | Parse mini-notation into a `Pattern Pitch`.  Token-shape decides
--- | the `Pitch` variant per event:
+-- | Parse mini-notation into a `Pattern PitchedNote12`.  Token-shape decides
+-- | the `PitchedNote12` variant per event:
 -- |
 -- |   * Note name (`c4`, `fs3`, `bb2`) → `Chromatic <midi>`
 -- |   * Integer (`60`)                 → `Chromatic 60`
@@ -68,7 +68,7 @@ import Tidal.Pitch (Pitch(..))
 -- | mini "<bd sn>"      -- alternation
 -- | mini "c4(3,8)"      -- Euclidean Chromatics
 -- | ```
-mini :: String -> Pattern Pitch
+mini :: String -> Pattern PitchedNote12
 mini src = case parseMiniPattern src of
   Right p -> map miniToken p
   Left _  -> silence
@@ -82,7 +82,7 @@ mini src = case parseMiniPattern src of
 -- |
 -- | The mnemonic: `n` = "notes". Mirrors Tidal's existing `n`-as-note
 -- | operator, but produces typed pitches.
-n :: String -> Pattern Pitch
+n :: String -> Pattern PitchedNote12
 n src = case parseMiniPattern src of
   Right p -> map noteToken p
   Left _  -> silence
@@ -99,17 +99,17 @@ n src = case parseMiniPattern src of
 -- |
 -- | The mnemonic: `d` = "degrees". `dc` (Nashville chord notation)
 -- | is a planned sibling; not in this MVP.
-d :: String -> Pattern Pitch
+d :: String -> Pattern PitchedNote12
 d src = case parseMiniPattern src of
   Right p -> map degreeToken p
   Left _  -> silence
 
 -- ---------------------------------------------------------------------------
--- Token → Pitch classifiers
+-- Token → PitchedNote12 classifiers
 -- ---------------------------------------------------------------------------
 
 -- | mini's per-token rule.  See module header.
-miniToken :: String -> Pitch
+miniToken :: String -> PitchedNote12
 miniToken tok = case noteFromName tok of
   Just midi -> Chromatic midi
   Nothing -> case Number.fromString tok of
@@ -117,7 +117,7 @@ miniToken tok = case noteFromName tok of
     Nothing -> Sample tok
 
 -- | n's per-token rule.  See module header.
-noteToken :: String -> Pitch
+noteToken :: String -> PitchedNote12
 noteToken tok = case noteFromName tok of
   Just midi -> Chromatic midi
   Nothing -> case Int.fromString tok of
@@ -127,7 +127,7 @@ noteToken tok = case noteFromName tok of
       Nothing -> Sample tok
 
 -- | d's per-token rule.  See module header.
-degreeToken :: String -> Pitch
+degreeToken :: String -> PitchedNote12
 degreeToken tok = case Int.fromString tok of
   Just i  -> Degree i
   Nothing -> Sample tok

@@ -14,7 +14,7 @@
 -- |   behind system constants — Studio reads `midi iac 1` rather than
 -- |   the inscrutable old `Channel iac 1 36 100 50`.  Runtime hot
 -- |   path unchanged: drum events flow through the existing
--- |   Pattern Pitch dispatcher via Sample-coerce at the conductor
+-- |   Pattern PitchedNote12 dispatcher via Sample-coerce at the conductor
 -- |   boundary.  Per-hit MIDI bindings + per-event vel/dur are PR 2b.
 -- |
 -- | Plan: docs/dsl-naming-refactor-plan.md.
@@ -77,7 +77,7 @@ import Data.Semigroup (append, (<>)) as DataSemigroup
 import Data.Semiring (zero) as PSemiring
 import Data.Ring (class Ring, sub) as PRing
 import Tidal.Cell.Prelude
-import Tidal.Pitch (Pitch)
+import Tidal.Pitch (PitchedNote12)
 
 -- | Right-associative function application — Haskell/Tidal idiom for
 -- | avoiding nested parens: `f $ g $ x` reads as `f (g x)`.
@@ -273,13 +273,13 @@ gateHit name gateChannel durMs = { name, gateChannel, durMs }
 -- Parts
 -- ---------------------------------------------------------------------------
 
--- | A `PitchedPart` is a `Pattern Pitch` bound to an `Instrument`,
+-- | A `PitchedPart` is a `Pattern PitchedNote12` bound to an `Instrument`,
 -- | tagged with a runtime mvoice name (`"bass"`, `"fugue"`, …) that
 -- | the conductor uses to dispatch to the right voice supervisor.
 newtype PitchedPart = PitchedPart
   { mvoice      :: String
   , destination :: Instrument
-  , body        :: Pattern Pitch
+  , body        :: Pattern PitchedNote12
   }
 
 -- | A `DrumPart` is a `Pattern DrumHitRef` (sequence of named drum
@@ -304,7 +304,7 @@ newtype DrumPart = DrumPart
 class On dest body part | dest -> body part where
   on :: String -> dest -> Pattern body -> part
 
-instance onInstrument :: On Instrument Pitch PitchedPart where
+instance onInstrument :: On Instrument PitchedNote12 PitchedPart where
   on mvoice destination body =
     PitchedPart { mvoice, destination, body }
 
@@ -323,7 +323,7 @@ data AnyPart
   = AnyPitchedPart
       { mvoice      :: String
       , destination :: Instrument
-      , body        :: Pattern Pitch
+      , body        :: Pattern PitchedNote12
       }
   | AnyDrumPart
       { mvoice      :: String

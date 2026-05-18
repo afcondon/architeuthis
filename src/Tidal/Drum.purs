@@ -22,7 +22,7 @@ import Prelude
 
 import Data.Functor (map)
 import Tidal.Pattern.Types (Pattern)
-import Tidal.Pitch (Pitch(..))
+import Tidal.Pitch (PitchedNote12(..))
 import Tidal.Pitch.Parse (mini)
 
 -- | Parse a drum-pattern string using the full mini-notation
@@ -34,19 +34,19 @@ import Tidal.Pitch.Parse (mini)
 drum :: String -> Pattern String
 drum input = map nameOf (mini input)
   where
-  nameOf :: Pitch -> String
+  nameOf :: PitchedNote12 -> String
   nameOf (Sample s) = s
   nameOf _          = ""
 
--- | Coerce a DrumPart's `Pattern String` body to `Pattern Pitch` by
+-- | Coerce a DrumPart's `Pattern String` body to `Pattern PitchedNote12` by
 -- | wrapping each hit-name as the `Sample` variant.  Used at the
 -- | play-armed boundary on the Erlang side (Handler.erl's
 -- | resolve_cue_body) so the voice gen_server's existing
--- | Pitch-event emit path handles drum events transparently.
+-- | PitchedNote12-event emit path handles drum events transparently.
 -- |
 -- | PR 2a runtime-compat shim.  PR 2b replaces this with per-hit
 -- | binding dispatch: each hit-name flows directly to its
 -- | `<kitAlias>.<hitName>` MIDI binding rather than being coerced
 -- | back to a kit-level Sample.
-drumPatternToPitch :: Pattern String -> Pattern Pitch
+drumPatternToPitch :: Pattern String -> Pattern PitchedNote12
 drumPatternToPitch = map Sample
