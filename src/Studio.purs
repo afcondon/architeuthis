@@ -210,12 +210,4 @@ studioCMajorScale = polyPresetNote (BankCv 1)
 -- the new patterns.
 -- ---------------------------------------------------------------------------
 
-studioGrids :: Grids "studioGrids"
-studioGrids = grids fh2qd 13 $ gridsConfig
-  { x          = pure 128
-  , y          = pure 128
-  , fillBd     = pure 200
-  , fillSd     = pure 140
-  , fillHh     = pure 180
-  , randomness = pure 32
-  }
+studioGrids = grids fh2qd 13 $ gridsConfig { fillBd = pure 220, fillSd = pure 100, fillHh = pure 200 }
