@@ -69,6 +69,12 @@ module Calypso.Prelude
   -- Sections (Pattern of parts, fired by the conductor)
   , Section
   , armPart
+  -- Polysignals (Slab C step 1) — autonomous FH-2 bank configurations
+  -- declared as typed Session-level bindings, classified by the
+  -- walker and shipped to fh2-daemon at baseline load.
+  , module Tidal.PolySignal
+  -- Maybe — re-exported for optional fields like PolySignal range.
+  , module Data.Maybe
   ) where
 
 import Control.Applicative (pure)
@@ -77,8 +83,17 @@ import Data.Semigroup (append, (<>)) as DataSemigroup
 import Data.Semiring (zero) as PSemiring
 import Data.Ring (class Ring, sub) as PRing
 import Tidal.Cell.Prelude
+import Data.Maybe (Maybe(..))
 import Tidal.Emit (class Emitable)
 import Tidal.Pitch (PitchedNote12)
+import Tidal.PolySignal
+  ( PolySignal(..)
+  , OutputRange(..)
+  , Bank(..)
+  , LfoWave(..)
+  , LfoSlot
+  , polyLfo
+  )
 
 -- | Right-associative function application — Haskell/Tidal idiom for
 -- | avoiding nested parens: `f $ g $ x` reads as `f (g x)`.

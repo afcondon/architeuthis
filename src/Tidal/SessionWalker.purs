@@ -39,6 +39,7 @@ import Tidal.MidiClaim
   , validateMidiClaims
   )
 import Tidal.PortClaim (ClaimError, OwnerKind(..))
+import Tidal.PolySignal as PolySignal
 
 -- ---------------------------------------------------------------------------
 -- The boundary ADT
@@ -114,6 +115,20 @@ data RegistrationEvent
           { name :: String, gateChannel :: Int, durMs :: Int }
       , drumKitValue :: Foreign
       }
+  -- | Slab C step 1 (2026-05-18): an autonomous FH-2 polysignal
+  -- | (LFO bank, clock-bus, ADSR cluster, euclid machine, random
+  -- | sequencer) declared as a typed Session-level binding.  The
+  -- | walker classifies by constructor tag, projects the value to
+  -- | the JSON envelope the daemon already understands, and emits
+  -- | this event.  Erlang side hands the envelope verbatim to
+  -- | `fh2_daemon_call("apply-polysignal <json>")` — claim happens
+  -- | at the daemon's `Rig.applyWithClaims` boundary, conflicts
+  -- | surface as boot-time errors via the daemon's reply.
+  | RegisterPolySignal
+      { alias :: String
+      , family :: String
+      , jsonEnvelope :: String
+      }
   -- | Front-end reservations Phase 1: emitted when two or more Studio
   -- | declarations land on the same MIDI (device, channel).  Erlang
   -- | shell logs the `message` via `tidal_log:err` and bumps a
@@ -159,6 +174,11 @@ walkBaseline = do
       (pickInstrument deviceAliases routerAliases) allPairs
     kitEvents = Array.mapMaybe
       (pickDrumKit deviceAliases routerAliases) allPairs
+    -- Slab C step 1: polysignals.  Self-contained typed values
+    -- whose alias is the binding name; no device/router lookup
+    -- needed.  The walker only projects to a JSON envelope, the
+    -- daemon does the real claim work at apply-time.
+    polySigEvents = Array.mapMaybe pickPolySignal allPairs
     -- Phase 1: collect implicit (device, channel) claims from
     -- registration events, group by (device, channel), report any
     -- duplicates as `ReportClaimError` events.  Errors are emitted
@@ -167,7 +187,7 @@ walkBaseline = do
     claims = Array.mapMaybe registrationToClaim (instrEvents <> kitEvents)
     claimErrorEvents = Array.mapMaybe claimErrorToEvent (validateMidiClaims claims)
   pure (claimErrorEvents <> devEvents <> routerEvents
-        <> instrEvents <> kitEvents)
+        <> instrEvents <> kitEvents <> polySigEvents)
 
 registrationToClaim :: RegistrationEvent -> Maybe MidiClaim
 registrationToClaim = case _ of
@@ -389,6 +409,30 @@ pickGateDrumKit routerAliases alias value = do
       }
 
 -- ---------------------------------------------------------------------------
+-- PolySignal classifier (Slab C step 1)
+-- ---------------------------------------------------------------------------
+
+-- | Classify a `PolySignal` value declared at the Session level.
+-- | Today: PolyLfoConfig only.  Other four families land in step 2
+-- | (PolyClock, PolyEnv, PolyEuclid, PolyRand) with the same pattern:
+-- | one classifier clause per constructor tag, projecting to the
+-- | shared JSON envelope shape.
+pickPolySignal
+  :: { name :: String, value :: Foreign }
+  -> Maybe RegistrationEvent
+pickPolySignal { name: alias, value } = do
+  tag <- constructorTag value
+  case tag of
+    "polyLfoConfig" -> do
+      fields <- polyLfoConfigFields value
+      let polysig = PolySignal.polyLfo fields.bank fields.slots fields.range
+          envelopeJson = PolySignal.polySignalAsJson alias polysig
+          family = PolySignal.polySignalFamily polysig
+      Just $ RegisterPolySignal
+        { alias, family, jsonEnvelope: envelopeJson }
+    _ -> Nothing
+
+-- ---------------------------------------------------------------------------
 -- FFI primitives — minimal, knowledge-free
 -- ---------------------------------------------------------------------------
 --
@@ -442,3 +486,16 @@ foreign import gateDrumKitHits
 foreign import vPerOctFields
   :: Foreign
   -> Maybe { gateChannel :: Int, voctBus :: Int }
+
+-- | Decode the inner record of a `PolyLfoConfig` value.  The encoding
+-- | from purs-backend-erl is bit-compatible with the typed PureScript
+-- | record, so the FFI just passes the inner map through after
+-- | verifying it carries the three expected keys.  See the Erlang
+-- | clause for the structural details.
+foreign import polyLfoConfigFields
+  :: Foreign
+  -> Maybe
+       { bank :: PolySignal.Bank
+       , slots :: Array PolySignal.LfoSlot
+       , range :: Maybe PolySignal.OutputRange
+       }

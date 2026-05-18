@@ -128,3 +128,32 @@ gateKit = gateDrumKit cvRouter
   , gateHit "hh" 2 20
   , gateHit "cp" 3 30
   ]
+
+-- ---------------------------------------------------------------------------
+-- Polysignals (Slab C step 1, 2026-05-18) — autonomous FH-2 bank
+-- configurations declared as typed Session-level bindings.  The
+-- walker classifies each by constructor tag, projects to the JSON
+-- envelope the daemon already understands, and ships it to
+-- fh2-daemon at baseline load.  Port claims happen on the daemon
+-- side via the unified ClaimRig.
+-- ---------------------------------------------------------------------------
+
+-- | Smoke-test polysignal: eight LFOs on a free FHX-8CV expander bank
+-- | (cv5) at mixed waveforms and ratios, output range ±5V.  Walker
+-- | emits a `RegisterPolySignal` event with this value's JSON
+-- | envelope; the daemon installs the LFO bank and records the claim
+-- | under alias `studioTestLfo`.  Using `cv5` rather than `main`
+-- | because main is currently held by the drumkit + chord claims from
+-- | earlier port-claims work — see ~/.fh2/claims.json.
+studioTestLfo :: PolySignal "studioTestLfo"
+studioTestLfo = polyLfo (BankCv 5)
+  [ { ratio: 1.0,  shape: LfoTri }
+  , { ratio: 0.5,  shape: LfoSaw }
+  , { ratio: 2.0,  shape: LfoSin }
+  , { ratio: 4.0,  shape: LfoSqr }
+  , { ratio: 0.25, shape: LfoTri }
+  , { ratio: 0.5,  shape: LfoSaw }
+  , { ratio: 1.0,  shape: LfoSin }
+  , { ratio: 0.5,  shape: LfoSqr }
+  ]
+  (Just Bipolar5V)

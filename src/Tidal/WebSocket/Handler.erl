@@ -912,19 +912,36 @@ handle_pattern_message(Text, State) ->
                     %% without separate Level-2 wire commands.
                     Summary =
                         case tidal_session_walker:walk_baseline() of
-                            {ok, #{devices := D, instruments := I,
-                                   drumKits := K, claimErrors := CE}} ->
+                            {ok, Stats} ->
+                                D  = maps:get(devices, Stats, 0),
+                                I  = maps:get(instruments, Stats, 0),
+                                K  = maps:get(drumKits, Stats, 0),
+                                CE = maps:get(claimErrors, Stats, 0),
+                                PS = maps:get(polySignals, Stats, 0),
+                                PE = maps:get(polySignalErrors, Stats, 0),
                                 ConflictPart = case CE of
                                     0 -> <<>>;
                                     _ -> iolist_to_binary([
                                             ", ", integer_to_binary(CE),
                                             " claim-error(s)"])
                                 end,
+                                PolyPart = case {PS, PE} of
+                                    {0, 0} -> <<>>;
+                                    {_, 0} -> iolist_to_binary([
+                                            ", ", integer_to_binary(PS),
+                                            " polysignal(s)"]);
+                                    _      -> iolist_to_binary([
+                                            ", ", integer_to_binary(PS),
+                                            " polysignal(s), ",
+                                            integer_to_binary(PE),
+                                            " polysignal-error(s)"])
+                                end,
                                 iolist_to_binary([
                                     " (",
                                     integer_to_binary(D), " device(s), ",
                                     integer_to_binary(I), " instrument(s), ",
                                     integer_to_binary(K), " drum kit(s)",
+                                    PolyPart,
                                     ConflictPart,
                                     ")"]);
                             {error, _} ->

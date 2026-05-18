@@ -24,6 +24,7 @@
         , drumKitHits/1
         , gateDrumKitHits/1
         , vPerOctFields/1
+        , polyLfoConfigFields/1
         ]).
 
 %% --------------------------------------------------------------------
@@ -191,4 +192,31 @@ vPerOctFields(#{gateChannel := G, voctBus := V})
     when is_integer(G), is_integer(V) ->
     {just, #{gateChannel => G, voctBus => V}};
 vPerOctFields(_) ->
+    {nothing}.
+
+%% --------------------------------------------------------------------
+%% polyLfoConfigFields/1 — pure.
+%%
+%% Decode the inner record of a `PolyLfoConfig` constructor:
+%%
+%%     PolyLfoConfig { bank :: Bank
+%%                   , slots :: Array LfoSlot
+%%                   , range :: Maybe OutputRange
+%%                   }
+%%
+%% purs-backend-erl encodes this as:
+%%
+%%     {polyLfoConfig, #{bank => BankValue, slots => SlotsArray,
+%%                       range => RangeValue}}
+%%
+%% Because Bank, LfoSlot, LfoWave, and OutputRange are all defined in
+%% Tidal.PolySignal, the encoding inside the record matches what the
+%% PureScript types expect.  We pass the inner record through verbatim;
+%% the PureScript classifier reads it as the typed record directly.
+%% No mapping happens at this seam — domain semantics (wire token
+%% mapping) all live in `Tidal.PolySignal`.
+%% --------------------------------------------------------------------
+polyLfoConfigFields({polyLfoConfig, #{bank := _, slots := _, range := _} = M}) ->
+    {just, M};
+polyLfoConfigFields(_) ->
     {nothing}.

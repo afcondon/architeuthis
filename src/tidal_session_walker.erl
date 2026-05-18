@@ -173,6 +173,10 @@ event_to_line({registerGateDrumKit,
     {true,
      iolist_to_binary([<<"gatekit\t">>, A, <<"\t">>, R, <<"\t">>,
                        HitsBin])};
+event_to_line({registerPolySignal,
+               #{alias := A, family := F}}) ->
+    {true,
+     iolist_to_binary([<<"polysignal\t">>, A, <<"\t">>, F])};
 event_to_line({reportClaimError,
                #{deviceAlias := D, channel := Ch,
                  owners := OwnersArr, message := Msg}}) ->
@@ -360,6 +364,38 @@ apply_event({registerGateDrumKit,
     tidal_dispatcher:set_binding_from_spec(A, Spec),
     bump(drumKits, Acc);
 
+%% Slab C step 1 (2026-05-18): an autonomous FH-2 polysignal declared
+%% at the Session level (typed PolySignal binding).  The PureScript
+%% walker projected the value to the JSON envelope the daemon already
+%% understands; we hand it verbatim to fh2-daemon via
+%% `apply-polysignal <json>` on its Unix socket.  Daemon does the real
+%% claim work at `Rig.applyWithClaims` — name conflicts come back as
+%% an `ERR` line that we surface via `tidal_log:err` (same warn-on-
+%% conflict policy as the front-end reservations Phase 1 path).
+apply_event({registerPolySignal,
+             #{ alias        := A
+              , family       := F
+              , jsonEnvelope := J
+              }}, Acc) ->
+    Cmd = iolist_to_binary([<<"apply-polysignal ">>, J]),
+    case fh2_daemon_call(Cmd) of
+        {ok, <<"OK", _/binary>> = Reply} ->
+            tidal_log:debug(
+                "session_walker: polysignal ~s (~s) -> ~s~n",
+                [A, F, Reply]),
+            bump(polySignals, Acc);
+        {ok, ErrReply} ->
+            tidal_log:err(
+                "session_walker: polysignal ~s (~s) refused: ~s~n",
+                [A, F, ErrReply]),
+            bump(polySignalErrors, Acc);
+        {error, Reason} ->
+            tidal_log:err(
+                "session_walker: polysignal ~s (~s) daemon error: ~p~n",
+                [A, F, Reason]),
+            bump(polySignalErrors, Acc)
+    end;
+
 %% A claim-error event surfaces a Phase-1 reservation-validation
 %% finding (e.g. duplicate MIDI channel claim).  The PureScript walker
 %% pre-renders a human-readable line in `message`; we log it via
@@ -395,3 +431,46 @@ ensure_walker_ps_loaded() ->
 
 bump(Key, Acc) ->
     Acc#{Key => maps:get(Key, Acc, 0) + 1}.
+
+%% ====================================================================
+%% fh2-daemon client — synchronous request/reply over a Unix socket.
+%%
+%% DUPLICATED from tidal_webSocket_handler@foreign for now (Slab C
+%% step 1).  Both copies are tiny.  Extract to src/tidal_fh2.erl when
+%% a third caller emerges — see task #71.
+%% ====================================================================
+
+fh2_daemon_call(Command) ->
+    SockPath = fh2_daemon_socket_path(),
+    Opts = [{active, false}, binary, {packet, line}],
+    case gen_tcp:connect({local, SockPath}, 0, Opts, 1000) of
+        {ok, Sock} ->
+            try
+                ok = gen_tcp:send(Sock, [Command, $\n]),
+                case gen_tcp:recv(Sock, 0, 5000) of
+                    {ok, Reply} ->
+                        Trimmed = case Reply of
+                            <<>> -> Reply;
+                            _ ->
+                                case binary:last(Reply) of
+                                    $\n -> binary:part(Reply, 0,
+                                                       byte_size(Reply) - 1);
+                                    _ -> Reply
+                                end
+                        end,
+                        {ok, Trimmed};
+                    {error, RecvReason} ->
+                        {error, RecvReason}
+                end
+            after
+                gen_tcp:close(Sock)
+            end;
+        {error, ConnReason} ->
+            {error, ConnReason}
+    end.
+
+fh2_daemon_socket_path() ->
+    case os:getenv("HOME") of
+        false -> "/tmp/fh2-control.sock";
+        Home -> Home ++ "/.fh2/control.sock"
+    end.
