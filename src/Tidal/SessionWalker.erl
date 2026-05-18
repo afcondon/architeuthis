@@ -31,6 +31,7 @@
         , polyRandConfigFields/1
         , polyPresetConfigFields/1
         , polyPresetNoteConfigFields/1
+        , gridsBindingFields/1
         ]).
 
 %% --------------------------------------------------------------------
@@ -271,4 +272,45 @@ polyPresetNoteConfigFields({polyPresetNoteConfig,
                             #{bank := _, slots := _, range := _} = M}) ->
     {just, M};
 polyPresetNoteConfigFields(_) ->
+    {nothing}.
+
+%% --------------------------------------------------------------------
+%% gridsBindingFields/1 — pure.
+%%
+%% Decode the inner record of a `GridsBinding` value.  Encoding:
+%%
+%%   {gridsBinding, #{device => {midiDevice, <<Name>>, Latency},
+%%                    channel => Ch, noteBd => N, noteSd => N,
+%%                    noteHh => N, vel => V, velAccent => V,
+%%                    durMs => D, config => OpaqueCfg}}
+%%
+%% The classifier needs the device's (name, latency) tuple to look up
+%% the alias from the content-keyed device-alias map.  Returns a flat
+%% record with the device's name + latencyMs lifted out; `config`
+%% passes through unchanged for the voice's per-step FFI use.
+%% --------------------------------------------------------------------
+gridsBindingFields({gridsBinding,
+                    #{device      := {midiDevice, DevName, DevLat},
+                      channel     := Ch,
+                      noteBd      := NBd,
+                      noteSd      := NSd,
+                      noteHh      := NHh,
+                      vel         := V,
+                      velAccent   := VA,
+                      durMs       := Dur,
+                      config      := Cfg}})
+    when is_binary(DevName), is_integer(DevLat),
+         is_integer(Ch), is_integer(NBd), is_integer(NSd), is_integer(NHh),
+         is_integer(V), is_integer(VA), is_integer(Dur) ->
+    {just, #{deviceName       => DevName,
+             deviceLatencyMs  => DevLat,
+             channel          => Ch,
+             noteBd           => NBd,
+             noteSd           => NSd,
+             noteHh           => NHh,
+             vel              => V,
+             velAccent        => VA,
+             durMs            => Dur,
+             config           => Cfg}};
+gridsBindingFields(_) ->
     {nothing}.

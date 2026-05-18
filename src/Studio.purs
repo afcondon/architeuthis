@@ -201,3 +201,21 @@ studioCMajorScale = polyPresetNote (BankCv 1)
   , { note: 67 }, { note: 69 }, { note: 71 }, { note: 72 }
   ]
   (Just Bipolar5V)
+
+-- ---------------------------------------------------------------------------
+-- Grids virtual module (BEAM-native MI Grids clone) — first vmod
+-- instance per the parameter-as-Pattern lift.  Three drums (BD/SD/HH)
+-- emitted as MIDI notes on the FH-2 QD channel.  Refire the cell
+-- with new X/Y/fill values mid-flight; the next 16th-note picks up
+-- the new patterns.
+-- ---------------------------------------------------------------------------
+
+studioGrids :: Grids "studioGrids"
+studioGrids = grids fh2qd 13 $ gridsConfig
+  { x          = pure 128
+  , y          = pure 128
+  , fillBd     = pure 200
+  , fillSd     = pure 140
+  , fillHh     = pure 180
+  , randomness = pure 32
+  }

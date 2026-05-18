@@ -22,10 +22,7 @@
 
 -export([start_link/2,
          compute_until/2,
-         set_params/2,
-         set_xy/3,
-         set_fills/4,
-         set_randomness/2,
+         set_config/2,
          get_state/1,
          registered_name/1]).
 
@@ -46,10 +43,10 @@
     vel            :: 0..127,
     vel_accent     :: 0..127,
     dur_ms         :: 1..2000,
-    %% Live params (Phase 2: static; Phase 3: opaque PS-side handle).
-    params         :: {integer(), integer(),
-                       integer(), integer(), integer(),
-                       integer(), integer()},
+    %% Live config — opaque PureScript GridsConfig value.  The voice
+    %% calls `Tidal.Grids.evaluateParamsAt(cfg, cyclePos)` per step
+    %% to query each of the seven Pattern Int slots.
+    cfg            :: term(),
     %% Engine running state.
     last_step      :: integer(),    % -1 before first emit
     perturbations  :: [integer()],  % [Pb, Ps, Ph]
@@ -81,17 +78,12 @@ start_link(Name, Config) when is_atom(Name); is_binary(Name) ->
 compute_until(Name, Window) ->
     gen_server:cast(registered_name(Name), {compute_until, Window}).
 
-set_params(Name, Params) ->
-    gen_server:cast(registered_name(Name), {set_params, Params}).
-
-set_xy(Name, X, Y) ->
-    gen_server:cast(registered_name(Name), {set_xy, X, Y}).
-
-set_fills(Name, FBd, FSd, FHh) ->
-    gen_server:cast(registered_name(Name), {set_fills, FBd, FSd, FHh}).
-
-set_randomness(Name, R) ->
-    gen_server:cast(registered_name(Name), {set_randomness, R}).
+%% @doc Replace the voice's GridsConfig with a fresh value (cell re-fire
+%% path).  Patterns swap atomically; the very next step will read the
+%% new patterns.  Engine state (step counter, perturbations) is
+%% preserved across re-fires so the pattern doesn't reset mid-bar.
+set_config(Name, Cfg) ->
+    gen_server:cast(registered_name(Name), {set_config, Cfg}).
 
 get_state(Name) ->
     gen_server:call(registered_name(Name), get_state).
@@ -119,8 +111,8 @@ init({Name, Config}) ->
         vel         = maps:get(vel,        Config, 90),
         vel_accent  = maps:get(vel_accent, Config, 127),
         dur_ms      = maps:get(dur_ms,     Config, 30),
-        params      = maps:get(params,     Config,
-                               {128, 128, 128, 128, 128, 0, 0}),
+        cfg         = maps:get(cfg,        Config,
+                                                undefined),
         last_step   = -1,
         perturbations = [0, 0, 0],
         rng_state   = Seed0 band 16#FFFFFFFF,
@@ -136,7 +128,6 @@ handle_call(get_state, _From, State) ->
         name          => State#st.name,
         port_name     => State#st.port_name,
         channel       => State#st.channel,
-        params        => State#st.params,
         last_step     => State#st.last_step,
         perturbations => State#st.perturbations
     },
@@ -145,17 +136,8 @@ handle_call(get_state, _From, State) ->
 handle_cast({compute_until, Window}, State) ->
     NewState = process_window(Window, State),
     {noreply, NewState};
-handle_cast({set_params, Params}, State) ->
-    {noreply, State#st{params = Params}};
-handle_cast({set_xy, X, Y}, State) ->
-    {_, _, FBd, FSd, FHh, R, M} = State#st.params,
-    {noreply, State#st{params = {X, Y, FBd, FSd, FHh, R, M}}};
-handle_cast({set_fills, FBd, FSd, FHh}, State) ->
-    {X, Y, _, _, _, R, M} = State#st.params,
-    {noreply, State#st{params = {X, Y, FBd, FSd, FHh, R, M}}};
-handle_cast({set_randomness, R}, State) ->
-    {X, Y, FBd, FSd, FHh, _, M} = State#st.params,
-    {noreply, State#st{params = {X, Y, FBd, FSd, FHh, R, M}}}.
+handle_cast({set_config, Cfg}, State) ->
+    {noreply, State#st{cfg = Cfg}}.
 
 terminate(_Reason, State) ->
     case State#st.midi_socket of
@@ -198,11 +180,30 @@ process_window(Window, State) ->
     end.
 
 %% Emit a single Grids step S.  S is absolute (across cycles); the
-%% wrap to 0..31 happens here.  At step-in-pattern 0, regenerate
-%% perturbations.
+%% wrap to 0..31 happens here.  Per the parameter-as-Pattern lift,
+%% the seven parameter values come from a PureScript-side query
+%% (`Tidal.Grids.evaluateParamsAt`) against the live GridsConfig at
+%% this step's cycle position.  At step-in-pattern 0, regenerate
+%% perturbations using the randomness value as scale.
 emit_step(S, CurrentCycle, CycleDurMs, NowUs, State0) ->
     StepInPat = S rem ?STEPS_PER_CYCLE,
-    {X, Y, FBd, FSd, FHh, Random, _Mode} = State0#st.params,
+    StepCycle = S / ?STEPS_PER_CYCLE,
+    Snap = case State0#st.cfg of
+        undefined ->
+            %% Should not happen — start_link guarantees cfg is set.
+            %% Defensive fallback: silent step.
+            #{x => 128, y => 128,
+              fillBd => 0, fillSd => 0, fillHh => 0,
+              randomness => 0, mode => 0};
+        Cfg ->
+            'tidal_grids@ps':evaluateParamsAt(Cfg, StepCycle)
+    end,
+    X       = maps:get(x,          Snap),
+    Y       = maps:get(y,          Snap),
+    FBd     = maps:get(fillBd,     Snap),
+    FSd     = maps:get(fillSd,     Snap),
+    FHh     = maps:get(fillHh,     Snap),
+    Random  = maps:get(randomness, Snap),
     State1 =
         if StepInPat =:= 0 ->
                {Perts, RngNext} =
@@ -215,7 +216,6 @@ emit_step(S, CurrentCycle, CycleDurMs, NowUs, State0) ->
                  StepInPat, X, Y,
                  [FBd, FSd, FHh],
                  State1#st.perturbations),
-    StepCycle = S / ?STEPS_PER_CYCLE,
     WallUs = round(NowUs + (StepCycle - CurrentCycle) * CycleDurMs * 1000),
     lists:foreach(fun(T) -> emit_trigger(T, WallUs, State1) end, Triggers),
     State1.

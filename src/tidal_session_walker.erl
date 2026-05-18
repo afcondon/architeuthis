@@ -177,6 +177,11 @@ event_to_line({registerPolySignal,
                #{alias := A, family := F}}) ->
     {true,
      iolist_to_binary([<<"polysignal\t">>, A, <<"\t">>, F])};
+event_to_line({registerGrids,
+               #{alias := A, deviceAlias := D, channel := Ch}}) ->
+    {true,
+     iolist_to_binary([<<"grids\t">>, A, <<"\t">>, D, <<"\t">>,
+                       integer_to_binary(Ch)])};
 event_to_line({reportClaimError,
                #{deviceAlias := D, channel := Ch,
                  owners := OwnersArr, message := Msg}}) ->
@@ -363,6 +368,56 @@ apply_event({registerGateDrumKit,
     ets:insert(?CHANNEL_ALIAS_ETS, {KV, A}),
     tidal_dispatcher:set_binding_from_spec(A, Spec),
     bump(drumKits, Acc);
+
+%% Grids vmod Phase 3 (2026-05-18): a BEAM-native Grids voice declared
+%% at the Session level.  We start the gen_server under grids_voice_sup
+%% with the captured config + MIDI output settings.  Same-alias re-fire
+%% just updates the running voice's cfg in place (no restart, no
+%% step-counter reset) — the live-mutation showcase.
+apply_event({registerGrids,
+             #{ alias       := A
+              , deviceAlias := _D
+              , deviceName  := PortName
+              , channel     := Ch
+              , noteBd      := NBd
+              , noteSd      := NSd
+              , noteHh      := NHh
+              , vel         := V
+              , velAccent   := VA
+              , durMs       := Dur
+              , config      := Cfg
+              }}, Acc) ->
+    VoiceConfig = #{
+        port_name => PortName,
+        channel   => Ch,
+        note_bd   => NBd,
+        note_sd   => NSd,
+        note_hh   => NHh,
+        vel       => V,
+        vel_accent => VA,
+        dur_ms    => Dur,
+        cfg       => Cfg
+    },
+    AliasAtom = binary_to_atom(A, utf8),
+    case grids_voice_sup:lookup_voice(AliasAtom) of
+        undefined ->
+            case grids_voice_sup:start_voice(AliasAtom, VoiceConfig) of
+                {ok, _Pid} ->
+                    tidal_log:info("grids voice ~s started on ~s ch~B~n",
+                                   [A, PortName, Ch]),
+                    bump(grids, Acc);
+                {error, Reason} ->
+                    tidal_log:err("grids voice ~s: start failed: ~p~n",
+                                  [A, Reason]),
+                    bump(gridsErrors, Acc)
+            end;
+        _Pid ->
+            %% Live update — same alias, just swap the config.  Step
+            %% counter and perturbations survive; the next step queries
+            %% the new patterns.
+            grids_voice:set_config(AliasAtom, Cfg),
+            bump(grids, Acc)
+    end;
 
 %% Slab C step 1 (2026-05-18): an autonomous FH-2 polysignal declared
 %% at the Session level (typed PolySignal binding).  The PureScript

@@ -1,0 +1,194 @@
+-- | Tidal.Grids — typed Session-level binding for the BEAM-native MI
+-- | Grids virtual module.  First member of the vmod family per memory
+-- | `project_beam_native_virtual_modules`; first concrete instance of
+-- | the parameter-as-Pattern lift per `project_parameter_as_pattern_lift`.
+-- |
+-- | A typed Session-level binding looks like:
+-- |
+-- |     drums :: Grids "drums"
+-- |     drums = grids fh2qd 14 $ gridsConfig
+-- |       { x          = pure 128
+-- |       , y          = pure 128
+-- |       , fillBd     = pure 200
+-- |       , fillSd     = pure 140
+-- |       , fillHh     = pure 180
+-- |       , randomness = pure 32
+-- |       }
+-- |
+-- | All seven config slots are `Pattern Int`.  Static values are
+-- | `pure n`; live-coded values use mini-notation (`mini "<100 150
+-- | 200>"`) or composed patterns (`sine # range 0 255 # slow 4`).
+-- | The walker classifies the value by constructor tag, ships a
+-- | `RegisterGrids` event with the opaque config Foreign payload to
+-- | the Erlang shell, which spawns a `grids_voice` gen_server.  Per
+-- | step (32 steps per cycle), the voice calls back into PureScript
+-- | via `evaluateParamsAt` to query each pattern at the step's cycle
+-- | position, then hands the seven Ints to `grids_engine:evaluate_step`.
+-- |
+-- | Live mutation = refire the cell with a new GridsConfig.  The
+-- | walker registers the new config under the same alias; the voice's
+-- | per-step query reads the latest value.
+module Tidal.Grids
+  ( Grids(..)
+  , GridsConfig
+  , GridsSnapshot
+  , grids
+  , gridsWith
+  , gridsConfig
+  , evaluateParamsAt
+  ) where
+
+import Prelude
+
+import Tidal.MidiDevice (MidiDevice)
+import Control.Applicative (pure)
+import Data.Array as Array
+import Data.Maybe (Maybe(..))
+import Tidal.Pattern.Core (queryArc)
+import Tidal.Pattern.Types (Event(..), Pattern)
+import Data.Rational (fromInt)
+
+-- ---------------------------------------------------------------------------
+-- GridsConfig — seven Pattern Int slots
+-- ---------------------------------------------------------------------------
+
+-- | All seven Grids parameters as Pattern Int slots.  Static values
+-- | are `pure n`; patterned values come from mini-notation or
+-- | combinators (`sine # range 0 255 # slow 4` etc.).
+type GridsConfig =
+  { x          :: Pattern Int
+  , y          :: Pattern Int
+  , fillBd     :: Pattern Int
+  , fillSd     :: Pattern Int
+  , fillHh     :: Pattern Int
+  , randomness :: Pattern Int
+  , mode       :: Pattern Int
+  }
+
+-- | Snapshot returned by `evaluateParamsAt`.  Field order doesn't
+-- | matter — the Erlang voice reads by key.
+type GridsSnapshot =
+  { x          :: Int
+  , y          :: Int
+  , fillBd     :: Int
+  , fillSd     :: Int
+  , fillHh     :: Int
+  , randomness :: Int
+  , mode       :: Int
+  }
+
+-- | Sensible defaults: central node in the 5×5, moderate density,
+-- | no randomness, Drums mode.  Users override fields they care
+-- | about: `gridsConfig { fillBd = pure 200 }`.
+gridsConfig :: GridsConfig
+gridsConfig =
+  { x          : pure 128
+  , y          : pure 128
+  , fillBd     : pure 128
+  , fillSd     : pure 128
+  , fillHh     : pure 128
+  , randomness : pure 0
+  , mode       : pure 0
+  }
+
+-- ---------------------------------------------------------------------------
+-- The typed binding
+-- ---------------------------------------------------------------------------
+
+-- | A typed Grids voice declared at the Session level.  The Symbol
+-- | parameter is decorative — the walker reads the alias from the
+-- | binding name (consistent with PolySignal and Instrument).
+data Grids (s :: Symbol)
+  = GridsBinding
+      { device     :: MidiDevice
+      , channel    :: Int
+      , noteBd     :: Int
+      , noteSd     :: Int
+      , noteHh     :: Int
+      , vel        :: Int
+      , velAccent  :: Int
+      , durMs      :: Int
+      , config     :: GridsConfig
+      }
+
+-- ---------------------------------------------------------------------------
+-- Smart constructors
+-- ---------------------------------------------------------------------------
+
+-- | Build a Grids binding with system-default note numbers (BD=36,
+-- | SD=38, HH=42) and velocities (90 normal, 127 accent), 30 ms note
+-- | length.
+grids
+  :: forall s
+   . MidiDevice
+  -> Int          -- ^ MIDI channel 1..16
+  -> GridsConfig
+  -> Grids s
+grids dev ch cfg = GridsBinding
+  { device: dev
+  , channel: ch
+  , noteBd: 36
+  , noteSd: 38
+  , noteHh: 42
+  , vel: 90
+  , velAccent: 127
+  , durMs: 30
+  , config: cfg
+  }
+
+-- | Like `grids` but with explicit per-instrument MIDI notes — useful
+-- | when the rig's FH-2 routing has BD/SD/HH on non-standard MCV
+-- | channels.
+gridsWith
+  :: forall s
+   . { device :: MidiDevice
+     , channel :: Int
+     , noteBd :: Int, noteSd :: Int, noteHh :: Int
+     , vel :: Int, velAccent :: Int
+     , durMs :: Int
+     , config :: GridsConfig
+     }
+  -> Grids s
+gridsWith = GridsBinding
+
+-- ---------------------------------------------------------------------------
+-- Per-step parameter evaluation (called from Erlang)
+-- ---------------------------------------------------------------------------
+
+-- | Evaluate each of the seven Pattern Int slots at a given cycle
+-- | position.  Called by `grids_voice` once per 32-step tick.
+-- | Returns the value of the (first) event covering that position,
+-- | or a sensible default (128 for X/Y/fills, 0 for randomness/mode)
+-- | when the pattern is silent at that point.
+-- |
+-- | The query arc is `[pos, pos + 1/32)` — exactly one Grids step.
+evaluateParamsAt :: GridsConfig -> Number -> GridsSnapshot
+evaluateParamsAt cfg pos =
+  { x          : sampleAt 128 cfg.x          pos
+  , y          : sampleAt 128 cfg.y          pos
+  , fillBd     : sampleAt 128 cfg.fillBd     pos
+  , fillSd     : sampleAt 128 cfg.fillSd     pos
+  , fillHh     : sampleAt 128 cfg.fillHh     pos
+  , randomness : sampleAt 0   cfg.randomness pos
+  , mode       : sampleAt 0   cfg.mode       pos
+  }
+
+sampleAt :: Int -> Pattern Int -> Number -> Int
+sampleAt dflt pat at =
+  let arc0 = fromInt (truncTo32nd at)
+      -- Quantise the query window onto 32nd-of-a-cycle boundaries so
+      -- adjacent Grids steps land in disjoint arcs.  Truncation, not
+      -- rounding — step 5 should query [5/32, 6/32) regardless of
+      -- floating-point slop in the timestamp we were handed.
+      arc1 = fromInt (truncTo32nd at + 1)
+      slice = queryArc pat (arc0 / fromInt 32) (arc1 / fromInt 32)
+  in case Array.head slice of
+       Just (Digital e) -> e.value
+       Just (Analog e)  -> e.value
+       Nothing -> dflt
+
+truncTo32nd :: Number -> Int
+truncTo32nd n = floorN (n * 32.0)
+
+-- Floor for Numbers — purs-backend-erl maps via Math.floor.
+foreign import floorN :: Number -> Int

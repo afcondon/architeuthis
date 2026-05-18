@@ -24,6 +24,9 @@ module Calypso.Prelude
   -- unary-minus literal) desugars to a real `negate` call rather
   -- than failing with an Unknown-value error.
   , negate
+  -- Applicative `pure` — for `pure 128 :: Pattern Int` etc. in
+  -- parameter-as-Pattern slots (Grids and future vmods).
+  , module Control.Applicative
   -- Application
   , applyFn, ($)
   -- Array concat for joining `eraseAll […]` arrays across part-kinds
@@ -31,7 +34,7 @@ module Calypso.Prelude
   -- deliberately skips `import Prelude` (`append` collision).
   , appendParts, (<+>)
   -- Devices
-  , MidiDevice(..)
+  , module Tidal.MidiDevice
   -- CV/Gate routers (cv-router OSC endpoints — named for forward-
   -- compat with multi-router setups; today routed through the
   -- singleton OSC client)
@@ -73,6 +76,8 @@ module Calypso.Prelude
   -- declared as typed Session-level bindings, classified by the
   -- walker and shipped to fh2-daemon at baseline load.
   , module Tidal.PolySignal
+  -- Grids vmod (BEAM-native MI Grids clone, parameter-as-Pattern).
+  , module Tidal.Grids
   -- Maybe — re-exported for optional fields like PolySignal range.
   , module Data.Maybe
   ) where
@@ -85,6 +90,7 @@ import Data.Ring (class Ring, sub) as PRing
 import Tidal.Cell.Prelude
 import Data.Maybe (Maybe(..))
 import Tidal.Emit (class Emitable)
+import Tidal.MidiDevice (MidiDevice(..))
 import Tidal.Pitch (PitchedNote12)
 import Tidal.PolySignal
   ( PolySignal(..)
@@ -109,6 +115,14 @@ import Tidal.PolySignal
   , polyRand
   , polyPreset
   , polyPresetNote
+  )
+import Tidal.Grids
+  ( Grids(..)
+  , GridsConfig
+  , GridsSnapshot
+  , grids
+  , gridsWith
+  , gridsConfig
   )
 
 -- | Right-associative function application — Haskell/Tidal idiom for
@@ -135,8 +149,11 @@ negate x = PRing.sub PSemiring.zero x
 -- | ```
 -- | fh2  = MidiDevice "FH-2" 0
 -- | iac  = MidiDevice "IAC Driver Tidal" 30
+-- |
+-- | (Extracted to `Tidal.MidiDevice` 2026-05-18 to break a cycle
+-- | between Tidal.Grids and this module.)
 -- | ```
-data MidiDevice = MidiDevice String Int
+-- MidiDevice is re-exported below from Tidal.MidiDevice.
 
 -- ---------------------------------------------------------------------------
 -- CV/Gate routers

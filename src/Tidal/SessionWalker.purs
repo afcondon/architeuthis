@@ -129,6 +129,26 @@ data RegistrationEvent
       , family :: String
       , jsonEnvelope :: String
       }
+  -- | Grids vmod Phase 3 (2026-05-18): a BEAM-native MI Grids voice
+  -- | declared at the Session level.  Walker captures the binding's
+  -- | MIDI device + channel + per-instrument notes + opaque
+  -- | GridsConfig (the seven Pattern Int slots, held as Foreign for
+  -- | per-step FFI query).  Erlang side starts the grids_voice
+  -- | gen_server under grids_voice_sup; same-alias re-fire updates
+  -- | the running voice's cfg in place (no restart, no glitch).
+  | RegisterGrids
+      { alias :: String
+      , deviceAlias :: String
+      , deviceName :: String   -- the raw CoreMIDI port name, used for MIDI send
+      , channel :: Int
+      , noteBd :: Int
+      , noteSd :: Int
+      , noteHh :: Int
+      , vel :: Int
+      , velAccent :: Int
+      , durMs :: Int
+      , config :: Foreign      -- opaque GridsConfig — voice queries via FFI
+      }
   -- | Front-end reservations Phase 1: emitted when two or more Studio
   -- | declarations land on the same MIDI (device, channel).  Erlang
   -- | shell logs the `message` via `tidal_log:err` and bumps a
@@ -179,15 +199,22 @@ walkBaseline = do
     -- needed.  The walker only projects to a JSON envelope, the
     -- daemon does the real claim work at apply-time.
     polySigEvents = Array.mapMaybe pickPolySignal allPairs
+    -- Grids voices.  Inner MidiDevice tuple resolves to the
+    -- declared device alias (same content-keyed lookup
+    -- instruments use).  Same MIDI-channel claim semantics as
+    -- DrumKit — both are autonomous emitters on (device, channel).
+    gridsEvents = Array.mapMaybe (pickGrids deviceAliases) allPairs
     -- Phase 1: collect implicit (device, channel) claims from
     -- registration events, group by (device, channel), report any
     -- duplicates as `ReportClaimError` events.  Errors are emitted
     -- BEFORE registration events so the Erlang log shows them ahead
     -- of the binding installs they conflict with.
-    claims = Array.mapMaybe registrationToClaim (instrEvents <> kitEvents)
+    claims = Array.mapMaybe registrationToClaim
+               (instrEvents <> kitEvents <> gridsEvents)
     claimErrorEvents = Array.mapMaybe claimErrorToEvent (validateMidiClaims claims)
   pure (claimErrorEvents <> devEvents <> routerEvents
-        <> instrEvents <> kitEvents <> polySigEvents)
+        <> instrEvents <> kitEvents <> polySigEvents
+        <> gridsEvents)
 
 registrationToClaim :: RegistrationEvent -> Maybe MidiClaim
 registrationToClaim = case _ of
@@ -202,6 +229,13 @@ registrationToClaim = case _ of
     , deviceAlias: r.deviceAlias
     , channel: r.channel
     , ownerKind: OwnDrumKit
+    }
+  RegisterGrids r -> Just
+    { owner: r.alias
+    , deviceAlias: r.deviceAlias
+    , channel: r.channel
+    , ownerKind: OwnDrumKit  -- Grids = autonomous emitter on (dev,ch),
+                              -- same conflict semantics as a DrumKit.
     }
   _ -> Nothing
 
@@ -409,6 +443,40 @@ pickGateDrumKit routerAliases alias value = do
       }
 
 -- ---------------------------------------------------------------------------
+-- Grids classifier (vmod Phase 3)
+-- ---------------------------------------------------------------------------
+
+-- | Classify a `Grids s` value declared at the Session level.  Single
+-- | constructor (`GridsBinding`); the inner record carries the MIDI
+-- | device + channel + per-instrument notes + a `config` Foreign that
+-- | the voice queries per step via `Tidal.Grids.evaluateParamsAt`.
+pickGrids
+  :: Map (Tuple String Int) String
+  -> { name :: String, value :: Foreign }
+  -> Maybe RegistrationEvent
+pickGrids deviceAliases { name: alias, value } = do
+  tag <- constructorTag value
+  if tag /= "gridsBinding" then Nothing
+  else do
+    fields <- gridsBindingFields value
+    let deviceAlias = fromMaybe ""
+          (Map.lookup (Tuple fields.deviceName fields.deviceLatencyMs)
+                       deviceAliases)
+    Just $ RegisterGrids
+      { alias
+      , deviceAlias
+      , deviceName: fields.deviceName
+      , channel: fields.channel
+      , noteBd: fields.noteBd
+      , noteSd: fields.noteSd
+      , noteHh: fields.noteHh
+      , vel: fields.vel
+      , velAccent: fields.velAccent
+      , durMs: fields.durMs
+      , config: fields.config
+      }
+
+-- ---------------------------------------------------------------------------
 -- PolySignal classifier (Slab C step 1)
 -- ---------------------------------------------------------------------------
 
@@ -571,4 +639,25 @@ foreign import polyPresetNoteConfigFields
        { bank :: PolySignal.Bank
        , slots :: Array PolySignal.PresetNoteSlot
        , range :: Maybe PolySignal.OutputRange
+       }
+
+-- | Decode the inner record of a `GridsBinding` value.  Carries the
+-- | declared MIDI device (name + latency, looked up against the
+-- | content-keyed alias map by the classifier), the channel,
+-- | per-instrument MIDI notes, velocities, note duration, and the
+-- | opaque GridsConfig — passed through verbatim for per-step FFI
+-- | evaluation by the voice gen_server.
+foreign import gridsBindingFields
+  :: Foreign
+  -> Maybe
+       { deviceName :: String
+       , deviceLatencyMs :: Int
+       , channel :: Int
+       , noteBd :: Int
+       , noteSd :: Int
+       , noteHh :: Int
+       , vel :: Int
+       , velAccent :: Int
+       , durMs :: Int
+       , config :: Foreign
        }

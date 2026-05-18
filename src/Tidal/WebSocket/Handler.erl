@@ -919,6 +919,8 @@ handle_pattern_message(Text, State) ->
                                 CE = maps:get(claimErrors, Stats, 0),
                                 PS = maps:get(polySignals, Stats, 0),
                                 PE = maps:get(polySignalErrors, Stats, 0),
+                                GR = maps:get(grids, Stats, 0),
+                                GRE = maps:get(gridsErrors, Stats, 0),
                                 ConflictPart = case CE of
                                     0 -> <<>>;
                                     _ -> iolist_to_binary([
@@ -936,12 +938,24 @@ handle_pattern_message(Text, State) ->
                                             integer_to_binary(PE),
                                             " polysignal-error(s)"])
                                 end,
+                                GridsPart = case {GR, GRE} of
+                                    {0, 0} -> <<>>;
+                                    {_, 0} -> iolist_to_binary([
+                                            ", ", integer_to_binary(GR),
+                                            " grids voice(s)"]);
+                                    _      -> iolist_to_binary([
+                                            ", ", integer_to_binary(GR),
+                                            " grids voice(s), ",
+                                            integer_to_binary(GRE),
+                                            " grids-error(s)"])
+                                end,
                                 iolist_to_binary([
                                     " (",
                                     integer_to_binary(D), " device(s), ",
                                     integer_to_binary(I), " instrument(s), ",
                                     integer_to_binary(K), " drum kit(s)",
                                     PolyPart,
+                                    GridsPart,
                                     ConflictPart,
                                     ")"]);
                             {error, _} ->
