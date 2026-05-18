@@ -48,7 +48,7 @@ import Tidal.Voice (Window) as TV
 -- | binding under `<kitAlias>.<hitName>`, at which point `DestDrumKit`
 -- | grows a hit-name field (or the discriminator moves to per-event).
 data Destination
-  = DestInstrument Instrument
+  = DestInstrument (Instrument PitchedNote12)
   | DestDrumKit DrumKit
 
 -- | One arm command surfaced to the BEAM.  Wall time is the precise

@@ -5,6 +5,7 @@ module Calypso.Voices.Bass1 where
 
 import Calypso.Generated.Session (bass1A)
 import Calypso.Prelude (PitchedPart)
+import Tidal.Pitch (PitchedNote12)
 
-armed :: PitchedPart
+armed :: PitchedPart PitchedNote12
 armed = bass1A

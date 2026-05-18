@@ -26,6 +26,7 @@ module Tidal.Cell.Prelude
   , module Tidal.Scales
   , module Tidal.Tintinnabuli
   , module Tidal.Drum
+  , module Tidal.Emit
   , r
   ) where
 
@@ -73,6 +74,12 @@ import Tidal.Tintinnabuli
   , bMajT, bMinT, bDimT
   )
 import Tidal.Drum (drum)
+import Tidal.Emit
+  ( class Emitable, noteName
+  , class ToMidiNote, toMidiNote
+  , class ToVPerOctVolts, toVPerOctVolts
+  , class ToOscSample, toOscSample
+  )
 
 -- | Short alias for `Data.Rational.fromInt`.  `fast` and `slow` take
 -- | a `Rational`, so `fast (r 2) (mini "bd sn")` is the cell idiom.
