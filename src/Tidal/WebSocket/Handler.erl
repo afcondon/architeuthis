@@ -635,13 +635,27 @@ handle_pattern_message(Text, State) ->
             %% configuration (polylfo / polyclock / polyenv /
             %% polyeuclid / polyeuclid-pairs / polyrand). The cell
             %% block has been transposed by Calypso into a single
-            %% line `polysignal <json>`. We shell out to fh2-config
-            %% --apply-polysignal with the JSON on stdin. Fire-and-
-            %% forget reply pattern matches the existing fh2-gate /
-            %% fh2-envelope arms — standalone spago shell-out takes
-            %% ~7s, daemon path (step 7) will bring it under 100ms.
-            spawn(fun() -> fh2_apply_polysignal(Json) end),
-            Reply = {text, <<"OK: polysignal apply in flight">>},
+            %% line `polysignal <json>`, with the cell-text owner
+            %% name carried in the JSON's `alias` field as of the
+            %% port-claims-design step 4b wire format.
+            %%
+            %% Synchronous through the fh2-config daemon so claim
+            %% errors (partial conflicts, capability mismatches,
+            %% eviction reports) surface in the Calypso reply pane
+            %% rather than getting silently logged by the daemon.
+            %% Matches the drumkit arm's daemon-call shape; falls
+            %% back to a fire-and-forget spago shell-out when the
+            %% daemon is unreachable (~7s tax — visible delay, but
+            %% the user gets *some* feedback instead of an
+            %% erroneous OK).
+            Reply = case fh2_daemon_call(<<"apply-polysignal ", Json/binary>>) of
+                {ok, ReplyBin} ->
+                    {text, ReplyBin};
+                {error, _Reason} ->
+                    spawn(fun() -> fh2_apply_polysignal_standalone(Json) end),
+                    {text, <<"OK: polysignal apply in flight (daemon "
+                             "unreachable; spago shell-out, ~7s)">>}
+            end,
             {reply, Reply, State};
         {drumkit, Json} ->
             %% Drum-kit apply, synchronous through the fh2-config
