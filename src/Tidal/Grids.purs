@@ -36,6 +36,7 @@ module Tidal.Grids
   , gridsWith
   , gridsConfig
   , evaluateParamsAt
+  , mkStaticGridsConfig
   ) where
 
 import Prelude
@@ -204,6 +205,22 @@ pairsToControlMap
   -> ControlMap
 pairsToControlMap pairs =
   foldl (\m p -> Map.insert p.name (VNumber p.value) m) Map.empty pairs
+
+-- | Build a GridsConfig from seven flat Ints — the wire-frame entry
+-- | point for the cell-text `grids` declaration.  Each slot becomes
+-- | `pure n`.  For dynamic patterns the user should declare in
+-- | Studio.purs with `liveIntOr` or richer Pattern expressions.
+mkStaticGridsConfig
+  :: Int -> Int -> Int -> Int -> Int -> Int -> Int -> GridsConfig
+mkStaticGridsConfig x y fBd fSd fHh r m =
+  { x: pure x
+  , y: pure y
+  , fillBd: pure fBd
+  , fillSd: pure fSd
+  , fillHh: pure fHh
+  , randomness: pure r
+  , mode: pure m
+  }
 
 truncTo32nd :: Number -> Int
 truncTo32nd n = floorN (n * 32.0)

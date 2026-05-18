@@ -317,6 +317,13 @@ try_parse_prefixed(<<"polysignal ", Rest/binary>>) ->
     %% form `polysignal <json>`, where the JSON envelope is exactly
     %% what fh2-config's `--apply-polysignal` reads on stdin.
     {polysignal, Rest};
+try_parse_prefixed(<<"grids ", Rest/binary>>) ->
+    %% Calypso ships a grids cell as a single line `grids <json>`
+    %% where the JSON envelope has alias / deviceName / channel +
+    %% the seven scalar parameter values.  Same direct-wire pattern
+    %% polysignal uses, but the target is grids_voice_sup rather
+    %% than fh2-daemon.
+    {grids, Rest};
 try_parse_prefixed(<<"kit ", Rest/binary>>) ->
     %% Kit dispatch cell. One form:
     %%
@@ -656,6 +663,20 @@ handle_pattern_message(Text, State) ->
                     {text, <<"OK: polysignal apply in flight (daemon "
                              "unreachable; spago shell-out, ~7s)">>}
             end,
+            {reply, Reply, State};
+        {grids, Json} ->
+            %% Grids cell: a BEAM-native MI Grids voice declared
+            %% directly from a Calypso cell.  JSON shape:
+            %%
+            %%   {"alias":"myKit","deviceName":"FH-2","channel":13,
+            %%    "x":128,"y":128,"fillBd":220,"fillSd":100,
+            %%    "fillHh":180,"randomness":32,"mode":0}
+            %%
+            %% Builds a static GridsConfig (`pure n` per slot) via
+            %% the PS helper and spawns/updates the voice.  For
+            %% richer Pattern-driven slots, declare in Studio.purs
+            %% with `liveIntOr` etc. instead.
+            Reply = apply_grids_cell(Json),
             {reply, Reply, State};
         {drumkit, Json} ->
             %% Drum-kit apply, synchronous through the fh2-config
@@ -1384,6 +1405,79 @@ fh2_apply_polysignal(JsonBinary) ->
             io:format("[polysignal] no daemon, falling back to spago shell-out~n"),
             fh2_apply_polysignal_standalone(JsonBinary)
     end.
+
+%% --------------------------------------------------------------------
+%% Grids cell apply.  Parses the JSON envelope Calypso sends for a
+%% `grids` cell, builds a static GridsConfig (`pure n` per slot) via
+%% the PS helper, and either spawns a new voice under grids_voice_sup
+%% or pushes set_config into the existing one.
+%% --------------------------------------------------------------------
+apply_grids_cell(JsonBinary) ->
+    try json:decode(JsonBinary) of
+        Map when is_map(Map) ->
+            Alias       = maps:get(<<"alias">>,      Map, undefined),
+            DeviceName  = maps:get(<<"deviceName">>, Map, <<"FH-2">>),
+            Channel     = maps:get(<<"channel">>,    Map, 13),
+            X           = maps:get(<<"x">>,          Map, 128),
+            Y           = maps:get(<<"y">>,          Map, 128),
+            FillBd      = maps:get(<<"fillBd">>,     Map, 128),
+            FillSd      = maps:get(<<"fillSd">>,     Map, 128),
+            FillHh      = maps:get(<<"fillHh">>,     Map, 128),
+            Random      = maps:get(<<"randomness">>, Map, 0),
+            Mode        = maps:get(<<"mode">>,       Map, 0),
+            case Alias of
+                undefined ->
+                    {text, <<"ERR grids: JSON missing alias field">>};
+                _ ->
+                    Cfg = 'tidal_grids@ps':mkStaticGridsConfig(
+                            int_arg(X), int_arg(Y),
+                            int_arg(FillBd), int_arg(FillSd), int_arg(FillHh),
+                            int_arg(Random), int_arg(Mode)),
+                    VoiceConfig = #{
+                        port_name  => DeviceName,
+                        channel    => int_arg(Channel),
+                        note_bd    => 36,
+                        note_sd    => 38,
+                        note_hh    => 42,
+                        vel        => 90,
+                        vel_accent => 127,
+                        dur_ms     => 30,
+                        cfg        => Cfg
+                    },
+                    AliasAtom = binary_to_atom(Alias, utf8),
+                    case grids_voice_sup:lookup_voice(AliasAtom) of
+                        undefined ->
+                            case grids_voice_sup:start_voice(AliasAtom, VoiceConfig) of
+                                {ok, _Pid} ->
+                                    {text, iolist_to_binary([
+                                        <<"OK grids ">>, Alias,
+                                        <<" started on ">>, DeviceName,
+                                        <<" ch">>, integer_to_binary(int_arg(Channel))
+                                    ])};
+                                {error, Reason} ->
+                                    R = list_to_binary(io_lib:format("~p", [Reason])),
+                                    {text, <<"ERR grids start: ", R/binary>>}
+                            end;
+                        _Pid ->
+                            grids_voice:set_config(AliasAtom, Cfg),
+                            {text, iolist_to_binary([
+                                <<"OK grids ">>, Alias, <<" updated">>
+                            ])}
+                    end
+            end;
+        Other ->
+            R = list_to_binary(io_lib:format("~p", [Other])),
+            {text, <<"ERR grids: JSON not an object: ", R/binary>>}
+    catch
+        Class:What:_ST ->
+            R = list_to_binary(io_lib:format("~p:~p", [Class, What])),
+            {text, <<"ERR grids: JSON parse failed: ", R/binary>>}
+    end.
+
+%% Coerce a JSON number (integer or float) into an Erlang integer.
+int_arg(N) when is_integer(N) -> N;
+int_arg(N) when is_float(N)   -> trunc(N);
+int_arg(_)                    -> 0.
 
 fh2_apply_polysignal_standalone(JsonBinary) ->
     Path = "/Users/afc/work/afc-work/music/expert-sleepers/fh2-config",

@@ -43,9 +43,10 @@ which_voices() ->
             is_pid(Pid)].
 
 %% @doc Resolve a Grids voice by its registered name.  Returns
-%% undefined if no such voice is running.
+%% undefined if no such voice is running.  Uses the same prefix the
+%% voice registers under (grids_voice:registered_name/1).
 lookup_voice(Name) when is_atom(Name) ->
-    whereis(Name);
+    whereis(grids_voice:registered_name(Name));
 lookup_voice(Name) when is_binary(Name) ->
     lookup_voice(binary_to_atom(Name, utf8)).
 
