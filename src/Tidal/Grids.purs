@@ -43,9 +43,12 @@ import Prelude
 import Tidal.MidiDevice (MidiDevice)
 import Control.Applicative (pure)
 import Data.Array as Array
+import Data.Foldable (foldl)
+import Data.Map (Map)
+import Data.Map as Map
 import Data.Maybe (Maybe(..))
-import Tidal.Pattern.Core (queryArc)
-import Tidal.Pattern.Types (Event(..), Pattern)
+import Tidal.Pattern.Core (queryArcWith)
+import Tidal.Pattern.Types (ControlMap, Event(..), Pattern, Value(..))
 import Data.Rational (fromInt)
 
 -- ---------------------------------------------------------------------------
@@ -156,36 +159,51 @@ gridsWith = GridsBinding
 -- ---------------------------------------------------------------------------
 
 -- | Evaluate each of the seven Pattern Int slots at a given cycle
--- | position.  Called by `grids_voice` once per 32-step tick.
--- | Returns the value of the (first) event covering that position,
--- | or a sensible default (128 for X/Y/fills, 0 for randomness/mode)
--- | when the pattern is silent at that point.
+-- | position, using the live control snapshot from the tick window
+-- | so `liveIntOr "name"` slots read their current values.  Called
+-- | by `grids_voice` once per 32-step tick.
 -- |
 -- | The query arc is `[pos, pos + 1/32)` — exactly one Grids step.
-evaluateParamsAt :: GridsConfig -> Number -> GridsSnapshot
-evaluateParamsAt cfg pos =
-  { x          : sampleAt 128 cfg.x          pos
-  , y          : sampleAt 128 cfg.y          pos
-  , fillBd     : sampleAt 128 cfg.fillBd     pos
-  , fillSd     : sampleAt 128 cfg.fillSd     pos
-  , fillHh     : sampleAt 128 cfg.fillHh     pos
-  , randomness : sampleAt 0   cfg.randomness pos
-  , mode       : sampleAt 0   cfg.mode       pos
-  }
+evaluateParamsAt
+  :: GridsConfig
+  -> Array { name :: String, value :: Number }
+  -> Number
+  -> GridsSnapshot
+evaluateParamsAt cfg controlPairs pos =
+  let controls = pairsToControlMap controlPairs
+  in { x          : sampleAt controls 128 cfg.x          pos
+     , y          : sampleAt controls 128 cfg.y          pos
+     , fillBd     : sampleAt controls 128 cfg.fillBd     pos
+     , fillSd     : sampleAt controls 128 cfg.fillSd     pos
+     , fillHh     : sampleAt controls 128 cfg.fillHh     pos
+     , randomness : sampleAt controls 0   cfg.randomness pos
+     , mode       : sampleAt controls 0   cfg.mode       pos
+     }
 
-sampleAt :: Int -> Pattern Int -> Number -> Int
-sampleAt dflt pat at =
+sampleAt :: ControlMap -> Int -> Pattern Int -> Number -> Int
+sampleAt controls dflt pat at =
   let arc0 = fromInt (truncTo32nd at)
       -- Quantise the query window onto 32nd-of-a-cycle boundaries so
       -- adjacent Grids steps land in disjoint arcs.  Truncation, not
       -- rounding — step 5 should query [5/32, 6/32) regardless of
       -- floating-point slop in the timestamp we were handed.
       arc1 = fromInt (truncTo32nd at + 1)
-      slice = queryArc pat (arc0 / fromInt 32) (arc1 / fromInt 32)
+      slice = queryArcWith controls pat
+                (arc0 / fromInt 32)
+                (arc1 / fromInt 32)
   in case Array.head slice of
        Just (Digital e) -> e.value
        Just (Analog e)  -> e.value
        Nothing -> dflt
+
+-- | Build a ControlMap from the tick window's control snapshot.
+-- | Mirrors `Tidal.Voice.pairsToControlMap` (kept local to avoid
+-- | pulling Voice's full machinery into the Grids module).
+pairsToControlMap
+  :: Array { name :: String, value :: Number }
+  -> ControlMap
+pairsToControlMap pairs =
+  foldl (\m p -> Map.insert p.name (VNumber p.value) m) Map.empty pairs
 
 truncTo32nd :: Number -> Int
 truncTo32nd n = floorN (n * 32.0)

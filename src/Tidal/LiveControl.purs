@@ -25,8 +25,11 @@
 module Tidal.LiveControl
   ( live
   , liveOr
+  , liveInt
+  , liveIntOr
   ) where
 
+import Prelude
 import Data.Int as Int
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
@@ -51,6 +54,24 @@ liveOr def name = pattern \(State st) ->
     value = case Map.lookup name st.controls of
       Just (VNumber n) -> n
       Just (VInt i)    -> Int.toNumber i  -- accept ints transparently
+      _                -> def
+  in
+    [ Analog { context: emptyContext, part: st.arc, value } ]
+
+-- | Read an integer control by name; default 0 when missing.
+-- | Companion to `live` for slots that want a Pattern Int — Grids and
+-- | other vmod parameter slots, midi note numbers, etc.  Truncates
+-- | Numbers to Int via floor (the same rule the wire path uses).
+liveInt :: String -> Pattern Int
+liveInt = liveIntOr 0
+
+-- | Like `liveInt` but with a caller-supplied default.
+liveIntOr :: Int -> String -> Pattern Int
+liveIntOr def name = pattern \(State st) ->
+  let
+    value = case Map.lookup name st.controls of
+      Just (VInt i)    -> i
+      Just (VNumber n) -> Int.floor n
       _                -> def
   in
     [ Analog { context: emptyContext, part: st.arc, value } ]

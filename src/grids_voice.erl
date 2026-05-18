@@ -157,6 +157,12 @@ process_window(Window, State) ->
     LookAhead    = maps:get(lookAheadCycle,  Window),
     CycleDurMs   = maps:get(cycleDurationMs, Window),
     NowUs        = maps:get(nowUnixUs,       Window),
+    %% controlPairs is the live-control snapshot the clock takes per
+    %% tick from `tidal_control_bus:snapshot/0`.  Thread it through so
+    %% `liveIntOr "name"` slots in the GridsConfig read the current
+    %% values.  Defaulted to empty array if a future Window omits it
+    %% (defensive — the current clock always populates it).
+    ControlPairs = maps:get(controlPairs, Window, array:from_list([])),
     %% Steps to emit: every absolute step S such that
     %%   last_step < S < floor(LookAhead * 32)
     %% On the very first window, also catch up from CurrentCycle (we
@@ -174,7 +180,7 @@ process_window(Window, State) ->
             Steps = lists:seq(StartStep, EndStepExcl - 1),
             FinalState = lists:foldl(
                 fun(S, Acc) ->
-                    emit_step(S, CurrentCycle, CycleDurMs, NowUs, Acc)
+                    emit_step(S, ControlPairs, CurrentCycle, CycleDurMs, NowUs, Acc)
                 end, State, Steps),
             FinalState#st{last_step = EndStepExcl - 1}
     end.
@@ -185,7 +191,7 @@ process_window(Window, State) ->
 %% (`Tidal.Grids.evaluateParamsAt`) against the live GridsConfig at
 %% this step's cycle position.  At step-in-pattern 0, regenerate
 %% perturbations using the randomness value as scale.
-emit_step(S, CurrentCycle, CycleDurMs, NowUs, State0) ->
+emit_step(S, ControlPairs, CurrentCycle, CycleDurMs, NowUs, State0) ->
     StepInPat = S rem ?STEPS_PER_CYCLE,
     StepCycle = S / ?STEPS_PER_CYCLE,
     Snap = case State0#st.cfg of
@@ -196,7 +202,7 @@ emit_step(S, CurrentCycle, CycleDurMs, NowUs, State0) ->
               fillBd => 0, fillSd => 0, fillHh => 0,
               randomness => 0, mode => 0};
         Cfg ->
-            'tidal_grids@ps':evaluateParamsAt(Cfg, StepCycle)
+            'tidal_grids@ps':evaluateParamsAt(Cfg, ControlPairs, StepCycle)
     end,
     X       = maps:get(x,          Snap),
     Y       = maps:get(y,          Snap),
