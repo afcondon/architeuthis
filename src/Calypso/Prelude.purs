@@ -91,8 +91,24 @@ import Tidal.PolySignal
   , OutputRange(..)
   , Bank(..)
   , LfoWave(..)
+  , ClockBase(..)
+  , RandDirection(..)
+  , RandScale(..)
+  , RandKey(..)
   , LfoSlot
+  , ClockSlot
+  , EnvSlot
+  , EuclidSlot
+  , RandSlot
+  , PresetSlot
+  , PresetNoteSlot
   , polyLfo
+  , polyClock
+  , polyEnv
+  , polyEuclid
+  , polyRand
+  , polyPreset
+  , polyPresetNote
   )
 
 -- | Right-associative function application — Haskell/Tidal idiom for

@@ -25,6 +25,12 @@
         , gateDrumKitHits/1
         , vPerOctFields/1
         , polyLfoConfigFields/1
+        , polyClockConfigFields/1
+        , polyEnvConfigFields/1
+        , polyEuclidConfigFields/1
+        , polyRandConfigFields/1
+        , polyPresetConfigFields/1
+        , polyPresetNoteConfigFields/1
         ]).
 
 %% --------------------------------------------------------------------
@@ -219,4 +225,50 @@ vPerOctFields(_) ->
 polyLfoConfigFields({polyLfoConfig, #{bank := _, slots := _, range := _} = M}) ->
     {just, M};
 polyLfoConfigFields(_) ->
+    {nothing}.
+
+%% --------------------------------------------------------------------
+%% polyClockConfigFields/1, polyEnvConfigFields/1, polyEuclidConfigFields/1,
+%% polyRandConfigFields/1, polyPresetConfigFields/1,
+%% polyPresetNoteConfigFields/1 — pure.
+%%
+%% Same passthrough pattern as polyLfoConfigFields above.  The
+%% PureScript classifier dispatches by constructor tag and calls the
+%% matching FFI; each one just verifies the record map carries the
+%% three expected keys and hands it through.
+%% --------------------------------------------------------------------
+polyClockConfigFields({polyClockConfig,
+                       #{bank := _, slots := _, range := _} = M}) ->
+    {just, M};
+polyClockConfigFields(_) ->
+    {nothing}.
+
+polyEnvConfigFields({polyEnvConfig,
+                     #{bank := _, slots := _, range := _} = M}) ->
+    {just, M};
+polyEnvConfigFields(_) ->
+    {nothing}.
+
+polyEuclidConfigFields({polyEuclidConfig,
+                        #{bank := _, slots := _, range := _} = M}) ->
+    {just, M};
+polyEuclidConfigFields(_) ->
+    {nothing}.
+
+polyRandConfigFields({polyRandConfig,
+                      #{bank := _, slots := _, range := _} = M}) ->
+    {just, M};
+polyRandConfigFields(_) ->
+    {nothing}.
+
+polyPresetConfigFields({polyPresetConfig,
+                        #{bank := _, slots := _, range := _} = M}) ->
+    {just, M};
+polyPresetConfigFields(_) ->
+    {nothing}.
+
+polyPresetNoteConfigFields({polyPresetNoteConfig,
+                            #{bank := _, slots := _, range := _} = M}) ->
+    {just, M};
+polyPresetNoteConfigFields(_) ->
     {nothing}.

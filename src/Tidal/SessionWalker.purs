@@ -413,10 +413,10 @@ pickGateDrumKit routerAliases alias value = do
 -- ---------------------------------------------------------------------------
 
 -- | Classify a `PolySignal` value declared at the Session level.
--- | Today: PolyLfoConfig only.  Other four families land in step 2
--- | (PolyClock, PolyEnv, PolyEuclid, PolyRand) with the same pattern:
--- | one classifier clause per constructor tag, projecting to the
--- | shared JSON envelope shape.
+-- | Dispatches on the constructor tag — one clause per family.  The
+-- | FFI passes each family's inner record map through verbatim
+-- | (purs-backend-erl's encoding matches the typed records bit-for-bit
+-- | for these specific types).
 pickPolySignal
   :: { name :: String, value :: Foreign }
   -> Maybe RegistrationEvent
@@ -424,13 +424,38 @@ pickPolySignal { name: alias, value } = do
   tag <- constructorTag value
   case tag of
     "polyLfoConfig" -> do
-      fields <- polyLfoConfigFields value
-      let polysig = PolySignal.polyLfo fields.bank fields.slots fields.range
-          envelopeJson = PolySignal.polySignalAsJson alias polysig
-          family = PolySignal.polySignalFamily polysig
-      Just $ RegisterPolySignal
-        { alias, family, jsonEnvelope: envelopeJson }
+      f <- polyLfoConfigFields value
+      mkEvent alias $ PolySignal.polyLfo f.bank f.slots f.range
+    "polyClockConfig" -> do
+      f <- polyClockConfigFields value
+      mkEvent alias $ PolySignal.polyClock f.bank f.slots f.range
+    "polyEnvConfig" -> do
+      f <- polyEnvConfigFields value
+      mkEvent alias $ PolySignal.polyEnv f.bank f.slots f.range
+    "polyEuclidConfig" -> do
+      f <- polyEuclidConfigFields value
+      mkEvent alias $ PolySignal.polyEuclid f.bank f.slots f.range
+    "polyRandConfig" -> do
+      f <- polyRandConfigFields value
+      mkEvent alias $ PolySignal.polyRand f.bank f.slots f.range
+    "polyPresetConfig" -> do
+      f <- polyPresetConfigFields value
+      mkEvent alias $ PolySignal.polyPreset f.bank f.slots f.range
+    "polyPresetNoteConfig" -> do
+      f <- polyPresetNoteConfigFields value
+      mkEvent alias $ PolySignal.polyPresetNote f.bank f.slots f.range
     _ -> Nothing
+  where
+  mkEvent
+    :: forall s
+     . String
+    -> PolySignal.PolySignal s
+    -> Maybe RegistrationEvent
+  mkEvent a polysig = Just $ RegisterPolySignal
+    { alias: a
+    , family: PolySignal.polySignalFamily polysig
+    , jsonEnvelope: PolySignal.polySignalAsJson a polysig
+    }
 
 -- ---------------------------------------------------------------------------
 -- FFI primitives — minimal, knowledge-free
@@ -487,15 +512,63 @@ foreign import vPerOctFields
   :: Foreign
   -> Maybe { gateChannel :: Int, voctBus :: Int }
 
--- | Decode the inner record of a `PolyLfoConfig` value.  The encoding
+-- | Decode the inner record of a `PolyXConfig` value.  The encoding
 -- | from purs-backend-erl is bit-compatible with the typed PureScript
--- | record, so the FFI just passes the inner map through after
+-- | record, so each FFI just passes the inner map through after
 -- | verifying it carries the three expected keys.  See the Erlang
--- | clause for the structural details.
+-- | clauses for structural details.
 foreign import polyLfoConfigFields
   :: Foreign
   -> Maybe
        { bank :: PolySignal.Bank
        , slots :: Array PolySignal.LfoSlot
+       , range :: Maybe PolySignal.OutputRange
+       }
+
+foreign import polyClockConfigFields
+  :: Foreign
+  -> Maybe
+       { bank :: PolySignal.Bank
+       , slots :: Array PolySignal.ClockSlot
+       , range :: Maybe PolySignal.OutputRange
+       }
+
+foreign import polyEnvConfigFields
+  :: Foreign
+  -> Maybe
+       { bank :: PolySignal.Bank
+       , slots :: Array PolySignal.EnvSlot
+       , range :: Maybe PolySignal.OutputRange
+       }
+
+foreign import polyEuclidConfigFields
+  :: Foreign
+  -> Maybe
+       { bank :: PolySignal.Bank
+       , slots :: Array PolySignal.EuclidSlot
+       , range :: Maybe PolySignal.OutputRange
+       }
+
+foreign import polyRandConfigFields
+  :: Foreign
+  -> Maybe
+       { bank :: PolySignal.Bank
+       , slots :: Array PolySignal.RandSlot
+       , range :: Maybe PolySignal.OutputRange
+       }
+
+foreign import polyPresetConfigFields
+  :: Foreign
+  -> Maybe
+       { bank :: PolySignal.Bank
+       , slots :: Array PolySignal.PresetSlot
+       , range :: Maybe PolySignal.OutputRange
+       }
+
+foreign import polyPresetNoteConfigFields
+  :: Foreign
+  -> Maybe
+       { bank :: PolySignal.Bank
+       , slots :: Array PolySignal.PresetNoteSlot
        , range :: Maybe PolySignal.OutputRange
        }

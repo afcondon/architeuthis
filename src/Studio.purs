@@ -157,3 +157,47 @@ studioTestLfo = polyLfo (BankCv 5)
   , { ratio: 0.5,  shape: LfoSqr }
   ]
   (Just Bipolar5V)
+
+-- | Eight clock pulses on an FHX-8GT expander bank (gt1) — straight
+-- | 16th/8th/quarter/half divisions, paired ascending.  GateOnly bank,
+-- | unipolar 0..5V triggers.  Walker test for the polyclock family.
+studioTestClock :: PolySignal "studioTestClock"
+studioTestClock = polyClock (BankGt 1)
+  [ { base: ClockSixteenth,  multiplier: 1, pulseWidth: 0, phase: 0 }
+  , { base: ClockSixteenth,  multiplier: 2, pulseWidth: 0, phase: 0 }
+  , { base: ClockEighth,     multiplier: 1, pulseWidth: 0, phase: 0 }
+  , { base: ClockEighth,     multiplier: 2, pulseWidth: 0, phase: 0 }
+  , { base: ClockQuarter,    multiplier: 1, pulseWidth: 0, phase: 0 }
+  , { base: ClockQuarter,    multiplier: 2, pulseWidth: 0, phase: 0 }
+  , { base: ClockHalf,       multiplier: 1, pulseWidth: 0, phase: 0 }
+  , { base: ClockWhole,      multiplier: 1, pulseWidth: 0, phase: 0 }
+  ]
+  Nothing  -- envelope-level default (Unipolar5V from familyDefaultRange)
+
+-- | A calibration voltage ladder on cv2: -5V / -3V / -1V / 0V / 1V /
+-- | 2V / 3V / 5V across the eight jacks of the bank.  Constant
+-- | voltages, no LFO or clock — the simplest polysignal: the daemon
+-- | encodes each Number as a 14-bit offset-binary directLevel using
+-- | the bank's output range.  Useful as a reference for measuring
+-- | per-jack scaling or as a static counterweight to other
+-- | polysignals on the same expander.
+studioCalibLadder :: PolySignal "studioCalibLadder"
+studioCalibLadder = polyPreset (BankCv 2)
+  [ { value: -5.0 }, { value: -3.0 }
+  , { value: -1.0 }, { value:  0.0 }
+  , { value:  1.0 }, { value:  2.0 }
+  , { value:  3.0 }, { value:  5.0 }
+  ]
+  (Just Bipolar5V)
+
+-- | The C-major scale across the eight jacks of cv1, encoded as
+-- | V/oct.  Each jack holds a constant pitch — wire each to a VCO's
+-- | 1V/oct input to get eight tuned voices on tap.  The daemon
+-- | converts MIDI 60..72 to volts via `(note - 12) / 12.0` (note 60 =
+-- | middle C at +4V).
+studioCMajorScale :: PolySignal "studioCMajorScale"
+studioCMajorScale = polyPresetNote (BankCv 1)
+  [ { note: 60 }, { note: 62 }, { note: 64 }, { note: 65 }
+  , { note: 67 }, { note: 69 }, { note: 71 }, { note: 72 }
+  ]
+  (Just Bipolar5V)
