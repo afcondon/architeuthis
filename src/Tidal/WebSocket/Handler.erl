@@ -920,6 +920,16 @@ handle_pattern_message(Text, State) ->
                     false -> code:purge(StudioAtom)
                 end,
             _ = code:load_file(StudioAtom),
+            %% Voice wrappers — calypso_voices_*@ps — are also hot-reloaded
+            %% here.  Without this, editing Calypso/Voices/Qd1.purs to point
+            %% `armed` at a different part (qd1A vs qd1B) requires a full
+            %% deepstar restart even though the .beam is on disk: BEAM keeps
+            %% the old code cached, and subsequent `arm` calls hit the stale
+            %% wrapper.  Note that this only refreshes the *exported* armed/0
+            %% — running voice gen_servers that have already captured a
+            %% Pattern fun still hold it; re-arming the voice is needed for
+            %% them to pick up the new wrapper body.
+            reload_voice_wrappers(),
             _ = case code:soft_purge(BaselineAtom) of
                     true -> ok;
                     false -> code:purge(BaselineAtom)
@@ -2716,3 +2726,26 @@ fh2_daemon_call(Command) ->
         {error, ConnReason} ->
             {error, ConnReason}
     end.
+
+%% Enumerate `calypso_voices_*@ps.beam` files in the loaded code path and
+%% force-reload each one.  Used by reload-baseline so that edits to
+%% Calypso/Voices/<X>.purs (which the per-voice arming daemon writes when
+%% the user re-arms with a different part) actually take effect in the
+%% running VM.  Without this, BEAM keeps the previously-loaded wrapper
+%% cached and subsequent `arm` calls hit the stale `armed/0`.
+reload_voice_wrappers() ->
+    Pattern = "calypso_voices_*@ps.beam",
+    Dirs = code:get_path(),
+    Files = lists:flatmap(fun(Dir) -> filelib:wildcard(Pattern, Dir) end, Dirs),
+    %% Files are basenames like "calypso_voices_qd1@ps.beam"; dedup and
+    %% strip the .beam extension to derive the module atom.
+    Mods = lists:usort([
+        list_to_atom(filename:rootname(F)) || F <- Files
+    ]),
+    lists:foreach(fun(M) ->
+        _ = case code:soft_purge(M) of
+                true  -> ok;
+                false -> code:purge(M)
+            end,
+        _ = code:load_file(M)
+    end, Mods).
