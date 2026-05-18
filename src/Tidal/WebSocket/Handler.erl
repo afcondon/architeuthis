@@ -2742,10 +2742,15 @@ reload_voice_wrappers() ->
     Mods = lists:usort([
         list_to_atom(filename:rootname(F)) || F <- Files
     ]),
-    lists:foreach(fun(M) ->
+    Results = lists:map(fun(M) ->
         _ = case code:soft_purge(M) of
                 true  -> ok;
                 false -> code:purge(M)
             end,
-        _ = code:load_file(M)
-    end, Mods).
+        case code:load_file(M) of
+            {module, _}  -> {M, loaded};
+            {error, Why} -> {M, {error, Why}}
+        end
+    end, Mods),
+    tidal_log:info("reload_voice_wrappers: ~p~n", [Results]),
+    ok.
