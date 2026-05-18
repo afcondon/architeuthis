@@ -54,6 +54,15 @@ data RegistrationEvent
       , name :: String
       , latencyMs :: Int
       }
+  -- | PR 2c: a named cv-router endpoint declared in Studio.  Today
+  -- | informational only (the runtime routes all OSC through a
+  -- | singleton client opened against the default host:port);
+  -- | PR 2c.2 will hook this up to per-alias OSCClients.
+  | RegisterCvRouter
+      { alias :: String
+      , host :: String
+      , port :: Int
+      }
   | RegisterMidiInstrument
       { alias :: String
       , deviceAlias :: String
@@ -64,6 +73,17 @@ data RegistrationEvent
       -- The raw Instrument value, passed through opaquely so the
       -- Erlang shell can use it as the key in the `lookup_channel_
       -- alias/1` ETS table without structurally inspecting it.
+      , instrumentValue :: Foreign
+      }
+  -- | PR 2c: a V/oct instrument routed through cv-router.  Walks to
+  -- | a compound `gate <gateChannel> + cv <voctBus> voct` binding
+  -- | spec that the dispatcher already understands via existing
+  -- | Gate + CV NoteNameVoct PrimActions.
+  | RegisterVPerOctInstrument
+      { alias :: String
+      , routerAlias :: String
+      , gateChannel :: Int
+      , voctBus :: Int
       , instrumentValue :: Foreign
       }
   | RegisterMidiDrumKit
@@ -80,6 +100,18 @@ data RegistrationEvent
       -- The raw DrumKit value — same opaque-ETS-key role as
       -- `instrumentValue` above.  Lets the conductor resolve
       -- `lookup_channel_alias(DrumKitValue)` for arm dispatch.
+      , drumKitValue :: Foreign
+      }
+  -- | PR 2c: a gate-emitting drum kit routed through cv-router.
+  -- | Parallel to MidiDrumKit but each hit is a cv-router gate
+  -- | channel + duration; dispatcher fires `/cv/trig`-style gate
+  -- | pulses per event via the existing GateDrumKit PrimAction
+  -- | (added in PR 2c).
+  | RegisterGateDrumKit
+      { alias :: String
+      , routerAlias :: String
+      , hits :: Array
+          { name :: String, gateChannel :: Int, durMs :: Int }
       , drumKitValue :: Foreign
       }
   -- | Front-end reservations Phase 1: emitted when two or more Studio
@@ -108,18 +140,25 @@ walkBaseline = do
   studioPairs <- enumerateExports "studio@ps"
   sessionPairs <- enumerateExports "calypso_generated_session@ps"
   let allPairs = studioPairs <> sessionPairs
-  -- First pass: device events + content-keyed alias map.  We need the
-  -- alias map to resolve each instrument's / drum-kit's inner
-  -- device-tuple back to the alias the user gave their MidiDevice
-  -- declaration.
+  -- First pass: device + cv-router events + content-keyed alias maps.
+  -- We need the alias maps to resolve each instrument's / drum-kit's
+  -- inner device / cv-router tuple back to the alias the user gave
+  -- their MidiDevice / CvRouter declaration.
   let
     devices = Array.mapMaybe pickDevice allPairs
     deviceAliases :: Map (Tuple String Int) String
     deviceAliases = Map.fromFoldable
       (map (\d -> Tuple (Tuple d.name d.latencyMs) d.alias) devices)
+    routers = Array.mapMaybe pickCvRouter allPairs
+    routerAliases :: Map (Tuple String Int) String
+    routerAliases = Map.fromFoldable
+      (map (\r -> Tuple (Tuple r.host r.port) r.alias) routers)
     devEvents = map (\d -> RegisterMidiDevice d) devices
-    instrEvents = Array.mapMaybe (pickInstrument deviceAliases) allPairs
-    kitEvents = Array.mapMaybe (pickDrumKit deviceAliases) allPairs
+    routerEvents = map (\r -> RegisterCvRouter r) routers
+    instrEvents = Array.mapMaybe
+      (pickInstrument deviceAliases routerAliases) allPairs
+    kitEvents = Array.mapMaybe
+      (pickDrumKit deviceAliases routerAliases) allPairs
     -- Phase 1: collect implicit (device, channel) claims from
     -- registration events, group by (device, channel), report any
     -- duplicates as `ReportClaimError` events.  Errors are emitted
@@ -127,7 +166,8 @@ walkBaseline = do
     -- of the binding installs they conflict with.
     claims = Array.mapMaybe registrationToClaim (instrEvents <> kitEvents)
     claimErrorEvents = Array.mapMaybe claimErrorToEvent (validateMidiClaims claims)
-  pure (claimErrorEvents <> devEvents <> instrEvents <> kitEvents)
+  pure (claimErrorEvents <> devEvents <> routerEvents
+        <> instrEvents <> kitEvents)
 
 registrationToClaim :: RegistrationEvent -> Maybe MidiClaim
 registrationToClaim = case _ of
@@ -172,84 +212,181 @@ pickDevice { name: alias, value } = do
     devLat <- asInt latArg
     Just { alias, name: devName, latencyMs: devLat }
 
+-- | Classify a `CvRouter` value.  Encoding from purs-backend-erl:
+-- |     data CvRouter = CvRouter String Int
+-- | becomes `{cvRouter, <<"127.0.0.1">>, 57120}`.
+pickCvRouter
+  :: { name :: String, value :: Foreign }
+  -> Maybe { alias :: String, host :: String, port :: Int }
+pickCvRouter { name: alias, value } = do
+  tag <- constructorTag value
+  if tag /= "cvRouter" then Nothing
+  else do
+    hostArg <- tupleArg 0 value
+    portArg <- tupleArg 1 value
+    host <- asBinary hostArg
+    port <- asInt portArg
+    Just { alias, host, port }
+
+-- | Classify an `Instrument` value.  Dispatches on the constructor
+-- | tag to MidiInstrument vs VPerOctInstrument variants.
 pickInstrument
   :: Map (Tuple String Int) String
+  -> Map (Tuple String Int) String
   -> { name :: String, value :: Foreign }
   -> Maybe RegistrationEvent
-pickInstrument deviceAliases { name: alias, value } = do
+pickInstrument deviceAliases routerAliases { name: alias, value } = do
   tag <- constructorTag value
-  if tag /= "instrument" then Nothing
+  case tag of
+    "midiInstrument" -> pickMidiInstrument deviceAliases alias value
+    "vPerOctInstrument" -> pickVPerOctInstrument routerAliases alias value
+    _ -> Nothing
+
+pickMidiInstrument
+  :: Map (Tuple String Int) String
+  -> String
+  -> Foreign
+  -> Maybe RegistrationEvent
+pickMidiInstrument deviceAliases alias value = do
+  devArg <- tupleArg 0 value
+  chArg <- tupleArg 1 value
+  noteArg <- tupleArg 2 value
+  velArg <- tupleArg 3 value
+  durArg <- tupleArg 4 value
+  -- Re-classify the inner device tuple to get its (name, latencyMs).
+  -- A MidiInstrument carries a MidiDevice value (not just an alias);
+  -- we look up the alias from the content-keyed map.
+  devTag <- constructorTag devArg
+  if devTag /= "midiDevice" then Nothing
   else do
-    devArg <- tupleArg 0 value
-    chArg <- tupleArg 1 value
-    noteArg <- tupleArg 2 value
-    velArg <- tupleArg 3 value
-    durArg <- tupleArg 4 value
-    -- Re-classify the inner device tuple to get its (name, latencyMs).
-    -- An Instrument carries a MidiDevice value (not just an alias);
-    -- we look up the alias from the content-keyed map.
-    devTag <- constructorTag devArg
-    if devTag /= "midiDevice" then Nothing
-    else do
-      devNameArg <- tupleArg 0 devArg
-      devLatArg <- tupleArg 1 devArg
-      devName <- asBinary devNameArg
-      devLat <- asInt devLatArg
-      ch <- asInt chArg
-      note <- asInt noteArg
-      vel <- asInt velArg
-      dur <- asInt durArg
-      let deviceAlias = fromMaybe ""
-            (Map.lookup (Tuple devName devLat) deviceAliases)
-      Just $ RegisterMidiInstrument
-        { alias
-        , deviceAlias
-        , channel: ch
-        , defNote: note
-        , defVel: vel
-        , defDurMs: dur
-        , instrumentValue: value
-        }
+    devNameArg <- tupleArg 0 devArg
+    devLatArg <- tupleArg 1 devArg
+    devName <- asBinary devNameArg
+    devLat <- asInt devLatArg
+    ch <- asInt chArg
+    note <- asInt noteArg
+    vel <- asInt velArg
+    dur <- asInt durArg
+    let deviceAlias = fromMaybe ""
+          (Map.lookup (Tuple devName devLat) deviceAliases)
+    Just $ RegisterMidiInstrument
+      { alias
+      , deviceAlias
+      , channel: ch
+      , defNote: note
+      , defVel: vel
+      , defDurMs: dur
+      , instrumentValue: value
+      }
+
+-- | Classify a `VPerOctInstrument` value.  Encoding:
+-- |   data Instrument = ... | VPerOctInstrument CvRouter { gateChannel, voctBus }
+-- | becomes `{vPerOctInstrument, CvRouterTuple, #{gateChannel, voctBus}}`.
+pickVPerOctInstrument
+  :: Map (Tuple String Int) String
+  -> String
+  -> Foreign
+  -> Maybe RegistrationEvent
+pickVPerOctInstrument routerAliases alias value = do
+  routerArg <- tupleArg 0 value
+  recArg <- tupleArg 1 value
+  routerTag <- constructorTag routerArg
+  if routerTag /= "cvRouter" then Nothing
+  else do
+    hostArg <- tupleArg 0 routerArg
+    portArg <- tupleArg 1 routerArg
+    host <- asBinary hostArg
+    port <- asInt portArg
+    { gateChannel, voctBus } <- vPerOctFields recArg
+    let routerAlias = fromMaybe ""
+          (Map.lookup (Tuple host port) routerAliases)
+    Just $ RegisterVPerOctInstrument
+      { alias
+      , routerAlias
+      , gateChannel
+      , voctBus
+      , instrumentValue: value
+      }
+
+-- | Classify a `DrumKit` value.  Dispatches on tag to MidiDrumKit
+-- | vs GateDrumKit variants.
+pickDrumKit
+  :: Map (Tuple String Int) String
+  -> Map (Tuple String Int) String
+  -> { name :: String, value :: Foreign }
+  -> Maybe RegistrationEvent
+pickDrumKit deviceAliases routerAliases { name: alias, value } = do
+  tag <- constructorTag value
+  case tag of
+    "midiDrumKit" -> pickMidiDrumKit deviceAliases alias value
+    "gateDrumKit" -> pickGateDrumKit routerAliases alias value
+    _ -> Nothing
 
 -- | Classify a `MidiDrumKit` value.  Encoding from purs-backend-erl:
--- |     data DrumKit = MidiDrumKit MidiDevice Int (Array DrumHit)
+-- |     data DrumKit = MidiDrumKit MidiDevice Int (Array DrumHit) | ...
 -- | becomes `{midiDrumKit, DeviceTuple, Ch, HitsArray}`.  We unpack
 -- | device + channel + the full hits array; the Erlang shell turns
 -- | each hit into a binding entry.
-pickDrumKit
+pickMidiDrumKit
   :: Map (Tuple String Int) String
-  -> { name :: String, value :: Foreign }
+  -> String
+  -> Foreign
   -> Maybe RegistrationEvent
-pickDrumKit deviceAliases { name: alias, value } = do
-  tag <- constructorTag value
-  if tag /= "midiDrumKit" then Nothing
+pickMidiDrumKit deviceAliases alias value = do
+  devArg <- tupleArg 0 value
+  chArg <- tupleArg 1 value
+  hitsArg <- tupleArg 2 value
+  devTag <- constructorTag devArg
+  if devTag /= "midiDevice" then Nothing
   else do
-    devArg <- tupleArg 0 value
-    chArg <- tupleArg 1 value
-    hitsArg <- tupleArg 2 value
-    devTag <- constructorTag devArg
-    if devTag /= "midiDevice" then Nothing
-    else do
-      devNameArg <- tupleArg 0 devArg
-      devLatArg <- tupleArg 1 devArg
-      devName <- asBinary devNameArg
-      devLat <- asInt devLatArg
-      ch <- asInt chArg
-      let deviceAlias = fromMaybe ""
-            (Map.lookup (Tuple devName devLat) deviceAliases)
-      -- Hits encode as records `#{name, note, vel, durMs}` carried
-      -- inside an Erlang `array`.  `drumKitHits` decodes the whole
-      -- array; empty / malformed input returns an empty array.  The
-      -- Erlang shell then builds `midi-drum-kit <device> <channel>
-      -- name:note:vel:dur,…` and installs the binding.
-      let hits = drumKitHits hitsArg
-      Just $ RegisterMidiDrumKit
-        { alias
-        , deviceAlias
-        , channel: ch
-        , hits
-        , drumKitValue: value
-        }
+    devNameArg <- tupleArg 0 devArg
+    devLatArg <- tupleArg 1 devArg
+    devName <- asBinary devNameArg
+    devLat <- asInt devLatArg
+    ch <- asInt chArg
+    let deviceAlias = fromMaybe ""
+          (Map.lookup (Tuple devName devLat) deviceAliases)
+    -- Hits encode as records `#{name, note, vel, durMs}` carried
+    -- inside an Erlang `array`.  `drumKitHits` decodes the whole
+    -- array; empty / malformed input returns an empty array.  The
+    -- Erlang shell then builds `midi-drum-kit <device> <channel>
+    -- name:note:vel:dur,…` and installs the binding.
+    let hits = drumKitHits hitsArg
+    Just $ RegisterMidiDrumKit
+      { alias
+      , deviceAlias
+      , channel: ch
+      , hits
+      , drumKitValue: value
+      }
+
+-- | Classify a `GateDrumKit` value.  Encoding from purs-backend-erl:
+-- |   data DrumKit = ... | GateDrumKit CvRouter (Array GateHit)
+-- | becomes `{gateDrumKit, CvRouterTuple, HitsArray}`.
+pickGateDrumKit
+  :: Map (Tuple String Int) String
+  -> String
+  -> Foreign
+  -> Maybe RegistrationEvent
+pickGateDrumKit routerAliases alias value = do
+  routerArg <- tupleArg 0 value
+  hitsArg <- tupleArg 1 value
+  routerTag <- constructorTag routerArg
+  if routerTag /= "cvRouter" then Nothing
+  else do
+    hostArg <- tupleArg 0 routerArg
+    portArg <- tupleArg 1 routerArg
+    host <- asBinary hostArg
+    port <- asInt portArg
+    let routerAlias = fromMaybe ""
+          (Map.lookup (Tuple host port) routerAliases)
+    let hits = gateDrumKitHits hitsArg
+    Just $ RegisterGateDrumKit
+      { alias
+      , routerAlias
+      , hits
+      , drumKitValue: value
+      }
 
 -- ---------------------------------------------------------------------------
 -- FFI primitives — minimal, knowledge-free
@@ -290,3 +427,18 @@ foreign import asInt :: Foreign -> Maybe Int
 foreign import drumKitHits
   :: Foreign
   -> Array { name :: String, note :: Int, vel :: Int, durMs :: Int }
+
+-- | Decode every GateHit in a gate-kit's `Array GateHit` to a flat
+-- | PureScript array of `{name, gateChannel, durMs}` records.
+-- | Parallel to `drumKitHits` but for the gate-side drum kit
+-- | (PR 2c).  Empty / malformed / missing input returns `[]`.
+foreign import gateDrumKitHits
+  :: Foreign
+  -> Array { name :: String, gateChannel :: Int, durMs :: Int }
+
+-- | Decode the inner `{ gateChannel :: Int, voctBus :: Int }` record
+-- | of a VPerOctInstrument.  Returns Nothing if the value isn't a
+-- | map with the two expected integer keys.
+foreign import vPerOctFields
+  :: Foreign
+  -> Maybe { gateChannel :: Int, voctBus :: Int }

@@ -368,6 +368,29 @@ dispatchPrimAction (State s) name token wallUs delayMs _delayInt params = case _
               scheduleNoteAt s.bridgeClient dev.name m.channel hit.note
                 velocity hit.durationMs adjustedUnixUs
 
+  GateDrumKit g ->
+    -- PR 2c: gate-drum-kit (cv-router gate dispatch, parallel to
+    -- MidiDrumKit).  Token = hit name; look up in hits map → fire
+    -- cv-router gate trigger on the matching channel for the hit's
+    -- declared duration.  Unknown tokens silently skip; rests skip
+    -- via outer `when`.  Router alias informational (PR 2c.2 will
+    -- route per-alias).
+    when (token /= "~") do
+      case Map.lookup token g.hits of
+        Nothing ->
+          Log.debug $ "  · [" <> name <> "] gate-drum-kit: unknown hit '"
+            <> token <> "'"
+        Just hit ->
+          case s.oscClient of
+            Nothing ->
+              Log.debug $ "✗ [" <> name <> "] gate-drum-kit: no OSC client"
+            Just osc -> do
+              Log.debug $ "⚡ [" <> name <> "] gate-drum-kit hit " <> token
+                <> " → gate " <> show hit.gateChannel
+                <> " (" <> show hit.durMs <> "ms)"
+              sendGateTrigAfter osc hit.gateChannel
+                (Int.toNumber hit.durMs) delayMs
+
   Fh2Trigger f ->
     -- FH-2 trigger: resolve the voice's MIDI channel via
     -- `fh2VoiceChannels` (populated by the `fh2-envelope` verb).

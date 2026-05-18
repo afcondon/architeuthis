@@ -22,6 +22,8 @@
         , asBinary/1
         , asInt/1
         , drumKitHits/1
+        , gateDrumKitHits/1
+        , vPerOctFields/1
         ]).
 
 %% --------------------------------------------------------------------
@@ -158,3 +160,35 @@ drumKitHits(HitsForeign) ->
                  is_binary(N), is_integer(Nt),
                  is_integer(V), is_integer(D) ],
     array:from_list(Decoded).
+
+%% --------------------------------------------------------------------
+%% gateDrumKitHits/1 — pure.
+%%
+%% Parallel to drumKitHits/1 but for GateDrumKit's Array GateHit
+%% (PR 2c).  Each GateHit decodes to #{name, gateChannel, durMs}.
+%% Empty / non-array / malformed input returns an empty array.  The
+%% walker shell turns each hit into a `gate-drum-kit … name:ch:dur,…`
+%% binding spec entry.
+%% --------------------------------------------------------------------
+gateDrumKitHits(HitsForeign) ->
+    List = try array:to_list(HitsForeign)
+           catch _:_ -> []
+           end,
+    Decoded = [ #{ name => N, gateChannel => G, durMs => D }
+              || #{name := N, gateChannel := G, durMs := D} <- List,
+                 is_binary(N), is_integer(G), is_integer(D) ],
+    array:from_list(Decoded).
+
+%% --------------------------------------------------------------------
+%% vPerOctFields/1 — pure.
+%%
+%% Decode the inner `{ gateChannel :: Int, voctBus :: Int }` record
+%% from a VPerOctInstrument value.  Records encode as Erlang maps
+%% with atom keys.  Returns `{just, #{gateChannel, voctBus}}` on
+%% well-shaped input, `nothing` otherwise.
+%% --------------------------------------------------------------------
+vPerOctFields(#{gateChannel := G, voctBus := V})
+    when is_integer(G), is_integer(V) ->
+    {just, #{gateChannel => G, voctBus => V}};
+vPerOctFields(_) ->
+    {nothing}.

@@ -109,15 +109,25 @@ resolveTokenMidi token defaultNote =
 
 -- | Interpret a pattern token according to a CV mapping mode.
 -- |   LiteralValue   → parse as Number
--- |   NoteNameVoct   → parse as note name → 1V/oct on ±10V→±1.0 scale
+-- |   NoteNameVoct   → parse as note name OR stringified MIDI int
+-- |                    → 1V/oct on ±10V→±1.0 scale
 -- |   SampleNameMap  → lookup
+-- |
+-- | The NoteNameVoct path accepts both shapes because two upstreams
+-- | feed it: (a) user-typed `bind`-spec patterns with literal note
+-- | names ("c4", "fs3"); (b) the typed pitch substrate, whose
+-- | `pitchToken` renders `Chromatic n` as `show n` (stringified MIDI
+-- | int).  Mirrors `resolveTokenMidi`'s fallback chain on the MIDI
+-- | dispatch side.
 interpretCV :: Binding.CVMapping -> String -> Maybe Number
 interpretCV = case _ of
   Binding.LiteralValue -> Number.fromString
   Binding.NoteNameVoct -> \tok ->
     case Map.lookup tok noteNameMidi of
       Just midi -> Just (voctValue midi)
-      Nothing -> Nothing
+      Nothing -> case Int.fromString tok of
+        Just midi -> Just (voctValue midi)
+        Nothing -> Nothing
   Binding.SampleNameMap m -> \tok -> Map.lookup tok m
 
 -- | Clamp a Number to MIDI's 7-bit range [0..127] and floor it.

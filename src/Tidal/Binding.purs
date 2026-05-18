@@ -125,6 +125,22 @@ data PrimAction
   --   text verb at the WS layer (the spec is reserved for
   --   `tidal_session_walker`'s `registerMidiDrumKit` event, which
   --   builds it from the typed `DrumKit` declaration in Studio).
+  | GateDrumKit
+      { router :: String
+      , hits :: Map String { gateChannel :: Int, durMs :: Int }
+      }
+  -- ^ Gate drum kit (PR 2c) — one binding per kit, with a hits map
+  --   keyed by hit-name token.  Each event's token resolves to a
+  --   cv-router gate channel + duration ms; dispatch fires a gate
+  --   pulse through `sendGateTrigAfter` on the matching channel.
+  --   Parallel to `MidiDrumKit` but routed via cv-router OSC rather
+  --   than MIDI.  Today the `router` field is informational only
+  --   (singleton OSCClient); PR 2c.2 will hook it up to multi-router
+  --   dispatch.
+  --
+  --   *Server-only*: built by `tidal_session_walker`'s
+  --   `registerGateDrumKit` event from the typed `GateDrumKit`
+  --   declaration in Studio.
   | Fh2Trigger { voice :: Int, defaultNote :: Int }
   -- ^ Fires an FH-2 envelope trigger. The MIDI channel is resolved at
   --   dispatch time from the dispatcher's `fh2VoiceChannels` map
@@ -362,6 +378,15 @@ parseAction s =
     ["midi-drum-kit", device, chStr, hitsStr] ->
       parseMidiDrumKit device chStr hitsStr
 
+    -- gate-drum-kit <router-alias> [<hit>:<gateCh>:<dur>,...]
+    -- Hits encoding: comma-separated 3-tuples (no spaces).  Two-arg
+    -- form ⇒ empty kit.  Reserved for the session walker.  Routes
+    -- through cv-router gate triggers.
+    ["gate-drum-kit", router] ->
+      parseGateDrumKit router ""
+    ["gate-drum-kit", router, hitsStr] ->
+      parseGateDrumKit router hitsStr
+
     other ->
       Left ("unrecognized action: '" <> String.joinWith " " other <> "'")
 
@@ -461,6 +486,47 @@ parseHit s =
           Left ("hit '" <> name <> "': expected integer duration ms, got '" <> durStr <> "'")
     _ ->
       Left ("expected hit shape <name>:<note>:<vel>:<dur>, got '" <> s <> "'")
+
+-- | Build a GateDrumKit PrimAction from a router-alias + encoded
+-- | hits spec.  Hits encoding is `name:gateCh:dur` 3-tuples joined
+-- | by commas; empty string = empty kit.
+parseGateDrumKit :: String -> String -> Either String PrimAction
+parseGateDrumKit router hitsStr =
+  case parseGateHits hitsStr of
+    Left err -> Left ("gate-drum-kit: " <> err)
+    Right hits -> Right (GateDrumKit { router, hits })
+
+parseGateHits
+  :: String
+  -> Either String
+       (Map String { gateChannel :: Int, durMs :: Int })
+parseGateHits "" = Right Map.empty
+parseGateHits s =
+  let
+    parts = map trim (String.split (Pattern ",") s)
+    step acc part = case acc of
+      Left e -> Left e
+      Right m -> case parseGateHit part of
+        Left e -> Left e
+        Right (Tuple k v) -> Right (Map.insert k v m)
+  in
+    Array.foldl step (Right Map.empty) parts
+
+parseGateHit
+  :: String
+  -> Either String (Tuple String { gateChannel :: Int, durMs :: Int })
+parseGateHit s =
+  case String.split (Pattern ":") s of
+    [name, chStr, durStr] ->
+      case Int.fromString chStr, Int.fromString durStr of
+        Just ch, Just dur ->
+          Right (Tuple name { gateChannel: ch, durMs: dur })
+        Nothing, _ ->
+          Left ("hit '" <> name <> "': expected integer gate channel, got '" <> chStr <> "'")
+        _, Nothing ->
+          Left ("hit '" <> name <> "': expected integer duration ms, got '" <> durStr <> "'")
+    _ ->
+      Left ("expected hit shape <name>:<gateCh>:<dur>, got '" <> s <> "'")
 
 parseMapping :: String -> Maybe CVMapping
 parseMapping = case _ of

@@ -140,6 +140,13 @@ data SinkType
       --   underlying PrimAction.  Surfaces in the Voices pane as e.g.
       --   "drum-kit fh2qd ch 14 (5 hits)".
       }
+  | SinkGateDrumKit
+      { router :: String
+      , hits :: Int
+      -- ^ PR 2c parallel to SinkMidiDrumKit: gate-drum-kit routed
+      --   through cv-router instead of MIDI.  Hit-count only at the
+      --   sink layer; full hits map lives in GateDrumKit PrimAction.
+      }
   | SinkGate
       { channel :: Int
       , latencyMs :: Int
@@ -229,6 +236,8 @@ inferPrimSinkType = case _ of
   MidiDrumKit r ->
     SinkMidiDrumKit
       { device: r.device, channel: r.channel, hits: Map.size r.hits }
+  GateDrumKit r ->
+    SinkGateDrumKit { router: r.router, hits: Map.size r.hits }
   Fh2Trigger r -> SinkFh2Trigger r
   KitDispatch -> SinkKitDispatch
   ChordDispatch r -> SinkChordDispatch r
@@ -261,6 +270,7 @@ sinkElement = case _ of
   SinkMidiNote _ -> SampleOrNote
   SinkMidiCC _ -> Number
   SinkMidiDrumKit _ -> Sample
+  SinkGateDrumKit _ -> Sample
   SinkGate _ -> Trigger
   SinkCVLiteral _ -> Number
   SinkCVVoct _ -> Note
@@ -280,6 +290,7 @@ sinkDestKind = case _ of
   SinkMidiNote _ -> ToMidi
   SinkMidiCC _ -> ToMidi
   SinkMidiDrumKit _ -> ToMidi
+  SinkGateDrumKit _ -> ToGate
   SinkContMidiCC _ -> ToMidi
   SinkGate _ -> ToGate
   SinkCVLiteral _ -> ToCV
@@ -467,6 +478,12 @@ checkPattern sink pat = case sink of
              \got a numeric pattern"
     PatString _ -> Right unit  -- unknown hits silently skip; permissive
 
+  SinkGateDrumKit _ -> case pat of
+    PatNumber ->
+      Left $ "gate-drum-kit voice expects hit-name tokens (e.g., \"bd ~ sn ~\"), \
+             \got a numeric pattern"
+    PatString _ -> Right unit  -- unknown hits silently skip; permissive
+
   SinkGate _ -> case pat of
     PatNumber ->
       Left $ "gate voice expects discrete tokens, got a continuous numeric pattern \
@@ -579,6 +596,9 @@ renderSinkType st =
         "ToMidi drum-kit device=" <> show r.device
           <> " ch=" <> show r.channel
           <> " hits=" <> show r.hits
+      SinkGateDrumKit r ->
+        "ToGate drum-kit router=" <> show r.router
+          <> " hits=" <> show r.hits
       SinkContMidiCC r ->
         "ToMidi device=" <> show r.device
           <> " ch=" <> show r.channel
@@ -641,6 +661,9 @@ renderSinkTypeJSON st =
       SinkMidiDrumKit r ->
         "{\"device\":" <> jsStr r.device
           <> ",\"channel\":" <> show r.channel
+          <> ",\"hits\":" <> show r.hits <> "}"
+      SinkGateDrumKit r ->
+        "{\"router\":" <> jsStr r.router
           <> ",\"hits\":" <> show r.hits <> "}"
       SinkContMidiCC r ->
         "{\"device\":" <> jsStr r.device

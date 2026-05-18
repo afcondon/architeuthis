@@ -32,16 +32,24 @@ module Calypso.Prelude
   , appendParts, (<+>)
   -- Devices
   , MidiDevice(..)
+  -- CV/Gate routers (cv-router OSC endpoints — named for forward-
+  -- compat with multi-router setups; today routed through the
+  -- singleton OSC client)
+  , CvRouter(..)
   -- Instruments — pitched routing destinations
   , Instrument(..)
   , midi
   , midiWith
+  , vPerOct
   -- Drum kits — sample-keyed destinations with per-hit defaults
   , DrumKit(..)
   , DrumHit
+  , GateHit
   , DrumHitRef
   , midiDrumKit
+  , gateDrumKit
   , hit
+  , gateHit
   -- Parts
   , PitchedPart(..)
   , DrumPart(..)
@@ -99,19 +107,33 @@ negate x = PRing.sub PSemiring.zero x
 data MidiDevice = MidiDevice String Int
 
 -- ---------------------------------------------------------------------------
+-- CV/Gate routers
+-- ---------------------------------------------------------------------------
+
+-- | A named cv-router OSC endpoint — `CvRouter <host> <port>`.  The
+-- | Studio module declares one per cv-router instance the rig talks
+-- | to.  Today the runtime routes everything through a singleton OSC
+-- | client opened against the default host:port (127.0.0.1:57120);
+-- | the named-router abstraction is forward-compat for PR 2c.2's
+-- | true multi-router dispatch (shared jams across machines / multi-
+-- | ES-9 setups).
+data CvRouter = CvRouter String Int
+
+-- ---------------------------------------------------------------------------
 -- Instruments
 -- ---------------------------------------------------------------------------
 
--- | A pitched-routing destination.  The internal 5-tuple shape is
--- | preserved from PR 1 so the BEAM dispatcher's spec parser keeps
--- | working without protocol changes; the user-facing surface hides
--- | the trailing note/vel/dur via the `midi` smart constructor.
+-- | A pitched-routing destination.
 -- |
--- | PR 2c will split this into a sum (`MidiInstrument` +
--- | `VPerOctInstrument`); PR 2b will drop the trailing defaults
--- | entirely once the pattern emit path carries vel/dur per event.
+-- |   * `MidiInstrument` — note/vel/dur defaults preserved from PR 1
+-- |     for the dispatcher's spec parser.  Per-event vel/dur (PR 2b's
+-- |     deferred residual) will retire the trailing defaults.
+-- |   * `VPerOctInstrument` — V/oct CV + gate-trigger via cv-router.
+-- |     Walks to a compound `gate G + cv V voct` binding at register
+-- |     time, reusing the existing Gate + CV NoteNameVoct PrimActions.
 data Instrument
-  = Instrument MidiDevice Int Int Int Int
+  = MidiInstrument MidiDevice Int Int Int Int
+  | VPerOctInstrument CvRouter { gateChannel :: Int, voctBus :: Int }
 
 -- | The plain-MIDI instrument smart constructor.  Fills in system
 -- | defaults (note 60, vel 100, dur 50ms) so the user-facing
@@ -125,7 +147,7 @@ data Instrument
 -- | mono synth that wants a particular triggered pitch when the
 -- | pattern doesn't override).
 midi :: MidiDevice -> Int -> Instrument
-midi device channel = Instrument device channel 60 100 50
+midi device channel = MidiInstrument device channel 60 100 50
 
 -- | The full-control MIDI instrument constructor for cases where
 -- | the system defaults aren't right.  Per-event vel/dur arrives in
@@ -141,7 +163,28 @@ midiWith
   -> { defNote :: Int, defVel :: Int, defDurMs :: Int }
   -> Instrument
 midiWith device channel { defNote, defVel, defDurMs } =
-  Instrument device channel defNote defVel defDurMs
+  MidiInstrument device channel defNote defVel defDurMs
+
+-- | V/oct instrument — a pitched destination expressed as one gate
+-- | channel (the trigger) + one CV bus (the V/oct CV).  Both are
+-- | cv-router-side numbers: gate channel 0..7 (cv-router gate
+-- | semantics — physical jack 1..8 via the GATE_BASE offset), voct
+-- | bus 0..15 (direct bus index in cv-router's 16-bus space).
+-- |
+-- | ```
+-- | plaits :: Instrument
+-- | plaits = vPerOct cvRouter { gateChannel: 6, voctBus: 15 }
+-- | ```
+-- |
+-- | Walks to a compound `gate <gateChannel> + cv <voctBus> voct`
+-- | binding at session-load time; per-event dispatch fires both
+-- | the gate trigger and the V/oct CV pre-set (with cvLeadMs head
+-- | start so the CV settles before the gate arrives).
+vPerOct
+  :: CvRouter
+  -> { gateChannel :: Int, voctBus :: Int }
+  -> Instrument
+vPerOct = VPerOctInstrument
 
 -- ---------------------------------------------------------------------------
 -- Drum kits
@@ -173,24 +216,58 @@ type DrumHitRef = String
 
 -- | A drum / sample destination, distinct from `Instrument` because
 -- | (a) it carries a per-hit table where pitched instruments have
--- | only routing, and (b) PR 2b will dispatch each hit through its
--- | own MIDI binding.  PR 2c will add `GateDrumKit` for CV/Gate
--- | output through cv-router.
+-- | only routing, and (b) each hit dispatches through its own
+-- | per-event payload (MIDI note for `MidiDrumKit`, gate channel for
+-- | `GateDrumKit`).
 -- |
--- | ```
--- | qd1 = midiDrumKit fh2qd 14
--- |   [ hit "bd" 36 100 50
--- |   , hit "sn" 38 100 50
--- |   , hit "hh" 42  80 30
--- |   ]
--- | ```
+-- |   * `MidiDrumKit fh2qd 14 [hit "bd" 36 100 50, …]` — MIDI drum
+-- |     kit on device + channel; each hit declares MIDI note + vel +
+-- |     duration.  Dispatch goes via the MIDI bridge.
+-- |   * `GateDrumKit cvRouter [gateHit "bd" 0 30, …]` — CV gate drum
+-- |     kit through cv-router; each hit declares a gate channel
+-- |     (0..7) + duration in ms.  Dispatch fires `sendGateTrigAfter`
+-- |     for each event.  Useful for modular drum-trigger setups
+-- |     (Maths-as-drum, Plonk, ESX-8GT panel).
 data DrumKit
   = MidiDrumKit MidiDevice Int (Array DrumHit)
+  | GateDrumKit CvRouter (Array GateHit)
+
+-- | A single gate-drum hit: a named token bound to a cv-router gate
+-- | channel + duration.  At dispatch, each event's token resolves to
+-- | one of these via the kit's hits map.
+-- |
+-- | ```
+-- | gateHit "bd" 0 30   -- "bd" → gate channel 0, 30ms pulse
+-- | ```
+type GateHit =
+  { name :: String
+  , gateChannel :: Int
+  , durMs :: Int
+  }
 
 -- | Smart constructor — direct mirror of `MidiDrumKit` for symmetry
 -- | with the `midi` / `midiWith` instrument constructors.
 midiDrumKit :: MidiDevice -> Int -> Array DrumHit -> DrumKit
 midiDrumKit = MidiDrumKit
+
+-- | Smart constructor for a `GateDrumKit`.
+-- |
+-- | ```
+-- | gateKit = gateDrumKit cvRouter
+-- |   [ gateHit "bd" 0 30
+-- |   , gateHit "sn" 1 20
+-- |   ]
+-- | ```
+gateDrumKit :: CvRouter -> Array GateHit -> DrumKit
+gateDrumKit = GateDrumKit
+
+-- | Construct a gate-drum hit.  Reads as:
+-- |
+-- | ```
+-- | gateHit "bd" 0 30   -- "bd" → gate channel 0, 30ms pulse
+-- | ```
+gateHit :: String -> Int -> Int -> GateHit
+gateHit name gateChannel durMs = { name, gateChannel, durMs }
 
 -- ---------------------------------------------------------------------------
 -- Parts

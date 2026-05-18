@@ -1,0 +1,3 @@
+-- PR 2c live-test (slow): one note per second so you can watch
+-- gate LEDs on cv-router panel jack 7 and V/oct movement on jack 8.
+plaits "c2 e3 g4 c5 ~ g3 e3 c2" # slow 4

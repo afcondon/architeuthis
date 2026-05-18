@@ -32,6 +32,19 @@ iac :: MidiDevice
 iac = MidiDevice "IAC Driver Tidal" 30
 
 -- ---------------------------------------------------------------------------
+-- CV/Gate routers
+-- ---------------------------------------------------------------------------
+
+-- | The local cv-router instance — drives ES-9 buses via CoreAudio.
+-- | Host:port matches the default cv-router boot config.  Today
+-- | informational only (the runtime routes all OSC through a
+-- | singleton client on these coordinates); PR 2c.2 wires up the
+-- | per-alias OSCClient map for multi-router setups (shared jams,
+-- | multi-ES-9 rigs).
+cvRouter :: CvRouter
+cvRouter = CvRouter "127.0.0.1" 57120
+
+-- ---------------------------------------------------------------------------
 -- Pitched instruments — routing only.  Per-event vel/dur arrives in
 -- PR 2b; for now the smart constructor `midi` fills in system
 -- defaults (note 60, vel 100, dur 50).
@@ -53,6 +66,21 @@ bass3 = midi iac 3
 
 bass4 :: Instrument
 bass4 = midi iac 4
+
+-- ---------------------------------------------------------------------------
+-- V/oct instruments — routed through cv-router to modular VCOs.
+-- Each is one gate channel (the trigger) + one CV bus (V/oct CV).
+-- Compound bindings of the form `gate G + cv V voct` are installed
+-- automatically by the session walker; per-event emit fires both the
+-- gate pulse and the V/oct pre-set.
+-- ---------------------------------------------------------------------------
+
+-- | Plaits voice — gate channel 6, V/oct CV on bus 15.  Matches the
+-- | legacy hard-coded `plaitsBinding` in Tidal.Binding (preserved as
+-- | a default registry entry for back-compat); declaring it here in
+-- | Studio makes the typed surface the source of truth.
+plaits :: Instrument
+plaits = vPerOct cvRouter { gateChannel: 6, voctBus: 15 }
 
 -- ---------------------------------------------------------------------------
 -- Drum kits — the Quad Drum / sample-bank destinations.  Each hit
@@ -80,4 +108,23 @@ qd2 = midiDrumKit fh2qd 15
   , hit "sn" 38 100 50
   , hit "hh" 42  80 30
   , hit "cp" 39 100 30
+  ]
+
+-- ---------------------------------------------------------------------------
+-- Gate drum kits — drum dispatch via cv-router gate triggers instead of
+-- MIDI.  Each hit maps a token to a cv-router gate channel + pulse
+-- duration.  Walker installs a single `GateDrumKit` PrimAction per
+-- kit; per-event dispatch fires the matching gate.
+-- ---------------------------------------------------------------------------
+
+-- | A four-voice gate drum kit on cv-router gate channels 0..3 → ES-9
+-- | panel jacks 1..4.  Useful smoke-test target for the GateDrumKit
+-- | dispatch path; can drive any modular trigger destination (Plonk,
+-- | Maths cycle, an envelope, an ESX-8GT bit on the same panel).
+gateKit :: DrumKit
+gateKit = gateDrumKit cvRouter
+  [ gateHit "bd" 0 30
+  , gateHit "sn" 1 30
+  , gateHit "hh" 2 20
+  , gateHit "cp" 3 30
   ]

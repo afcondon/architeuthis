@@ -70,8 +70,8 @@ walk_baseline() ->
 
             Stats = lists:foldl(
                 fun apply_event/2,
-                #{devices => 0, instruments => 0,
-                  drumKits => 0, claimErrors => 0},
+                #{devices => 0, cvRouters => 0,
+                  instruments => 0, drumKits => 0, claimErrors => 0},
                 Events),
             %% Capture a Studio-pane snapshot from the raw event list so
             %% `get-studio` (and any future Studio-state queries) can
@@ -127,6 +127,11 @@ event_to_line({registerMidiDevice,
     {true,
      iolist_to_binary([<<"device\t">>, A, <<"\t">>, N, <<"\t">>,
                        integer_to_binary(L)])};
+event_to_line({registerCvRouter,
+               #{alias := A, host := H, port := P}}) ->
+    {true,
+     iolist_to_binary([<<"cv-router\t">>, A, <<"\t">>, H, <<"\t">>,
+                       integer_to_binary(P)])};
 event_to_line({registerMidiInstrument,
                #{alias := A, deviceAlias := D, channel := Ch,
                  defNote := Note, defVel := Vel, defDurMs := Dur}}) ->
@@ -136,6 +141,13 @@ event_to_line({registerMidiInstrument,
                        integer_to_binary(Note), <<"\t">>,
                        integer_to_binary(Vel), <<"\t">>,
                        integer_to_binary(Dur)])};
+event_to_line({registerVPerOctInstrument,
+               #{alias := A, routerAlias := R,
+                 gateChannel := G, voctBus := V}}) ->
+    {true,
+     iolist_to_binary([<<"vperoct\t">>, A, <<"\t">>, R, <<"\t">>,
+                       integer_to_binary(G), <<"\t">>,
+                       integer_to_binary(V)])};
 event_to_line({registerMidiDrumKit,
                #{alias := A, deviceAlias := D, channel := Ch,
                  hits := HitsArr}}) ->
@@ -149,6 +161,18 @@ event_to_line({registerMidiDrumKit,
     {true,
      iolist_to_binary([<<"drumkit\t">>, A, <<"\t">>, D, <<"\t">>,
                        integer_to_binary(Ch), <<"\t">>, HitsBin])};
+event_to_line({registerGateDrumKit,
+               #{alias := A, routerAlias := R, hits := HitsArr}}) ->
+    HitsList = try array:to_list(HitsArr) catch _:_ -> [] end,
+    HitSpecs = [ iolist_to_binary([N, ":",
+                                   integer_to_binary(G), ":",
+                                   integer_to_binary(DurH)])
+              || #{name := N, gateChannel := G, durMs := DurH}
+                   <- HitsList ],
+    HitsBin = iolist_to_binary(lists:join(<<",">>, HitSpecs)),
+    {true,
+     iolist_to_binary([<<"gatekit\t">>, A, <<"\t">>, R, <<"\t">>,
+                       HitsBin])};
 event_to_line({reportClaimError,
                #{deviceAlias := D, channel := Ch,
                  owners := OwnersArr, message := Msg}}) ->
@@ -174,6 +198,18 @@ apply_event({registerMidiDevice,
     tidal_dispatcher:register_midi_device(A, N, L),
     bump(devices, Acc);
 
+%% A cv-router event (PR 2c) records the named cv-router endpoint in
+%% the Studio snapshot.  In the single-router runtime (PR 2c) the
+%% dispatcher doesn't actually act on this — all OSC goes through the
+%% singleton OSCClient opened against the default host:port at boot.
+%% PR 2c.2 will hook this up to a per-alias OSCClient map so multiple
+%% cv-routers can be addressed independently (shared jams across
+%% machines / multi-ES-9).  Until then, declaring a non-default
+%% host:port is silently equivalent to the default.
+apply_event({registerCvRouter,
+             #{alias := _A, host := _H, port := _P}}, Acc) ->
+    bump(cvRouters, Acc);
+
 %% An instrument event synthesises the same Level-2 `midi-note <alias>
 %% <ch> <note> <vel> <dur>` spec the dispatcher's parser already
 %% handles, then inserts the raw Instrument value → binding-name into
@@ -198,6 +234,30 @@ apply_event({registerMidiInstrument,
         integer_to_binary(Note), " ",
         integer_to_binary(Vel), " ",
         integer_to_binary(Dur)
+    ]),
+    ets:insert(?CHANNEL_ALIAS_ETS, {IV, A}),
+    tidal_dispatcher:set_binding_from_spec(A, Spec),
+    bump(instruments, Acc);
+
+%% A V/oct instrument event (PR 2c) installs a compound binding of
+%% the form `gate <gateChannel> + cv <voctBus> voct` — reuses the
+%% existing Gate + CV NoteNameVoct PrimActions, no new dispatcher
+%% code on the pitched side.  The router alias is currently
+%% informational (singleton OSCClient).
+%%
+%% `instrumentValue` goes into the channel-alias ETS exactly like
+%% the MidiInstrument path so tidal_conductor can resolve
+%% section-fired arms whose destination is a VPerOctInstrument value.
+apply_event({registerVPerOctInstrument,
+             #{ alias        := A
+              , routerAlias  := _R
+              , gateChannel  := G
+              , voctBus      := V
+              , instrumentValue := IV
+              }}, Acc) ->
+    Spec = iolist_to_binary([
+        "gate ", integer_to_binary(G),
+        " + cv ", integer_to_binary(V), " voct"
     ]),
     ets:insert(?CHANNEL_ALIAS_ETS, {IV, A}),
     tidal_dispatcher:set_binding_from_spec(A, Spec),
@@ -252,6 +312,49 @@ apply_event({registerMidiDrumKit,
                    iolist_to_binary([
                        "midi-drum-kit ", D, " ",
                        integer_to_binary(Ch), " ", HitsBin])
+           end,
+    ets:insert(?CHANNEL_ALIAS_ETS, {KV, A}),
+    tidal_dispatcher:set_binding_from_spec(A, Spec),
+    bump(drumKits, Acc);
+
+%% A gate-drum-kit event (PR 2c) registers ONE binding per kit, of
+%% the new `GateDrumKit` PrimAction kind: per-event dispatch looks
+%% up the event's token in the binding's hits map and fires a
+%% cv-router gate trigger on the matching channel for the hit's
+%% declared duration.  Parallel to registerMidiDrumKit but routed
+%% through cv-router instead of MIDI.
+%%
+%% Spec encoding: `gate-drum-kit <router-alias>` (empty kit) or
+%% `gate-drum-kit <router-alias> <name>:<ch>:<dur>,…` (populated).
+%% The router alias is currently informational (singleton OSCClient).
+apply_event({registerGateDrumKit,
+             #{ alias        := A
+              , routerAlias  := R
+              , hits         := HitsArr
+              , drumKitValue := KV
+              }}, Acc) ->
+    HitsList = try array:to_list(HitsArr)
+               catch _:_ -> []
+               end,
+    HitSpecs = [ iolist_to_binary([
+                     N, ":",
+                     integer_to_binary(G), ":",
+                     integer_to_binary(Dur)
+                 ])
+              || #{name := N, gateChannel := G, durMs := Dur}
+                   <- HitsList ],
+    HitsBin = case HitSpecs of
+                  [] -> <<>>;
+                  _  -> iolist_to_binary(
+                          lists:join(<<",">>, HitSpecs))
+              end,
+    Spec = case HitsBin of
+               <<>> ->
+                   iolist_to_binary([
+                       "gate-drum-kit ", R]);
+               _ ->
+                   iolist_to_binary([
+                       "gate-drum-kit ", R, " ", HitsBin])
            end,
     ets:insert(?CHANNEL_ALIAS_ETS, {KV, A}),
     tidal_dispatcher:set_binding_from_spec(A, Spec),

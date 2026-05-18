@@ -1,0 +1,9 @@
+-- PR 2c live-test: fire a drum pattern through the gateKit GateDrumKit
+-- binding installed by the walker from Studio.purs.  Each token maps
+-- to a cv-router gate channel + duration:
+--   bd → gate 0 → ES-9 jack 1
+--   sn → gate 1 → ES-9 jack 2
+--   hh → gate 2 → ES-9 jack 3
+--   cp → gate 3 → ES-9 jack 4
+-- Slowed so LEDs are easy to follow.
+gateKit "bd sn hh cp bd ~ sn cp" # slow 4

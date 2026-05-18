@@ -1,0 +1,5 @@
+-- PR 2c live-test: fire a pattern through the plaits binding (installed
+-- by the session walker from Studio.purs's vPerOct declaration).
+-- Expected: cv-router emits gate pulses on channel 6 + V/oct CV on bus 15
+-- → Plaits VCO (or whatever's on those panel jacks) sings the pattern.
+plaits "c4 e4 g4 c5 ~ g4 e4 c4"
