@@ -258,22 +258,40 @@ studioRene = reneWith
   , vel:     100
   , durMs:   200
   , stepsPerCycle: 4
-  , notes:   [ 36, 37, 38, 39   -- row 0: drum notes 36-39
-             , 40, 41, 42, 43   -- row 1: drum notes 40-43
-             , 44, 45, 46, 47   -- row 2: drum notes 44-47
-             , 48, 49, 50, 51   -- row 3: drum notes 48-51
-             ]   -- 2026-05-19 testing: keep in drum-rack range so
-                 -- the same Ableton drum-rack-on-ch11 can hear it.
-                 -- Restore to chord-based notes ([60..86]) once we're
-                 -- routing René to a melodic synth.
+  , notes:   reneDefaultNotes
+              -- Engine init defaults; the config's `notes` patterns
+              -- override on every step, so these only matter for the
+              -- ~50ms window between voice start and the first
+              -- snapshot.  Keep them in drum-rack range to match the
+              -- live-controlled defaults below.
   , skip:    replicate16 false
   , gate:    replicate16 true
   , glide:   replicate16 false
   , navMode: NavCartesian
   , config:
       { stepYNow: liveBoolOr false "rene.stepY"
+      , notes:    liveIntArrayOr reneDefaultNotes "rene.note"
+                 -- Twister knobs 1..16 → `rene.note0`..`rene.note15`
+                 -- via the Calypso controller pump.  Cell-text and
+                 -- controller writes both land here; the engine reads
+                 -- a fresh array on every step.
+      , skip:     liveBoolArrayOr (replicate16 false) "rene.skip"
+                 -- Reserved for Twister push-button toggles (queued
+                 -- — pump currently parses presses but doesn't dispatch
+                 -- them as set-control writes).  Today the array is
+                 -- all-false unless a cell explicitly sets `rene.skipN`.
       }
   }
+  where
+    -- 2026-05-19 testing: drum-rack range so the same Ableton
+    -- drum-rack on IAC ch11 hears every cell.  Restore to chord-based
+    -- notes ([60..86]) once we're routing René to a melodic synth.
+    reneDefaultNotes =
+      [ 36, 37, 38, 39   -- row 0
+      , 40, 41, 42, 43   -- row 1
+      , 44, 45, 46, 47   -- row 2
+      , 48, 49, 50, 51   -- row 3
+      ]
 
 studioRepetitor :: Repetitor "studioRepetitor"
 studioRepetitor = repetitorWith

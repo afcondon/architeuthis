@@ -73,25 +73,45 @@ data NavMode = NavCartesian | NavForward | NavReverse
 -- ReneConfig — patterned slots queried per step
 -- ---------------------------------------------------------------------------
 
--- | Per-step patterned configuration.  For now: just the Y-clock
--- | (a `Pattern Bool` that fires step_y when true).  Future
--- | extensions: dynamic quantise scale (`Pattern Scale`), running
--- | nav-mode (`Pattern NavMode`), live note replacement, …
+-- | Per-step patterned configuration.  The Y-clock (`stepYNow`) plus
+-- | the two live-controllable modal arrays — 16 per-cell `notes` and
+-- | 16 per-cell `skip` patterns — sampled by the voice on every step.
+-- |
+-- | The patterns are typically `liveIntOr` / `liveBoolOr` readers
+-- | pointed at the live-control bus (`liveIntArrayOr` / `liveBoolArrayOr`
+-- | spread the prefix across the 16 indices), so a controller surface
+-- | like the Twister can sweep individual cells live.  Static defaults
+-- | are perfectly valid — `map pure [60, 62, …]` works.
+-- |
+-- | Future extensions: dynamic quantise scale (`Pattern Scale`),
+-- | per-cell `Pattern Int` velocity, per-cell gate weight, running
+-- | nav-mode (`Pattern NavMode`).  Same shape; add fields here.
 type ReneConfig =
   { stepYNow :: Pattern Boolean
+  , notes    :: Array (Pattern Int)
+  , skip     :: Array (Pattern Boolean)
   }
 
--- | Snapshot returned by `evaluateParamsAt`.
+-- | Snapshot returned by `evaluateParamsAt`.  Carries the resolved
+-- | per-cell arrays so the voice can refresh the engine's traversal
+-- | state before step_x / step_y / current_event run.
 type ReneSnapshot =
   { stepYNow :: Boolean
+  , notes    :: Array Int
+  , skip     :: Array Boolean
   }
 
 -- | Default config: Y-clock fires once per 4-step cycle (so
--- | Cartesian mode walks row by row of the 4x4 grid).  Override to
--- | something like `pure false` to lock the cursor to row 0.
+-- | Cartesian mode walks row by row of the 4x4 grid).  Default
+-- | notes are middle-C-ish drum range; default skip is all-false.
+-- | Override `stepYNow` to `pure false` to lock to row 0; override
+-- | notes/skip with `liveIntArrayOr` / `liveBoolArrayOr` to make
+-- | them controller-driven.
 reneConfig :: ReneConfig
 reneConfig =
   { stepYNow: pure false
+  , notes:    Array.replicate 16 (pure 60)
+  , skip:     Array.replicate 16 (pure false)
   }
 
 -- | Helper: build a 16-element array of a single repeated value.
@@ -177,11 +197,29 @@ evaluateParamsAt
   -> ReneSnapshot
 evaluateParamsAt cfg controlPairs pos =
   let controls = pairsToControlMap controlPairs
+      sampleN p = sampleIntAt controls 60 p pos
+      sampleS p = sampleBoolAt controls false p pos
   in { stepYNow: sampleBoolAt controls false cfg.stepYNow pos
+     , notes:    map sampleN cfg.notes
+     , skip:     map sampleS cfg.skip
      }
 
 sampleBoolAt :: ControlMap -> Boolean -> Pattern Boolean -> Number -> Boolean
 sampleBoolAt controls dflt pat at =
+  let arc0 = fromInt (truncTo16th at)
+      arc1 = fromInt (truncTo16th at + 1)
+      slice = queryArcWith controls pat
+                (arc0 / fromInt 16)
+                (arc1 / fromInt 16)
+  in case Array.head slice of
+       Just (Digital e) -> e.value
+       Just (Analog e)  -> e.value
+       Nothing -> dflt
+
+-- | Integer-typed twin of `sampleBoolAt`.  Used to sample per-cell
+-- | `Pattern Int` notes at each step's cycle position.
+sampleIntAt :: ControlMap -> Int -> Pattern Int -> Number -> Int
+sampleIntAt controls dflt pat at =
   let arc0 = fromInt (truncTo16th at)
       arc1 = fromInt (truncTo16th at + 1)
       slice = queryArcWith controls pat

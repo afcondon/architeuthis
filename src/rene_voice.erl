@@ -183,14 +183,17 @@ process_window(Window, State) ->
 emit_step(S, ControlPairs, CurrentCycle, CycleDurMs, NowUs, State) ->
     StepCycle = S / State#st.steps_per_cycle,
     WallUs = round(NowUs + (StepCycle - CurrentCycle) * CycleDurMs * 1000),
-    StepYNow = case State#st.cfg of
-        undefined -> false;
+    %% Snapshot the live config — stepYNow + 16 per-cell notes + 16
+    %% per-cell skip values, all sampled at this step's cycle position.
+    %% When cfg is undefined (registration without a config) the engine
+    %% keeps its registration-time arrays.
+    Snap = case State#st.cfg of
+        undefined -> #{stepYNow => false};
         Cfg ->
-            Snap = 'tidal_rene@ps':evaluateParamsAt(
-                     Cfg, ControlPairs, StepCycle),
-            maps:get(stepYNow, Snap, false)
+            'tidal_rene@ps':evaluateParamsAt(Cfg, ControlPairs, StepCycle)
     end,
-    Engine0 = State#st.engine,
+    StepYNow = maps:get(stepYNow, Snap, false),
+    Engine0  = refresh_from_snapshot(State#st.engine, Snap),
     Engine1 = case StepYNow of
         true  -> rene_engine:step_y(Engine0);
         false -> Engine0
@@ -203,6 +206,25 @@ emit_step(S, ControlPairs, CurrentCycle, CycleDurMs, NowUs, State) ->
             ok
     end,
     State#st{engine = Engine2}.
+
+%% Pull notes + skip arrays out of the snapshot (if present) and
+%% refresh the engine's stored copies before this step's traversal
+%% runs.  This is the seam through which controller-bus writes (Twister
+%% knobs → rene.note0..15) reach the engine's skip-aware step_x and
+%% current_event logic.
+%%
+%% Per [[reference_purerl_array_is_erlang_array_module]] PureScript
+%% Arrays cross the boundary as Erlang `array` records, not lists;
+%% convert with array:to_list/1 before handing to rene_engine:set_field.
+refresh_from_snapshot(Engine, Snap) ->
+    Engine1 = case maps:get(notes, Snap, undefined) of
+        undefined -> Engine;
+        N -> rene_engine:set_field(Engine, notes, array:to_list(N))
+    end,
+    case maps:get(skip, Snap, undefined) of
+        undefined -> Engine1;
+        Sk -> rene_engine:set_field(Engine1, skip, array:to_list(Sk))
+    end.
 
 emit_note(Note, WallUs, State) ->
     Thunk = tidal_mIDIBridge@foreign:scheduleNoteAt(

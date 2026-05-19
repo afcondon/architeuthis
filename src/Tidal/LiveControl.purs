@@ -29,9 +29,12 @@ module Tidal.LiveControl
   , liveIntOr
   , liveBool
   , liveBoolOr
+  , liveIntArrayOr
+  , liveBoolArrayOr
   ) where
 
 import Prelude
+import Data.Array as Array
 import Data.Int as Int
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
@@ -94,3 +97,22 @@ liveBoolOr def name = pattern \(State st) ->
       _                -> def
   in
     [ Analog { context: emptyContext, part: st.arc, value } ]
+
+-- | Read N Pattern Ints from the bus, named `<prefix>0`..`<prefix>{N-1}`.
+-- | Returns one Pattern per default value, in the same order — the
+-- | array length is the caller's array length.
+-- |
+-- | Used by machines whose internal state is an indexed array of cells
+-- | (René's 16 notes, future Marbles/Tides ports), where each cell is
+-- | one named scalar on the control bus.  A controller pump writes
+-- | `<prefix>5 = 67`, the engine samples `liveIntArrayOr defaults
+-- | "<prefix>"` at index 5 per step and picks up the new value.
+liveIntArrayOr :: Array Int -> String -> Array (Pattern Int)
+liveIntArrayOr defaults prefix =
+  Array.mapWithIndex (\i d -> liveIntOr d (prefix <> show i)) defaults
+
+-- | Boolean-array companion to `liveIntArrayOr`.  Used for René's
+-- | skip/gate/glide modal arrays where each cell is one named boolean.
+liveBoolArrayOr :: Array Boolean -> String -> Array (Pattern Boolean)
+liveBoolArrayOr defaults prefix =
+  Array.mapWithIndex (\i d -> liveBoolOr d (prefix <> show i)) defaults
