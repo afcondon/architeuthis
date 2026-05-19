@@ -149,6 +149,51 @@ data RegistrationEvent
       , durMs :: Int
       , config :: Foreign      -- opaque GridsConfig — voice queries via FFI
       }
+  -- | Repetitor vmod Phase 3 (2026-05-19): a BEAM-native ZR-inspired
+  -- | voice declared at the Session level.  Sibling of RegisterGrids —
+  -- | same MIDI-routing shape, same claim semantics on (device,
+  -- | channel), same per-step FFI query against opaque config.  The
+  -- | `library` and `patternSlug` fields select which pattern data
+  -- | the voice plays; the `config` Foreign holds the four
+  -- | `Pattern Int` offset slots queried per step.
+  | RegisterRepetitor
+      { alias :: String
+      , deviceAlias :: String
+      , deviceName :: String
+      , channel :: Int
+      , noteM :: Int
+      , noteC1 :: Int
+      , noteC2 :: Int
+      , noteC3 :: Int
+      , vel :: Int
+      , durMs :: Int
+      , stepsPerCycle :: Int
+      , library :: String
+      , patternSlug :: String
+      , config :: Foreign
+      }
+  -- | René machine Phase 3 (2026-05-19): a BEAM-native Make-Noise-
+  -- | René-inspired voice declared at the Session level.  User
+  -- | supplies 16 notes + modal arrays; engine supplies traversal.
+  -- | Same MIDI-routing shape as Grids/Repetitor (single channel),
+  -- | same claim semantics on (device, channel).  `navMode` is a
+  -- | String classifier ("cartesian" / "forward" / "reverse") so
+  -- | the Erlang side can pattern-match without re-decoding the ADT.
+  | RegisterRene
+      { alias :: String
+      , deviceAlias :: String
+      , deviceName :: String
+      , channel :: Int
+      , vel :: Int
+      , durMs :: Int
+      , stepsPerCycle :: Int
+      , notes :: Array Int
+      , skip :: Array Boolean
+      , gate :: Array Boolean
+      , glide :: Array Boolean
+      , navMode :: String
+      , config :: Foreign
+      }
   -- | Front-end reservations Phase 1: emitted when two or more Studio
   -- | declarations land on the same MIDI (device, channel).  Erlang
   -- | shell logs the `message` via `tidal_log:err` and bumps a
@@ -204,17 +249,20 @@ walkBaseline = do
     -- instruments use).  Same MIDI-channel claim semantics as
     -- DrumKit — both are autonomous emitters on (device, channel).
     gridsEvents = Array.mapMaybe (pickGrids deviceAliases) allPairs
+    repetitorEvents = Array.mapMaybe (pickRepetitor deviceAliases) allPairs
+    reneEvents = Array.mapMaybe (pickRene deviceAliases) allPairs
     -- Phase 1: collect implicit (device, channel) claims from
     -- registration events, group by (device, channel), report any
     -- duplicates as `ReportClaimError` events.  Errors are emitted
     -- BEFORE registration events so the Erlang log shows them ahead
     -- of the binding installs they conflict with.
     claims = Array.mapMaybe registrationToClaim
-               (instrEvents <> kitEvents <> gridsEvents)
+               (instrEvents <> kitEvents <> gridsEvents
+                <> repetitorEvents <> reneEvents)
     claimErrorEvents = Array.mapMaybe claimErrorToEvent (validateMidiClaims claims)
   pure (claimErrorEvents <> devEvents <> routerEvents
         <> instrEvents <> kitEvents <> polySigEvents
-        <> gridsEvents)
+        <> gridsEvents <> repetitorEvents <> reneEvents)
 
 registrationToClaim :: RegistrationEvent -> Maybe MidiClaim
 registrationToClaim = case _ of
@@ -236,6 +284,18 @@ registrationToClaim = case _ of
     , channel: r.channel
     , ownerKind: OwnDrumKit  -- Grids = autonomous emitter on (dev,ch),
                               -- same conflict semantics as a DrumKit.
+    }
+  RegisterRepetitor r -> Just
+    { owner: r.alias
+    , deviceAlias: r.deviceAlias
+    , channel: r.channel
+    , ownerKind: OwnDrumKit  -- Repetitor = autonomous drumkit-style emitter.
+    }
+  RegisterRene r -> Just
+    { owner: r.alias
+    , deviceAlias: r.deviceAlias
+    , channel: r.channel
+    , ownerKind: OwnDrumKit  -- René = autonomous sequencer; same conflict semantics.
     }
   _ -> Nothing
 
@@ -477,6 +537,75 @@ pickGrids deviceAliases { name: alias, value } = do
       }
 
 -- ---------------------------------------------------------------------------
+-- Repetitor classifier (vmod Phase 3 — 2026-05-19)
+-- ---------------------------------------------------------------------------
+
+-- | Classify a `Repetitor s` value declared at the Session level.
+-- | Single constructor (`RepetitorBinding`); fields are the MIDI
+-- | routing + the library / pattern selectors (flat) plus a
+-- | `config` Foreign holding the four `Pattern Int` offset slots.
+pickRepetitor
+  :: Map (Tuple String Int) String
+  -> { name :: String, value :: Foreign }
+  -> Maybe RegistrationEvent
+pickRepetitor deviceAliases { name: alias, value } = do
+  tag <- constructorTag value
+  if tag /= "repetitorBinding" then Nothing
+  else do
+    fields <- repetitorBindingFields value
+    let deviceAlias = fromMaybe ""
+          (Map.lookup (Tuple fields.deviceName fields.deviceLatencyMs)
+                       deviceAliases)
+    Just $ RegisterRepetitor
+      { alias
+      , deviceAlias
+      , deviceName: fields.deviceName
+      , channel: fields.channel
+      , noteM: fields.noteM
+      , noteC1: fields.noteC1
+      , noteC2: fields.noteC2
+      , noteC3: fields.noteC3
+      , vel: fields.vel
+      , durMs: fields.durMs
+      , stepsPerCycle: fields.stepsPerCycle
+      , library: fields.library
+      , patternSlug: fields.patternSlug
+      , config: fields.config
+      }
+
+-- ---------------------------------------------------------------------------
+-- René classifier (machine Phase 3 — 2026-05-19)
+-- ---------------------------------------------------------------------------
+
+pickRene
+  :: Map (Tuple String Int) String
+  -> { name :: String, value :: Foreign }
+  -> Maybe RegistrationEvent
+pickRene deviceAliases { name: alias, value } = do
+  tag <- constructorTag value
+  if tag /= "reneBinding" then Nothing
+  else do
+    fields <- reneBindingFields value
+    let deviceAlias = fromMaybe ""
+          (Map.lookup (Tuple fields.deviceName fields.deviceLatencyMs)
+                       deviceAliases)
+    Just $ RegisterRene
+      { alias
+      , deviceAlias
+      , deviceName: fields.deviceName
+      , channel: fields.channel
+      , vel: fields.vel
+      , durMs: fields.durMs
+      , stepsPerCycle: fields.stepsPerCycle
+      , notes: fields.notes
+      , skip: fields.skip
+      , gate: fields.gate
+      , glide: fields.glide
+      , navMode: fields.navMode
+      , config: fields.config
+      }
+
+-- ---------------------------------------------------------------------------
 -- PolySignal classifier (Slab C step 1)
 -- ---------------------------------------------------------------------------
 
@@ -659,5 +788,47 @@ foreign import gridsBindingFields
        , vel :: Int
        , velAccent :: Int
        , durMs :: Int
+       , config :: Foreign
+       }
+
+-- | Decode the inner record of a `RepetitorBinding` value.  Same
+-- | shape as `gridsBindingFields` but four row-notes (M/C1/C2/C3),
+-- | single velocity, plus library + patternSlug selectors.
+foreign import repetitorBindingFields
+  :: Foreign
+  -> Maybe
+       { deviceName :: String
+       , deviceLatencyMs :: Int
+       , channel :: Int
+       , noteM :: Int
+       , noteC1 :: Int
+       , noteC2 :: Int
+       , noteC3 :: Int
+       , vel :: Int
+       , durMs :: Int
+       , stepsPerCycle :: Int
+       , library :: String
+       , patternSlug :: String
+       , config :: Foreign
+       }
+
+-- | Decode the inner record of a `ReneBinding` value.  The four
+-- | 16-element arrays land here as PureScript `Array a` values
+-- | (Erlang `array` module on the wire — converted to lists in the
+-- | apply_event handler before being handed to rene_engine).
+foreign import reneBindingFields
+  :: Foreign
+  -> Maybe
+       { deviceName :: String
+       , deviceLatencyMs :: Int
+       , channel :: Int
+       , vel :: Int
+       , durMs :: Int
+       , stepsPerCycle :: Int
+       , notes :: Array Int
+       , skip :: Array Boolean
+       , gate :: Array Boolean
+       , glide :: Array Boolean
+       , navMode :: String
        , config :: Foreign
        }

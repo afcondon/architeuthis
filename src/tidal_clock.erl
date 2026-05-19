@@ -155,6 +155,8 @@ terminate(_Reason, _StateName, _State) ->
 broadcast_compute_window(Window) ->
     broadcast_to(tidal_voice_sup, fun tidal_voice_sup:which_voices/0, Window),
     broadcast_to(grids_voice_sup, fun grids_voice_sup:which_voices/0, Window),
+    broadcast_to(repetitor_voice_sup, fun repetitor_voice_sup:which_voices/0, Window),
+    broadcast_to(rene_voice_sup, fun rene_voice_sup:which_voices/0, Window),
     ok.
 
 broadcast_to(SupName, WhichFn, Window) ->

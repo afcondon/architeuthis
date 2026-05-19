@@ -32,6 +32,8 @@
         , polyPresetConfigFields/1
         , polyPresetNoteConfigFields/1
         , gridsBindingFields/1
+        , repetitorBindingFields/1
+        , reneBindingFields/1
         ]).
 
 %% --------------------------------------------------------------------
@@ -314,3 +316,104 @@ gridsBindingFields({gridsBinding,
              config           => Cfg}};
 gridsBindingFields(_) ->
     {nothing}.
+
+%% --------------------------------------------------------------------
+%% repetitorBindingFields/1 — pure.
+%%
+%% Decode the inner record of a `RepetitorBinding` value.  Encoding:
+%%
+%%   {repetitorBinding,
+%%      #{device => {midiDevice, <<Name>>, Latency},
+%%        channel => Ch,
+%%        noteM => N, noteC1 => N, noteC2 => N, noteC3 => N,
+%%        vel => V, durMs => D, stepsPerCycle => Sp,
+%%        library => <<Lib>>, patternSlug => <<Slug>>,
+%%        config => OpaqueCfg}}
+%% --------------------------------------------------------------------
+repetitorBindingFields({repetitorBinding,
+                        #{device        := {midiDevice, DevName, DevLat},
+                          channel       := Ch,
+                          noteM         := NM,
+                          noteC1        := NC1,
+                          noteC2        := NC2,
+                          noteC3        := NC3,
+                          vel           := V,
+                          durMs         := Dur,
+                          stepsPerCycle := Sp,
+                          library       := Lib,
+                          patternSlug   := Slug,
+                          config        := Cfg}})
+    when is_binary(DevName), is_integer(DevLat),
+         is_integer(Ch),
+         is_integer(NM), is_integer(NC1), is_integer(NC2), is_integer(NC3),
+         is_integer(V), is_integer(Dur), is_integer(Sp),
+         is_binary(Lib), is_binary(Slug) ->
+    {just, #{deviceName      => DevName,
+             deviceLatencyMs => DevLat,
+             channel         => Ch,
+             noteM           => NM,
+             noteC1          => NC1,
+             noteC2          => NC2,
+             noteC3          => NC3,
+             vel             => V,
+             durMs           => Dur,
+             stepsPerCycle   => Sp,
+             library         => Lib,
+             patternSlug     => Slug,
+             config          => Cfg}};
+repetitorBindingFields(_) ->
+    {nothing}.
+
+%% --------------------------------------------------------------------
+%% reneBindingFields/1 — pure.
+%%
+%% Encoding:
+%%   {reneBinding,
+%%      #{device => {midiDevice, <<Name>>, Latency},
+%%        channel => Ch, vel => V, durMs => D,
+%%        stepsPerCycle => Sp,
+%%        notes => Array16Int,    -- Erlang `array` module value
+%%        skip => Array16Bool, gate => Array16Bool, glide => Array16Bool,
+%%        navMode => {navCartesian} | {navForward} | {navReverse},
+%%        config => OpaqueCfg}}
+%%
+%% navMode is decoded into a string ("cartesian" / "forward" /
+%% "reverse") so the apply_event side can match on a plain atom
+%% without re-implementing ADT-tag inspection.  Arrays stay as
+%% PureScript Array (Erlang `array` module) — apply_event handler
+%% does array:to_list/1 at the engine seam.
+%% --------------------------------------------------------------------
+reneBindingFields({reneBinding,
+                   #{device        := {midiDevice, DevName, DevLat},
+                     channel       := Ch,
+                     vel           := V,
+                     durMs         := Dur,
+                     stepsPerCycle := Sp,
+                     notes         := Notes,
+                     skip          := Skip,
+                     gate          := Gate,
+                     glide         := Glide,
+                     navMode       := NavTuple,
+                     config        := Cfg}})
+    when is_binary(DevName), is_integer(DevLat),
+         is_integer(Ch), is_integer(V), is_integer(Dur),
+         is_integer(Sp) ->
+    {just, #{deviceName      => DevName,
+             deviceLatencyMs => DevLat,
+             channel         => Ch,
+             vel             => V,
+             durMs           => Dur,
+             stepsPerCycle   => Sp,
+             notes           => Notes,
+             skip            => Skip,
+             gate            => Gate,
+             glide           => Glide,
+             navMode         => nav_mode_to_binary(NavTuple),
+             config          => Cfg}};
+reneBindingFields(_) ->
+    {nothing}.
+
+nav_mode_to_binary({navCartesian}) -> <<"cartesian">>;
+nav_mode_to_binary({navForward})   -> <<"forward">>;
+nav_mode_to_binary({navReverse})   -> <<"reverse">>;
+nav_mode_to_binary(_)              -> <<"cartesian">>.

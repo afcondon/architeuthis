@@ -78,6 +78,10 @@ module Calypso.Prelude
   , module Tidal.PolySignal
   -- Grids vmod (BEAM-native MI Grids clone, parameter-as-Pattern).
   , module Tidal.Grids
+  -- Repetitor vmod (ZR-inspired, BEAM-native rhythm corpus + per-row offsets).
+  , module Tidal.Repetitor
+  -- René machine (Make-Noise-René-inspired Cartesian sequencer; user-content + autonomous traversal).
+  , module Tidal.Rene
   -- Maybe — re-exported for optional fields like PolySignal range.
   , module Data.Maybe
   ) where
@@ -123,6 +127,24 @@ import Tidal.Grids
   , grids
   , gridsWith
   , gridsConfig
+  )
+import Tidal.Repetitor
+  ( Repetitor(..)
+  , RepetitorConfig
+  , RepetitorSnapshot
+  , repetitor
+  , repetitorWith
+  , repetitorConfig
+  )
+import Tidal.Rene
+  ( Rene(..)
+  , ReneConfig
+  , ReneSnapshot
+  , NavMode(..)
+  , rene
+  , reneWith
+  , reneConfig
+  , replicate16
   )
 
 -- | Right-associative function application — Haskell/Tidal idiom for

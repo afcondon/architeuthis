@@ -79,6 +79,15 @@ erl: ps
 	@erlc -disable-feature maybe_expr -o ebin src/grids_engine.erl
 	@erlc -disable-feature maybe_expr -o ebin src/grids_voice_sup.erl
 	@erlc -disable-feature maybe_expr -o ebin src/grids_voice.erl
+	@# Repetitor virtual module (ZR-inspired, BEAM-native).
+	@erlc -disable-feature maybe_expr -o ebin src/repetitor_library_zr_african.erl
+	@erlc -disable-feature maybe_expr -o ebin src/repetitor_engine.erl
+	@erlc -disable-feature maybe_expr -o ebin src/repetitor_voice_sup.erl
+	@erlc -disable-feature maybe_expr -o ebin src/repetitor_voice.erl
+	@# René machine (Make-Noise René-inspired Cartesian sequencer).
+	@erlc -disable-feature maybe_expr -o ebin src/rene_engine.erl
+	@erlc -disable-feature maybe_expr -o ebin src/rene_voice_sup.erl
+	@erlc -disable-feature maybe_expr -o ebin src/rene_voice.erl
 	@echo "==> Build complete. BEAM files in ebin/"
 
 # Run tests

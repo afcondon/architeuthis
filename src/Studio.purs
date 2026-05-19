@@ -217,16 +217,81 @@ studioCMajorScale = polyPresetNote (BankCv 1)
 -- the new patterns.
 -- ---------------------------------------------------------------------------
 
--- Channel 14: rides FH-2's existing QD MIDI→gate routing.  Notes
--- 36/38/42 (BD/SD/HH) become triggers on FH-2 panel gates 1/2/3 →
--- whatever the rig has patched there (QD module, Rample triggers,
--- ES-5 expander, …).  qd1 is commented out above to free the claim.
+-- 2026-05-19 testing: switched from (fh2qd ch14) to (iac ch12) so
+-- all three machines (Grids + Repetitor + René) route via Ableton
+-- IAC for the first end-to-end joint test.  Avoids rig-routing
+-- complications per `feedback_test_simplest_path_first`.  Revert
+-- to (fh2qd 14) once the engine behaviour is confirmed.
 studioGrids :: Grids "studioGrids"
-studioGrids = grids fh2qd 14 $ gridsConfig
+studioGrids = grids iac 12 $ gridsConfig
   { x          = liveIntOr 128 "grids.x"
   , y          = liveIntOr 128 "grids.y"
   , fillBd     = liveIntOr 220 "grids.fillBd"
   , fillSd     = liveIntOr 100 "grids.fillSd"
   , fillHh     = liveIntOr 200 "grids.fillHh"
   , randomness = liveIntOr 32  "grids.randomness"
+  }
+
+-- ---------------------------------------------------------------------------
+-- Repetitor virtual module (ZR-inspired, BEAM-native rhythm corpus) —
+-- second vmod instance (2026-05-19).  14 named African / Indian /
+-- Caribbean patterns; per-row offsets phase-shift the row's own
+-- pattern.  Routed to Ableton via IAC ch10 (standard drum channel)
+-- so it can coexist with studioGrids on the FH-2 path.  Default 4
+-- steps per cycle = one step per beat in 4/4.  Pattern lengths
+-- that aren't 4n produce natural polyrhythms against the bar.
+-- ---------------------------------------------------------------------------
+
+-- ---------------------------------------------------------------------------
+-- René machine (Make-Noise-René-inspired Cartesian sequencer) — third
+-- machine instance (2026-05-19).  User-supplied 16 notes + modal
+-- arrays; engine supplies traversal.  Routed to Ableton via IAC ch11
+-- so it sits alongside studioRepetitor (ch10) on the same device.
+-- Default 4 steps per cycle = one X-tick per beat in 4/4.  Y-clock
+-- driven by `mini "1 0 0 0"` so the cursor walks down a row each bar.
+-- ---------------------------------------------------------------------------
+
+studioRene :: Rene "studioRene"
+studioRene = reneWith
+  { device:  iac
+  , channel: 11
+  , vel:     100
+  , durMs:   200
+  , stepsPerCycle: 4
+  , notes:   [ 36, 37, 38, 39   -- row 0: drum notes 36-39
+             , 40, 41, 42, 43   -- row 1: drum notes 40-43
+             , 44, 45, 46, 47   -- row 2: drum notes 44-47
+             , 48, 49, 50, 51   -- row 3: drum notes 48-51
+             ]   -- 2026-05-19 testing: keep in drum-rack range so
+                 -- the same Ableton drum-rack-on-ch11 can hear it.
+                 -- Restore to chord-based notes ([60..86]) once we're
+                 -- routing René to a melodic synth.
+  , skip:    replicate16 false
+  , gate:    replicate16 true
+  , glide:   replicate16 false
+  , navMode: NavCartesian
+  , config:
+      { stepYNow: liveBoolOr false "rene.stepY"
+      }
+  }
+
+studioRepetitor :: Repetitor "studioRepetitor"
+studioRepetitor = repetitorWith
+  { device:  iac
+  , channel: 10
+  , noteM:   36
+  , noteC1:  38
+  , noteC2:  40
+  , noteC3:  41
+  , vel:     100
+  , durMs:   30
+  , stepsPerCycle: 4
+  , library: "zr_african"
+  , patternSlug: "King 1"
+  , config:
+      { offsetM:  liveIntOr 0 "rep.offM"
+      , offsetC1: liveIntOr 0 "rep.offC1"
+      , offsetC2: liveIntOr 0 "rep.offC2"
+      , offsetC3: liveIntOr 0 "rep.offC3"
+      }
   }

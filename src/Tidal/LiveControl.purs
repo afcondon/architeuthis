@@ -27,6 +27,8 @@ module Tidal.LiveControl
   , liveOr
   , liveInt
   , liveIntOr
+  , liveBool
+  , liveBoolOr
   ) where
 
 import Prelude
@@ -72,6 +74,23 @@ liveIntOr def name = pattern \(State st) ->
     value = case Map.lookup name st.controls of
       Just (VInt i)    -> i
       Just (VNumber n) -> Int.floor n
+      _                -> def
+  in
+    [ Analog { context: emptyContext, part: st.arc, value } ]
+
+-- | Read a Boolean control by name; default `false` when missing.
+-- | Used by René's stepYNow slot and any future on/off live knob.
+-- | Accepts either VBool, or numeric (non-zero → true).
+liveBool :: String -> Pattern Boolean
+liveBool = liveBoolOr false
+
+liveBoolOr :: Boolean -> String -> Pattern Boolean
+liveBoolOr def name = pattern \(State st) ->
+  let
+    value = case Map.lookup name st.controls of
+      Just (VInt 0)    -> false
+      Just (VInt _)    -> true
+      Just (VNumber n) -> n /= 0.0
       _                -> def
   in
     [ Analog { context: emptyContext, part: st.arc, value } ]

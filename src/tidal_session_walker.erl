@@ -182,6 +182,19 @@ event_to_line({registerGrids,
     {true,
      iolist_to_binary([<<"grids\t">>, A, <<"\t">>, D, <<"\t">>,
                        integer_to_binary(Ch)])};
+event_to_line({registerRepetitor,
+               #{alias := A, deviceAlias := D, channel := Ch,
+                 library := Lib, patternSlug := Slug}}) ->
+    {true,
+     iolist_to_binary([<<"repetitor\t">>, A, <<"\t">>, D, <<"\t">>,
+                       integer_to_binary(Ch), <<"\t">>, Lib,
+                       <<"\t">>, Slug])};
+event_to_line({registerRene,
+               #{alias := A, deviceAlias := D, channel := Ch,
+                 navMode := Nav}}) ->
+    {true,
+     iolist_to_binary([<<"rene\t">>, A, <<"\t">>, D, <<"\t">>,
+                       integer_to_binary(Ch), <<"\t">>, Nav])};
 event_to_line({reportClaimError,
                #{deviceAlias := D, channel := Ch,
                  owners := OwnersArr, message := Msg}}) ->
@@ -417,6 +430,122 @@ apply_event({registerGrids,
             %% the new patterns.
             grids_voice:set_config(AliasAtom, Cfg),
             bump(grids, Acc)
+    end;
+
+%% Repetitor vmod Phase 3 (2026-05-19): a BEAM-native Repetitor voice
+%% declared at the Session level.  Mirror of registerGrids — same
+%% MIDI-routing fields plus library + pattern_slug selectors that
+%% choose which corpus entry the voice plays.  Same live-mutation
+%% semantics: same-alias re-fire updates config in place; the
+%% engine's step counter is preserved.
+apply_event({registerRepetitor,
+             #{ alias         := A
+              , deviceAlias   := _D
+              , deviceName    := PortName
+              , channel       := Ch
+              , noteM         := NM
+              , noteC1        := NC1
+              , noteC2        := NC2
+              , noteC3        := NC3
+              , vel           := V
+              , durMs         := Dur
+              , stepsPerCycle := Sp
+              , library       := Lib
+              , patternSlug   := Slug
+              , config        := Cfg
+              }}, Acc) ->
+    LibMod = binary_to_atom(<<"repetitor_library_", Lib/binary>>, utf8),
+    VoiceConfig = #{
+        port_name        => PortName,
+        channel          => Ch,
+        note_m           => NM,
+        note_c1          => NC1,
+        note_c2          => NC2,
+        note_c3          => NC3,
+        vel              => V,
+        dur_ms           => Dur,
+        steps_per_cycle  => Sp,
+        library_mod      => LibMod,
+        pattern_slug     => Slug,
+        cfg              => Cfg
+    },
+    AliasAtom = binary_to_atom(A, utf8),
+    case repetitor_voice_sup:lookup_voice(AliasAtom) of
+        undefined ->
+            case repetitor_voice_sup:start_voice(AliasAtom, VoiceConfig) of
+                {ok, _Pid} ->
+                    tidal_log:info(
+                      "repetitor voice ~s started on ~s ch~B (~s/~s)~n",
+                      [A, PortName, Ch, Lib, Slug]),
+                    bump(repetitor, Acc);
+                {error, Reason} ->
+                    tidal_log:err("repetitor voice ~s: start failed: ~p~n",
+                                  [A, Reason]),
+                    bump(repetitorErrors, Acc)
+            end;
+        _Pid ->
+            repetitor_voice:set_config(AliasAtom,
+                #{pattern_slug => Slug, cfg => Cfg}),
+            bump(repetitor, Acc)
+    end;
+
+%% René machine Phase 3 (2026-05-19): a BEAM-native Make-Noise-René-
+%% inspired voice declared at the Session level.  User-supplied 16
+%% notes + modal arrays + autonomous traversal.  The four arrays
+%% arrive as PureScript Array (Erlang `array` module) — convert to
+%% lists at this boundary before feeding the engine.
+apply_event({registerRene,
+             #{ alias         := A
+              , deviceAlias   := _D
+              , deviceName    := PortName
+              , channel       := Ch
+              , vel           := V
+              , durMs         := Dur
+              , stepsPerCycle := Sp
+              , notes         := NotesArr
+              , skip          := SkipArr
+              , gate          := GateArr
+              , glide         := GlideArr
+              , navMode       := NavBin
+              , config        := Cfg
+              }}, Acc) ->
+    NavAtom = binary_to_atom(NavBin, utf8),
+    Notes = try array:to_list(NotesArr) catch _:_ -> [] end,
+    Skip  = try array:to_list(SkipArr)  catch _:_ -> [] end,
+    Gate  = try array:to_list(GateArr)  catch _:_ -> [] end,
+    Glide = try array:to_list(GlideArr) catch _:_ -> [] end,
+    VoiceConfig = #{
+        port_name        => PortName,
+        channel          => Ch,
+        vel              => V,
+        dur_ms           => Dur,
+        steps_per_cycle  => Sp,
+        notes            => Notes,
+        skip             => Skip,
+        gate             => Gate,
+        glide            => Glide,
+        nav_mode         => NavAtom,
+        cfg              => Cfg
+    },
+    AliasAtom = binary_to_atom(A, utf8),
+    case rene_voice_sup:lookup_voice(AliasAtom) of
+        undefined ->
+            case rene_voice_sup:start_voice(AliasAtom, VoiceConfig) of
+                {ok, _Pid} ->
+                    tidal_log:info(
+                      "rene voice ~s started on ~s ch~B (~s)~n",
+                      [A, PortName, Ch, NavBin]),
+                    bump(rene, Acc);
+                {error, Reason} ->
+                    tidal_log:err("rene voice ~s: start failed: ~p~n",
+                                  [A, Reason]),
+                    bump(reneErrors, Acc)
+            end;
+        _Pid ->
+            rene_voice:set_config(AliasAtom,
+                #{notes => Notes, skip => Skip, gate => Gate, glide => Glide,
+                  nav_mode => NavAtom, cfg => Cfg}),
+            bump(rene, Acc)
     end;
 
 %% Slab C step 1 (2026-05-18): an autonomous FH-2 polysignal declared
