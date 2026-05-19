@@ -181,7 +181,7 @@ loop(State) ->
                     loop(State)
             end;
 
-        {From, info} ->
+        {From, Ref, info} when is_reference(Ref) ->
             Reply = case maps:get(anchor, State) of
                 undefined ->
                     no_anchor;
@@ -189,7 +189,7 @@ loop(State) ->
                     {anchor, UnixUs, Beat, Tempo, Quantum,
                      maps:get(last_recv_us, State)}
             end,
-            From ! {?NAME, Reply},
+            From ! {Ref, Reply},
             loop(State);
 
         stop ->
@@ -205,15 +205,32 @@ loop(State) ->
     end.
 
 %% Synchronous request/reply against the registered process.
+%%
+%% Uses a per-call `make_ref/0` as the response tag (rather than the
+%% registered name) so that late replies — when the listener is slow
+%% and we time out at 100ms — don't leak into the caller's mailbox as
+%% messages that something else might mishandle.  Caused a real bug:
+%% the clock's gen_statem received late `{tidal_link_anchor, …}` info
+%% events and crashed with function_clause, taking the whole
+%% supervisor tree down (`one_for_all`).  With per-call refs, late
+%% replies are flushed before this function returns.
 call(Msg) ->
     case whereis(?NAME) of
         undefined ->
             no_anchor;
         Pid ->
-            Pid ! {self(), Msg},
+            Ref = make_ref(),
+            Pid ! {self(), Ref, Msg},
             receive
-                {?NAME, Reply} -> Reply
+                {Ref, Reply} -> Reply
             after 100 ->
+                %% Drain any late reply that arrived after the timeout
+                %% but before we returned, so it can't pollute future
+                %% receives or the parent's mailbox.
+                receive
+                    {Ref, _Late} -> ok
+                after 0 -> ok
+                end,
                 no_anchor
             end
     end.

@@ -115,7 +115,14 @@ running({call, From}, get_info, State) ->
     Snap = 'tidal_clock@ps':snapshot(State),
     {keep_state_and_data, [{reply, From, maps:put(running, true, Snap)}]};
 running({call, From}, is_running, _State) ->
-    {keep_state_and_data, [{reply, From, true}]}.
+    {keep_state_and_data, [{reply, From, true}]};
+running(info, _Msg, _State) ->
+    %% Drop unexpected info messages (typically late timeout-receive
+    %% leaks from sibling Erlang processes like tidal_link_anchor — see
+    %% the call/1 timeout pattern there).  We don't log per-drop because
+    %% the rate can be high under load; if a real-time-sensitive consumer
+    %% sends to the clock, route it via gen_statem:cast/call instead.
+    {keep_state_and_data, []}.
 
 %% --- paused state --------------------------------------------------------
 
@@ -135,7 +142,11 @@ paused({call, From}, get_info, State) ->
     Snap = 'tidal_clock@ps':snapshot(State),
     {keep_state_and_data, [{reply, From, maps:put(running, false, Snap)}]};
 paused({call, From}, is_running, _State) ->
-    {keep_state_and_data, [{reply, From, false}]}.
+    {keep_state_and_data, [{reply, From, false}]};
+paused(info, _Msg, _State) ->
+    %% Same defensive drop as in `running` — late timeout-receive leaks
+    %% from sibling processes mustn't take the clock down.
+    {keep_state_and_data, []}.
 
 terminate(_Reason, _StateName, _State) ->
     ok.
