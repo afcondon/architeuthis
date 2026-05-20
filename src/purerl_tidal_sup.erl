@@ -1,9 +1,25 @@
 %% @doc Top-level supervisor for purerl_tidal.
 %%
-%% Strategy is `one_for_all` because the children are tightly coupled:
-%% if any of {voice_sup, dispatcher, clock} crashes hard enough to
-%% exceed restart intensity, the whole rig should reset rather than run
-%% with partial state.
+%% Strategy is `rest_for_one`: the child order encodes a dependency
+%% chain, voices first then dispatcher/clock/state-pub/conductor.  A
+%% crash restarts the crasher AND everything started after it, but
+%% earlier children are untouched.  In practice this means:
+%%
+%%   - clock crashes      → clock + state_pub + conductor restart;
+%%                          voices keep playing (silently, until the
+%%                          next tick broadcasts resume ~50ms later).
+%%   - dispatcher crashes → dispatcher + clock + state_pub + conductor
+%%                          restart; voices keep playing but emit-side
+%%                          fan-out pauses briefly.
+%%   - any voice_sup crash → cascade, same as one_for_all — the
+%%                          registration substrate is gone and partial
+%%                          state isn't recoverable from here anyway.
+%%
+%% Previously `one_for_all`, which wiped every voice on any crash.
+%% See [[reference_purerl_tidal_silent_supervisor_cascade]] — the
+%% 2026-05-19 link-anchor RPC race took the whole rig dark from a
+%% single clock crash; the defensive `info` clause closed that
+%% specific cascade, but the strategy itself is the durable fix.
 %%
 %% Children, in start order:
 %%   1. tidal_voice_sup — empty supervisor; voices added by `bind` verb.
@@ -35,7 +51,7 @@ start_link() ->
 
 -spec init([]) -> {ok, {supervisor:sup_flags(), [supervisor:child_spec()]}}.
 init([]) ->
-    SupFlags = #{strategy => one_for_all,
+    SupFlags = #{strategy => rest_for_one,
                  intensity => 3,
                  period => 60},
 

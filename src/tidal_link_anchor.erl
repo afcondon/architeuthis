@@ -212,8 +212,10 @@ loop(State) ->
 %% messages that something else might mishandle.  Caused a real bug:
 %% the clock's gen_statem received late `{tidal_link_anchor, …}` info
 %% events and crashed with function_clause, taking the whole
-%% supervisor tree down (`one_for_all`).  With per-call refs, late
-%% replies are flushed before this function returns.
+%% supervisor tree down (`one_for_all` at the time; since 2026-05-20
+%% the top-level supervisor is `rest_for_one`, which would have
+%% confined the cascade to clock + downstream).  With per-call refs,
+%% late replies are flushed before this function returns.
 call(Msg) ->
     case whereis(?NAME) of
         undefined ->
