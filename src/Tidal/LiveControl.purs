@@ -31,6 +31,7 @@ module Tidal.LiveControl
   , liveBoolOr
   , liveIntArrayOr
   , liveBoolArrayOr
+  , gateFromBus
   ) where
 
 import Prelude
@@ -97,6 +98,20 @@ liveBoolOr def name = pattern \(State st) ->
       _                -> def
   in
     [ Analog { context: emptyContext, part: st.arc, value } ]
+
+-- | Read a bus-emitted gate signal as a `Pattern Boolean`.  Intended
+-- | use: an autonomous emitter (virtual polysignal, future vmod
+-- | output, MIDI-controller pad, …) writes 0 / non-zero values to
+-- | a bus key, and a downstream consumer reads those as gate-shaped
+-- | triggers — `advance = gateFromBus "polyEuclid.0"` makes a
+-- | virtual polyEuclid bank clock a René voice.
+-- |
+-- | Semantically equivalent to `liveBool` (any non-zero value reads
+-- | true; absent / zero reads false).  The distinct name marks
+-- | the intent at the surface — this is the signal-from-another-
+-- | machine path, not the live-knob path.
+gateFromBus :: String -> Pattern Boolean
+gateFromBus = liveBool
 
 -- | Read N Pattern Ints from the bus, named `<prefix>0`..`<prefix>{N-1}`.
 -- | Returns one Pattern per default value, in the same order — the
