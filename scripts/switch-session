@@ -7,23 +7,21 @@
 # Where <name> is one of: Fugue, Grids, Rene, ZR, Polysignals, Full
 # (case-insensitive — we capitalise the first letter).
 #
-# What it does: copies src/Sessions/<Name>.purs over
-# src/Calypso/Generated/Session.purs, rewriting the module declaration
-# from `module Sessions.<Name>` to `module Calypso.Generated.Session`.
-# Also wipes Calypso/Voices/*.purs (auto-generated arm stubs that pin
-# to the previous session's parts).
+# What it does:
+#   1. Wipes Calypso/Voices/*.purs (auto-generated arm stubs pinned
+#      to the previous session's parts).
+#   2. POSTs the chosen Sessions/<Name>.purs content (with the module
+#      declaration rewritten) to Calypso's /session-source endpoint
+#      at http://localhost:3060.  Calypso writes the file to disk,
+#      compiles it, and updates its own in-memory buffer atomically.
+#   3. Falls back to direct disk write if Calypso isn't reachable —
+#      in which case you'll need to restart Calypso afterwards (a
+#      browser refresh alone is NOT enough: the server holds its own
+#      module.source in RAM and would clobber the disk on next
+#      fire-typeful).
 #
-# WARNING: if Calypso is running, its in-memory `module.source` buffer
-# still holds the previous session.  The next fire-typeful from
-# Calypso will overwrite this script's edit with the stale buffer.
-# To avoid that: either (a) refresh Calypso in the browser to re-read
-# disk after running this, (b) restart the Calypso server, or
-# (c) use the in-app session picker (Phase 2, not yet built) which
-# routes through Calypso's POST /session-source endpoint instead of
-# stomping disk.
-#
-# After switching, fire-typeful in Calypso to make the BEAM walk the
-# new session and register its machines / parts.
+# After the POST, refresh Calypso in the browser (so the editor pane
+# shows the new content) and fire-typeful to walk the new bindings.
 
 set -euo pipefail
 
@@ -53,8 +51,6 @@ if [[ ! -f "$src" ]]; then
   exit 2
 fi
 
-sed "s/^module Sessions\\.${name}/module Calypso.Generated.Session/" "$src" > "$dst"
-
 # Wipe auto-generated voice wrappers — they pin to specific arm targets
 # (bass1A, qd1B, etc.) from the previous session and won't compile
 # against the new one.  Calypso regenerates them on next fire-typeful as
@@ -64,7 +60,40 @@ if [[ -d "$voices_dir" ]]; then
   rm -f "$voices_dir"/*.purs
 fi
 
-echo "switched active session: $name"
+# Build the new module source: strip the Sessions.<Name> module decl
+# and replace with Calypso.Generated.Session.
+new_source="$(sed "s/^module Sessions\\.${name}/module Calypso.Generated.Session/" "$src")"
+
+# Try the Calypso /session-source endpoint first — single round-trip
+# updates RAM + disk + recompiles, and avoids the in-memory-buffer
+# overwrite race.
+calypso_url="${CALYPSO_URL:-http://localhost:3060}"
+if curl -sf -o /dev/null --max-time 1 "$calypso_url/session" 2>/dev/null; then
+  # JSON-encode the source via python3 and POST.
+  payload="$(python3 -c '
+import json, sys
+print(json.dumps({"source": sys.stdin.read()}))
+' <<< "$new_source")"
+
+  response="$(curl -sf -X POST \
+    -H "Content-Type: application/json" \
+    --data "$payload" \
+    "$calypso_url/session-source" || true)"
+
+  if [[ -n "$response" ]]; then
+    echo "switched active session: $name (via Calypso $calypso_url)"
+    echo "cleared: $voices_dir/*.purs (Calypso regenerates on arm)"
+    echo "next: refresh Calypso browser to see new editor content, then fire-typeful."
+    exit 0
+  else
+    echo "Calypso POST /session-source failed; falling back to disk write." >&2
+  fi
+fi
+
+# Fallback: direct file write.  REQUIRES Calypso restart afterwards.
+echo "$new_source" > "$dst"
+echo "switched active session: $name (direct disk write — Calypso not reachable)"
 echo "wrote: $dst"
 echo "cleared: $voices_dir/*.purs (Calypso regenerates on arm)"
-echo "next: fire-typeful in Calypso to load the new bindings."
+echo "next: RESTART Calypso (server, not browser) before fire-typeful — its in-RAM"
+echo "      module.source would otherwise overwrite this disk edit on the next fire."
