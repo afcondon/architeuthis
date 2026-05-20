@@ -88,6 +88,9 @@ erl: ps
 	@erlc -disable-feature maybe_expr -o ebin src/rene_engine.erl
 	@erlc -disable-feature maybe_expr -o ebin src/rene_voice_sup.erl
 	@erlc -disable-feature maybe_expr -o ebin src/rene_voice.erl
+	@# Virtual polysignal (BEAM-native polysignal targeting Virtual <prefix>).
+	@erlc -disable-feature maybe_expr -o ebin src/virtual_polysignal_voice_sup.erl
+	@erlc -disable-feature maybe_expr -o ebin src/virtual_polysignal_voice.erl
 	@echo "==> Build complete. BEAM files in ebin/"
 
 # Run tests

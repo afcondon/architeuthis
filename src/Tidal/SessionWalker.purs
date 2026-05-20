@@ -39,7 +39,9 @@ import Tidal.MidiClaim
   , validateMidiClaims
   )
 import Tidal.PortClaim (ClaimError, OwnerKind(..))
+import Foreign (unsafeToForeign)
 import Tidal.PolySignal as PolySignal
+import Tidal.PolySignal (Bank(..))
 
 -- ---------------------------------------------------------------------------
 -- The boundary ADT
@@ -128,6 +130,21 @@ data RegistrationEvent
       { alias :: String
       , family :: String
       , jsonEnvelope :: String
+      }
+  -- | A polysignal targeting a `Virtual <busPrefix>` bank — runs
+  -- | entirely in BEAM, no fh2-daemon round-trip.  The walker
+  -- | classified the typed value, captured its raw form as
+  -- | `polySignalValue` (Foreign — passed through opaquely so the
+  -- | voice can re-discriminate via the family tag), and hands the
+  -- | event to the Erlang side which spawns a
+  -- | `virtual_polysignal_voice` under
+  -- | `virtual_polysignal_voice_sup`.  The eight outputs land on
+  -- | the live-control bus at `<busPrefix>.0`..`<busPrefix>.7`.
+  | RegisterVirtualPolySignal
+      { alias :: String
+      , busPrefix :: String
+      , family :: String
+      , polySignalValue :: Foreign
       }
   -- | Grids vmod Phase 3 (2026-05-18): a BEAM-native MI Grids voice
   -- | declared at the Session level.  Walker captures the binding's
@@ -648,11 +665,18 @@ pickPolySignal { name: alias, value } = do
      . String
     -> PolySignal.PolySignal s
     -> Maybe RegistrationEvent
-  mkEvent a polysig = Just $ RegisterPolySignal
-    { alias: a
-    , family: PolySignal.polySignalFamily polysig
-    , jsonEnvelope: PolySignal.polySignalAsJson a polysig
-    }
+  mkEvent a polysig = case PolySignal.polySignalBank polysig of
+    Virtual prefix -> Just $ RegisterVirtualPolySignal
+      { alias: a
+      , busPrefix: prefix
+      , family: PolySignal.polySignalFamily polysig
+      , polySignalValue: unsafeToForeign polysig
+      }
+    _ -> Just $ RegisterPolySignal
+      { alias: a
+      , family: PolySignal.polySignalFamily polysig
+      , jsonEnvelope: PolySignal.polySignalAsJson a polysig
+      }
 
 -- ---------------------------------------------------------------------------
 -- FFI primitives — minimal, knowledge-free

@@ -11,7 +11,7 @@
 -- | A typed Session-level binding looks like:
 -- |
 -- |     testLfo :: PolySignal "testLfo"
--- |     testLfo = polyLfo BankMain
+-- |     testLfo = polyLfo fh2Main
 -- |       [ { ratio: 1.0, shape: LfoTri }, …8 slots… ]
 -- |       (Just Bipolar5V)
 -- |
@@ -47,6 +47,11 @@ module Tidal.PolySignal
   ( PolySignal(..)
   , OutputRange(..)
   , Bank(..)
+  , Fh2Bank(..)
+  , fh2Main
+  , fh28Gt
+  , fh28Cv
+  , polySignalBank
   , LfoWave(..)
   , ClockBase(..)
   , RandDirection(..)
@@ -107,18 +112,56 @@ rangeToWire = case _ of
 -- Bank — names a target jack-bank on FH-2 + expanders (mirrors FH2.Roles.Bank)
 -- ---------------------------------------------------------------------------
 
+-- | Where a polysignal's outputs go.  Top-level sum across output
+-- | devices; adding a new device family (Ornament & Crime, an FH-3,
+-- | etc.) is one new outer constructor here plus its own inner ADT
+-- | for that device's banks.
+-- |
+-- | Today's two cases:
+-- |   `FH2` — the Expert Sleepers FH-2 + its FHX-8CV / FHX-8GT
+-- |   expanders, addressed by a nested `Fh2Bank`.
+-- |   `Virtual` — no hardware claim, no daemon round-trip; the
+-- |   string is the bus-key prefix and the eight outputs land at
+-- |   `<prefix>.0`..`<prefix>.7` on the live-control bus.  The
+-- |   walker detects this case and routes to
+-- |   `virtual_polysignal_voice_sup` instead of fh2-daemon.
 data Bank
-  = BankMain
-  | BankCv Int   -- FHX-8CV expander, indices 0..6
-  | BankGt Int   -- FHX-8GT expander, indices 0..7
+  = FH2 Fh2Bank
+  | Virtual String
 
 derive instance eqBank :: Eq Bank
 
+-- | The FH-2's own front-panel jacks plus its two expander families.
+data Fh2Bank
+  = FH2Main          -- the FH-2's own eight jacks
+  | FH28Cv Int       -- FHX-8CV expander, indices 0..6
+  | FH28Gt Int       -- FHX-8GT expander, indices 0..7
+
+derive instance eqFh2Bank :: Eq Fh2Bank
+
+-- | Smart helpers — cell text reads `polyLfo fh2Main ...` and
+-- | `polyLfo (fh28Cv 2) ...` without the `FH2 (...)` wrapping
+-- | ceremony.  These ARE the user surface; raw constructors are
+-- | available for code that needs to pattern-match on the bank.
+fh2Main :: Bank
+fh2Main = FH2 FH2Main
+
+fh28Cv :: Int -> Bank
+fh28Cv n = FH2 (FH28Cv n)
+
+fh28Gt :: Int -> Bank
+fh28Gt n = FH2 (FH28Gt n)
+
 bankToWire :: Bank -> String
 bankToWire = case _ of
-  BankMain -> "main"
-  BankCv n -> "cv" <> show n
-  BankGt n -> "gt" <> show n
+  FH2 fb         -> fh2BankToWire fb
+  Virtual prefix -> "virtual:" <> prefix
+
+fh2BankToWire :: Fh2Bank -> String
+fh2BankToWire = case _ of
+  FH2Main  -> "main"
+  FH28Cv n -> "cv" <> show n
+  FH28Gt n -> "gt" <> show n
 
 -- ---------------------------------------------------------------------------
 -- LFO waveform + slot
@@ -407,6 +450,19 @@ polyPresetNote bank slots range = PolyPresetNoteConfig { bank, slots, range }
 -- ---------------------------------------------------------------------------
 -- JSON envelope projection
 -- ---------------------------------------------------------------------------
+
+-- | The bank a typed PolySignal value targets.  The walker reads
+-- | this to choose between the hardware (fh2-daemon) and virtual
+-- | (BEAM gen_server) routing paths.
+polySignalBank :: forall s. PolySignal s -> Bank
+polySignalBank = case _ of
+  PolyLfoConfig         { bank } -> bank
+  PolyClockConfig       { bank } -> bank
+  PolyEnvConfig         { bank } -> bank
+  PolyEuclidConfig      { bank } -> bank
+  PolyRandConfig        { bank } -> bank
+  PolyPresetConfig      { bank } -> bank
+  PolyPresetNoteConfig  { bank } -> bank
 
 -- | The family name for a typed PolySignal value — same string the
 -- | daemon's wire parser dispatches on (`polylfo`, `polyclock`, …).

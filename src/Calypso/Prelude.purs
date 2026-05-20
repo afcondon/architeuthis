@@ -100,6 +100,10 @@ import Tidal.PolySignal
   ( PolySignal(..)
   , OutputRange(..)
   , Bank(..)
+  , Fh2Bank(..)
+  , fh2Main
+  , fh28Cv
+  , fh28Gt
   , LfoWave(..)
   , ClockBase(..)
   , RandDirection(..)

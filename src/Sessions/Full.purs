@@ -96,7 +96,7 @@ studioRepetitor = repetitorWith
 -- ---------------------------------------------------------------------------
 
 studioTestLfo :: PolySignal "studioTestLfo"
-studioTestLfo = polyLfo (BankCv 5)
+studioTestLfo = polyLfo (fh28Cv 5)
   [ { ratio: 1.0,  shape: LfoTri }
   , { ratio: 0.5,  shape: LfoSaw }
   , { ratio: 2.0,  shape: LfoSin }
@@ -109,7 +109,7 @@ studioTestLfo = polyLfo (BankCv 5)
   (Just Bipolar5V)
 
 studioTestClock :: PolySignal "studioTestClock"
-studioTestClock = polyClock (BankGt 0)
+studioTestClock = polyClock (fh28Gt 0)
   [ { base: ClockSixteenth,  multiplier: 1, pulseWidth: 0, phase: 0 }
   , { base: ClockSixteenth,  multiplier: 2, pulseWidth: 0, phase: 0 }
   , { base: ClockEighth,     multiplier: 1, pulseWidth: 0, phase: 0 }
@@ -122,7 +122,7 @@ studioTestClock = polyClock (BankGt 0)
   Nothing
 
 studioCalibLadder :: PolySignal "studioCalibLadder"
-studioCalibLadder = polyPreset (BankCv 2)
+studioCalibLadder = polyPreset (fh28Cv 2)
   [ { value: -5.0 }, { value: -3.0 }
   , { value: -1.0 }, { value:  0.0 }
   , { value:  1.0 }, { value:  2.0 }
@@ -131,7 +131,7 @@ studioCalibLadder = polyPreset (BankCv 2)
   (Just Bipolar5V)
 
 studioCMajorScale :: PolySignal "studioCMajorScale"
-studioCMajorScale = polyPresetNote (BankCv 1)
+studioCMajorScale = polyPresetNote (fh28Cv 1)
   [ { note: 60 }, { note: 62 }, { note: 64 }, { note: 65 }
   , { note: 67 }, { note: 69 }, { note: 71 }, { note: 72 }
   ]

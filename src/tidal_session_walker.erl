@@ -177,6 +177,11 @@ event_to_line({registerPolySignal,
                #{alias := A, family := F}}) ->
     {true,
      iolist_to_binary([<<"polysignal\t">>, A, <<"\t">>, F])};
+event_to_line({registerVirtualPolySignal,
+               #{alias := A, family := F, busPrefix := P}}) ->
+    {true,
+     iolist_to_binary([<<"vpolysignal\t">>, A, <<"\t">>, F,
+                       <<"\t">>, P])};
 event_to_line({registerGrids,
                #{alias := A, deviceAlias := D, channel := Ch}}) ->
     {true,
@@ -578,6 +583,42 @@ apply_event({registerPolySignal,
                 "session_walker: polysignal ~s (~s) daemon error: ~p~n",
                 [A, F, Reason]),
             bump(polySignalErrors, Acc)
+    end;
+
+%% A virtual polysignal — runs entirely in BEAM, no fh2-daemon
+%% round-trip.  Start (or live-update) a virtual_polysignal_voice
+%% under virtual_polysignal_voice_sup.  Same-alias re-fire swaps the
+%% PolySignal value in place; cycle phase is preserved across edits.
+apply_event({registerVirtualPolySignal,
+             #{ alias           := A
+              , busPrefix       := Prefix
+              , family          := F
+              , polySignalValue := PV
+              }}, Acc) ->
+    VoiceConfig = #{
+        bus_prefix => Prefix,
+        family     => F,
+        polysig    => PV
+    },
+    AliasAtom = binary_to_atom(A, utf8),
+    case virtual_polysignal_voice_sup:lookup_voice(AliasAtom) of
+        undefined ->
+            case virtual_polysignal_voice_sup:start_voice(AliasAtom, VoiceConfig) of
+                {ok, _Pid} ->
+                    tidal_log:info(
+                      "virtual polysignal ~s (~s) started, prefix=~s~n",
+                      [A, F, Prefix]),
+                    bump(virtualPolySignals, Acc);
+                {error, Reason} ->
+                    tidal_log:err(
+                      "virtual polysignal ~s (~s): start failed: ~p~n",
+                      [A, F, Reason]),
+                    bump(virtualPolySignalErrors, Acc)
+            end;
+        _Pid ->
+            virtual_polysignal_voice:set_config(AliasAtom,
+                #{polysig => PV}),
+            bump(virtualPolySignals, Acc)
     end;
 
 %% A claim-error event surfaces a Phase-1 reservation-validation
