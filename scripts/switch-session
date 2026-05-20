@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# Switch the active Calypso session to one of the templates in src/Sessions/.
+#
+# Usage:
+#   ./scripts/switch-session <name>
+#
+# Where <name> is one of: Fugue, Grids, Rene, ZR, Polysignals, Full
+# (case-insensitive — we capitalise the first letter).
+#
+# What it does: copies src/Sessions/<Name>.purs over
+# src/Calypso/Generated/Session.purs, rewriting the module declaration
+# from `module Sessions.<Name>` to `module Calypso.Generated.Session`.
+# Also wipes Calypso/Voices/*.purs (auto-generated arm stubs that pin
+# to the previous session's parts).
+#
+# WARNING: if Calypso is running, its in-memory `module.source` buffer
+# still holds the previous session.  The next fire-typeful from
+# Calypso will overwrite this script's edit with the stale buffer.
+# To avoid that: either (a) refresh Calypso in the browser to re-read
+# disk after running this, (b) restart the Calypso server, or
+# (c) use the in-app session picker (Phase 2, not yet built) which
+# routes through Calypso's POST /session-source endpoint instead of
+# stomping disk.
+#
+# After switching, fire-typeful in Calypso to make the BEAM walk the
+# new session and register its machines / parts.
+
+set -euo pipefail
+
+if [[ $# -ne 1 ]]; then
+  echo "usage: $0 <name>" >&2
+  echo "  available: $(ls src/Sessions/*.purs | xargs -n1 basename | sed 's/\.purs$//' | tr '\n' ' ')" >&2
+  exit 2
+fi
+
+# Capitalise: "grids" → "Grids", "ZR" stays "ZR", "FuGue" → "Fugue".
+name_lower="$(echo "$1" | tr '[:upper:]' '[:lower:]')"
+first="$(echo "${name_lower:0:1}" | tr '[:lower:]' '[:upper:]')"
+rest="${name_lower:1}"
+name="${first}${rest}"
+
+# Special-case all-caps acronyms.
+case "${name_lower}" in
+  zr) name="ZR" ;;
+esac
+
+src="src/Sessions/${name}.purs"
+dst="src/Calypso/Generated/Session.purs"
+
+if [[ ! -f "$src" ]]; then
+  echo "no such session: $src" >&2
+  echo "available: $(ls src/Sessions/*.purs | xargs -n1 basename | sed 's/\.purs$//' | tr '\n' ' ')" >&2
+  exit 2
+fi
+
+sed "s/^module Sessions\\.${name}/module Calypso.Generated.Session/" "$src" > "$dst"
+
+# Wipe auto-generated voice wrappers — they pin to specific arm targets
+# (bass1A, qd1B, etc.) from the previous session and won't compile
+# against the new one.  Calypso regenerates them on next fire-typeful as
+# the user arms cells in the new session.
+voices_dir="src/Calypso/Voices"
+if [[ -d "$voices_dir" ]]; then
+  rm -f "$voices_dir"/*.purs
+fi
+
+echo "switched active session: $name"
+echo "wrote: $dst"
+echo "cleared: $voices_dir/*.purs (Calypso regenerates on arm)"
+echo "next: fire-typeful in Calypso to load the new bindings."
