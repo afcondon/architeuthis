@@ -16,6 +16,17 @@
 -- | polysignals don't produce any output — but the session still
 -- | compiles and the walker still processes them.
 -- |
+-- | Bank addressing: BankCv N is the Nth FHX-8CV expander (0-based,
+-- | so the rig's 4 CV expanders are cv0..cv3 if all are connected).
+-- | BankGt N is the Nth FHX-8GT expander, independent index — `gt0`
+-- | is the FIRST gate expander regardless of how many 8CVs are
+-- | between it and the FH-2.  Andrew's rig has 1 GT expander → `gt0`.
+-- |
+-- | The cv1/cv2/cv5 banks below require the corresponding 8CV
+-- | expanders to be physically present in the chain; without them,
+-- | the SysEx applies cleanly to the FH-2's config cache but no
+-- | voltage shows up at any jack.
+-- |
 -- | To activate: copy this file's content over
 -- | `src/Calypso/Generated/Session.purs` (with module rewritten to
 -- | `Calypso.Generated.Session`), then fire-typeful.
@@ -50,8 +61,12 @@ studioTestLfo = polyLfo (BankCv 5)
 -- at related-but-different tempos for polyrhythm.
 -- ---------------------------------------------------------------------------
 
+-- gt0 = first (and only) FHX-8GT expander on Andrew's rig.  The
+-- BankGt index is 0-based per FHX-8GT position in the chain; cv1..N
+-- numbering doesn't shift it.  Previous Studio.purs had this on gt1
+-- (a phantom second expander) and silently did nothing.
 studioTestClock :: PolySignal "studioTestClock"
-studioTestClock = polyClock (BankGt 1)
+studioTestClock = polyClock (BankGt 0)
   [ { base: ClockSixteenth,  multiplier: 1, pulseWidth: 0, phase: 0 }
   , { base: ClockSixteenth,  multiplier: 2, pulseWidth: 0, phase: 0 }
   , { base: ClockEighth,     multiplier: 1, pulseWidth: 0, phase: 0 }

@@ -109,7 +109,7 @@ studioTestLfo = polyLfo (BankCv 5)
   (Just Bipolar5V)
 
 studioTestClock :: PolySignal "studioTestClock"
-studioTestClock = polyClock (BankGt 1)
+studioTestClock = polyClock (BankGt 0)
   [ { base: ClockSixteenth,  multiplier: 1, pulseWidth: 0, phase: 0 }
   , { base: ClockSixteenth,  multiplier: 2, pulseWidth: 0, phase: 0 }
   , { base: ClockEighth,     multiplier: 1, pulseWidth: 0, phase: 0 }
