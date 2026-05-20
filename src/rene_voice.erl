@@ -188,24 +188,37 @@ emit_step(S, ControlPairs, CurrentCycle, CycleDurMs, NowUs, State) ->
     %% When cfg is undefined (registration without a config) the engine
     %% keeps its registration-time arrays.
     Snap = case State#st.cfg of
-        undefined -> #{stepYNow => false};
+        undefined -> #{stepYNow => false, advance => true};
         Cfg ->
             'tidal_rene@ps':evaluateParamsAt(Cfg, ControlPairs, StepCycle)
     end,
-    StepYNow = maps:get(stepYNow, Snap, false),
-    Engine0  = refresh_from_snapshot(State#st.engine, Snap),
-    Engine1 = case StepYNow of
-        true  -> rene_engine:step_y(Engine0);
-        false -> Engine0
-    end,
-    Engine2 = rene_engine:step_x(Engine1),
-    case rene_engine:current_event(Engine2) of
-        {emit, Note, _Idx} ->
-            emit_note(Note, WallUs, State);
-        {silent_step, _Idx} ->
-            ok
-    end,
-    State#st{engine = Engine2}.
+    %% The advance gate decides whether this micro-tick steps the
+    %% engine at all.  When false, we still consume the step (so
+    %% last_step bookkeeping in the caller works) but produce no
+    %% X/Y advance and no emit.  This is the seam through which
+    %% irregular clock sources (a Tidal euclidean rhythm, a MIDI
+    %% trigger pattern, a controller gate) drive René — and the
+    %% same shape applies to every step-sequencer-flavoured vmod.
+    Advance = maps:get(advance, Snap, true),
+    case Advance of
+        false ->
+            State;
+        true ->
+            StepYNow = maps:get(stepYNow, Snap, false),
+            Engine0  = refresh_from_snapshot(State#st.engine, Snap),
+            Engine1 = case StepYNow of
+                true  -> rene_engine:step_y(Engine0);
+                false -> Engine0
+            end,
+            Engine2 = rene_engine:step_x(Engine1),
+            case rene_engine:current_event(Engine2) of
+                {emit, Note, _Idx} ->
+                    emit_note(Note, WallUs, State);
+                {silent_step, _Idx} ->
+                    ok
+            end,
+            State#st{engine = Engine2}
+    end.
 
 %% Pull notes + skip arrays out of the snapshot (if present) and
 %% refresh the engine's stored copies before this step's traversal

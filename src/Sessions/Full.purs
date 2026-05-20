@@ -60,6 +60,7 @@ studioRene = reneWith
       { stepYNow: liveBoolOr false "rene.stepY"
       , notes:    liveIntArrayOr reneDefaultNotes "rene.note"
       , skip:     liveBoolArrayOr (replicate16 false) "rene.skip"
+      , advance:  pure true
       }
   }
   where

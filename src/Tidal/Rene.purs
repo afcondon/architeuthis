@@ -90,6 +90,14 @@ type ReneConfig =
   { stepYNow :: Pattern Boolean
   , notes    :: Array (Pattern Int)
   , skip     :: Array (Pattern Boolean)
+  -- | Advance gate.  Sampled per micro-tick; when false the engine
+  -- | does NOT step (no X-advance, no Y-advance, no emit).  Default
+  -- | `pure true` preserves "advance every tick" behaviour.  Drive
+  -- | this with a Tidal pattern to get irregular clocking — e.g.
+  -- | `mini "1 0 0 1 0 1 0 0"` gives a 3-against-8 euclidean tempo.
+  -- | The same gate-pattern shape will eventually apply to Grids /
+  -- | Repetitor / Steppy-style siblings.
+  , advance  :: Pattern Boolean
   }
 
 -- | Snapshot returned by `evaluateParamsAt`.  Carries the resolved
@@ -99,6 +107,7 @@ type ReneSnapshot =
   { stepYNow :: Boolean
   , notes    :: Array Int
   , skip     :: Array Boolean
+  , advance  :: Boolean
   }
 
 -- | Default config: Y-clock fires once per 4-step cycle (so
@@ -112,6 +121,7 @@ reneConfig =
   { stepYNow: pure false
   , notes:    Array.replicate 16 (pure 60)
   , skip:     Array.replicate 16 (pure false)
+  , advance:  pure true
   }
 
 -- | Helper: build a 16-element array of a single repeated value.
@@ -202,6 +212,7 @@ evaluateParamsAt cfg controlPairs pos =
   in { stepYNow: sampleBoolAt controls false cfg.stepYNow pos
      , notes:    map sampleN cfg.notes
      , skip:     map sampleS cfg.skip
+     , advance:  sampleBoolAt controls true cfg.advance pos
      }
 
 sampleBoolAt :: ControlMap -> Boolean -> Pattern Boolean -> Number -> Boolean
