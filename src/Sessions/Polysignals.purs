@@ -36,14 +36,15 @@ import Calypso.Prelude
 import Studio (iac)
 
 -- ---------------------------------------------------------------------------
--- LFO bank on cv5 — eight LFOs at mixed waveforms and ratios.
--- Bipolar5V envelope.  Wire any of cv5's eight jacks to a modulation
--- destination (filter cutoff, VCA, etc) — each gets its own LFO at
--- the declared ratio relative to Link tempo.
+-- LFO bank on main — eight LFOs at mixed waveforms and ratios on the
+-- FH-2's own front-panel jacks (no 8CV expander needed).  Bipolar5V
+-- envelope.  Wire any of the 8 jacks to a modulation destination
+-- (filter cutoff, VCA, etc) — each gets its own LFO at the declared
+-- ratio relative to Link tempo.
 -- ---------------------------------------------------------------------------
 
 studioTestLfo :: PolySignal "studioTestLfo"
-studioTestLfo = polyLfo (BankCv 5)
+studioTestLfo = polyLfo BankMain
   [ { ratio: 1.0,  shape: LfoTri }
   , { ratio: 0.5,  shape: LfoSaw }
   , { ratio: 2.0,  shape: LfoSin }
