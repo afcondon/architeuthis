@@ -44,27 +44,27 @@ studioBalistes = balistes iac 12 $ balistesConfig
   , randomness = liveIntOr 32  "balistes.randomness"
   }
 
-studioRene :: Rene "studioRene"
-studioRene = reneWith
+studioOdonus :: Odonus "studioOdonus"
+studioOdonus = odonusWith
   { device:  iac
   , channel: 11
   , vel:     100
   , durMs:   200
   , stepsPerCycle: 4
-  , notes:   reneDefaultNotes
+  , notes:   odonusDefaultNotes
   , skip:    replicate16 false
   , gate:    replicate16 true
   , glide:   replicate16 false
   , navMode: NavCartesian
   , config:
-      { stepYNow: liveBoolOr false "rene.stepY"
-      , notes:    liveIntArrayOr reneDefaultNotes "rene.note"
-      , skip:     liveBoolArrayOr (replicate16 false) "rene.skip"
+      { stepYNow: liveBoolOr false "odonus.stepY"
+      , notes:    liveIntArrayOr odonusDefaultNotes "odonus.note"
+      , skip:     liveBoolArrayOr (replicate16 false) "odonus.skip"
       , advance:  pure true
       }
   }
   where
-    reneDefaultNotes =
+    odonusDefaultNotes =
       [ 36, 37, 38, 39
       , 40, 41, 42, 43
       , 44, 45, 46, 47

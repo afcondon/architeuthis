@@ -1,6 +1,6 @@
 %% @doc Virtual polysignal voice supervisor — `simple_one_for_one`
 %% for virtual_polysignal_voice gen_servers.  Sibling of
-%% balistes_voice_sup / rene_voice_sup / repetitor_voice_sup.  Children
+%% balistes_voice_sup / odonus_voice_sup / repetitor_voice_sup.  Children
 %% start dynamically when the session walker emits
 %% `RegisterVirtualPolySignal` events.
 %%

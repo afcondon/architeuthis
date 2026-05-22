@@ -35,7 +35,7 @@
 %%
 %% Skip-aware traversal walks at most 16 cells looking for a non-skip
 %% landing; if all 16 are skipped, the position stays put.
--module(rene_engine).
+-module(odonus_engine).
 
 -export([
     new/1,

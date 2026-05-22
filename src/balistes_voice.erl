@@ -54,7 +54,7 @@
     %% Output socket — shared by all calls from this voice.
     midi_socket    :: gen_udp:socket() | undefined,
     %% F-LAT — device latency compensation in microseconds.  See
-    %% rene_voice.erl for rationale and tools/timing-data/phase-4-diagnostic-f1/.
+    %% odonus_voice.erl for rationale and tools/timing-data/phase-4-diagnostic-f1/.
     latency_us     :: integer(),
     %% F1 — cache the per-tick ControlMap; rebuild only when the
     %% control-bus version counter advances.
@@ -170,7 +170,7 @@ process_window(Window, State) ->
     ControlPairs = maps:get(controlPairs, Window, array:from_list([])),
     ControlVersion = maps:get(controlVersion, Window, -1),
     %% F1 — rebuild ControlMap only on bus version change.  See
-    %% rene_voice for the rationale and benchmark.
+    %% odonus_voice for the rationale and benchmark.
     {Controls, State1} =
         case ControlVersion =:= State#st.control_version
              andalso State#st.cached_controls =/= undefined of

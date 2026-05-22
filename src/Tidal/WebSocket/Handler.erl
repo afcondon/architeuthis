@@ -220,23 +220,23 @@ try_parse_prefixed(<<"get-studio">>) ->
     {get_studio};
 try_parse_prefixed(<<"get-studio ", _/binary>>) ->
     {get_studio};
-try_parse_prefixed(<<"dump-rene-samples ", Rest/binary>>) ->
-    %% dump-rene-samples <voice-name> — return per-step timing
-    %% samples collected by an instrumented rene_voice gen_server.
+try_parse_prefixed(<<"dump-odonus-samples ", Rest/binary>>) ->
+    %% dump-odonus-samples <voice-name> — return per-step timing
+    %% samples collected by an instrumented odonus_voice gen_server.
     %% Used for the timing-jitter diagnostic
     %% ([[project_timing_jitter_investigation_queued]]).  Reply is
     %% CSV: one line per step with NowUs,TRecv,TEvalDone,TRefreshDone,
     %% TEmitDone,WallUs.
     case trim_binary(Rest) of
         <<>> -> none;
-        Name -> {dump_rene_samples, Name}
+        Name -> {dump_odonus_samples, Name}
     end;
-try_parse_prefixed(<<"clear-rene-samples ", Rest/binary>>) ->
-    %% clear-rene-samples <voice-name> — wipe the timing-sample
+try_parse_prefixed(<<"clear-odonus-samples ", Rest/binary>>) ->
+    %% clear-odonus-samples <voice-name> — wipe the timing-sample
     %% buffer so the next capture starts fresh.
     case trim_binary(Rest) of
         <<>> -> none;
-        Name -> {clear_rene_samples, Name}
+        Name -> {clear_odonus_samples, Name}
     end;
 try_parse_prefixed(<<"dump-anchor-log">>) ->
     %% dump-anchor-log — return the diagnostic event ring buffer
@@ -1027,13 +1027,13 @@ handle_pattern_message(Text, State) ->
                              <<"ERR reload-baseline: ", ErrBin/binary>>},
                     {reply, Reply, State}
             end;
-        {dump_rene_samples, VoiceName} ->
+        {dump_odonus_samples, VoiceName} ->
             %% Pull the timing-sample buffer out of an instrumented
-            %% rene_voice gen_server and format as CSV.  See
+            %% odonus_voice gen_server and format as CSV.  See
             %% [[project_timing_jitter_investigation_queued]] for the
             %% analysis pipeline downstream.
             try
-                Samples = rene_voice:get_samples(VoiceName),
+                Samples = odonus_voice:get_samples(VoiceName),
                 Rows = [io_lib:format(
                           "~p,~B,~B,~B,~B,~B~n",
                           [NowUs, TRecv, TEvalDone, TRefreshDone,
@@ -1044,26 +1044,26 @@ handle_pattern_message(Text, State) ->
                 Header = <<"NowUs,TRecv,TEvalDone,TRefreshDone,TEmitDone,WallUs\n">>,
                 Body = iolist_to_binary([Header | Rows]),
                 {reply,
-                 {text, <<"OK: dump-rene-samples ", VoiceName/binary, " ",
+                 {text, <<"OK: dump-odonus-samples ", VoiceName/binary, " ",
                           (integer_to_binary(length(Samples)))/binary,
                           " rows\n", Body/binary>>},
                  State}
             catch _:Err ->
                 ErrBin = list_to_binary(io_lib:format("~p", [Err])),
                 {reply,
-                 {text, <<"ERR dump-rene-samples: ", ErrBin/binary>>},
+                 {text, <<"ERR dump-odonus-samples: ", ErrBin/binary>>},
                  State}
             end;
-        {clear_rene_samples, VoiceName} ->
+        {clear_odonus_samples, VoiceName} ->
             try
-                rene_voice:clear_samples(VoiceName),
+                odonus_voice:clear_samples(VoiceName),
                 {reply,
-                 {text, <<"OK: clear-rene-samples ", VoiceName/binary>>},
+                 {text, <<"OK: clear-odonus-samples ", VoiceName/binary>>},
                  State}
             catch _:Err ->
                 ErrBin = list_to_binary(io_lib:format("~p", [Err])),
                 {reply,
-                 {text, <<"ERR clear-rene-samples: ", ErrBin/binary>>},
+                 {text, <<"ERR clear-odonus-samples: ", ErrBin/binary>>},
                  State}
             end;
         {dump_anchor_log} ->

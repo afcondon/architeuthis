@@ -196,7 +196,7 @@ data RegistrationEvent
   -- | same claim semantics on (device, channel).  `navMode` is a
   -- | String classifier ("cartesian" / "forward" / "reverse") so
   -- | the Erlang side can pattern-match without re-decoding the ADT.
-  | RegisterRene
+  | RegisterOdonus
       { alias :: String
       , deviceAlias :: String
       , deviceName :: String
@@ -267,7 +267,7 @@ walkBaseline = do
     -- DrumKit — both are autonomous emitters on (device, channel).
     balistesEvents = Array.mapMaybe (pickBalistes deviceAliases) allPairs
     repetitorEvents = Array.mapMaybe (pickRepetitor deviceAliases) allPairs
-    reneEvents = Array.mapMaybe (pickRene deviceAliases) allPairs
+    odonusEvents = Array.mapMaybe (pickOdonus deviceAliases) allPairs
     -- Phase 1: collect implicit (device, channel) claims from
     -- registration events, group by (device, channel), report any
     -- duplicates as `ReportClaimError` events.  Errors are emitted
@@ -275,11 +275,11 @@ walkBaseline = do
     -- of the binding installs they conflict with.
     claims = Array.mapMaybe registrationToClaim
                (instrEvents <> kitEvents <> balistesEvents
-                <> repetitorEvents <> reneEvents)
+                <> repetitorEvents <> odonusEvents)
     claimErrorEvents = Array.mapMaybe claimErrorToEvent (validateMidiClaims claims)
   pure (claimErrorEvents <> devEvents <> routerEvents
         <> instrEvents <> kitEvents <> polySigEvents
-        <> balistesEvents <> repetitorEvents <> reneEvents)
+        <> balistesEvents <> repetitorEvents <> odonusEvents)
 
 registrationToClaim :: RegistrationEvent -> Maybe MidiClaim
 registrationToClaim = case _ of
@@ -308,7 +308,7 @@ registrationToClaim = case _ of
     , channel: r.channel
     , ownerKind: OwnDrumKit  -- Repetitor = autonomous drumkit-style emitter.
     }
-  RegisterRene r -> Just
+  RegisterOdonus r -> Just
     { owner: r.alias
     , deviceAlias: r.deviceAlias
     , channel: r.channel
@@ -594,19 +594,19 @@ pickRepetitor deviceAliases { name: alias, value } = do
 -- René classifier (machine Phase 3 — 2026-05-19)
 -- ---------------------------------------------------------------------------
 
-pickRene
+pickOdonus
   :: Map (Tuple String Int) String
   -> { name :: String, value :: Foreign }
   -> Maybe RegistrationEvent
-pickRene deviceAliases { name: alias, value } = do
+pickOdonus deviceAliases { name: alias, value } = do
   tag <- constructorTag value
-  if tag /= "reneBinding" then Nothing
+  if tag /= "odonusBinding" then Nothing
   else do
-    fields <- reneBindingFields value
+    fields <- odonusBindingFields value
     let deviceAlias = fromMaybe ""
           (Map.lookup (Tuple fields.deviceName fields.deviceLatencyMs)
                        deviceAliases)
-    Just $ RegisterRene
+    Just $ RegisterOdonus
       { alias
       , deviceAlias
       , deviceName: fields.deviceName
@@ -836,11 +836,11 @@ foreign import repetitorBindingFields
        , config :: Foreign
        }
 
--- | Decode the inner record of a `ReneBinding` value.  The four
+-- | Decode the inner record of a `OdonusBinding` value.  The four
 -- | 16-element arrays land here as PureScript `Array a` values
 -- | (Erlang `array` module on the wire — converted to lists in the
--- | apply_event handler before being handed to rene_engine).
-foreign import reneBindingFields
+-- | apply_event handler before being handed to odonus_engine).
+foreign import odonusBindingFields
   :: Foreign
   -> Maybe
        { deviceName :: String

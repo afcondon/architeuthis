@@ -14,7 +14,7 @@
 -- |   * `MiniNotation a` (in `Tidal.MiniNotation`)
 -- |   * `Vetula` (future, in `Tidal.Vetula`)
 -- |   * `Balistes` config (in `Tidal.Balistes`, renamed eventually)
--- |   * `Odonus` config (in `Tidal.Rene`, renamed eventually)
+-- |   * `Odonus` config (in `Tidal.Odonus`, renamed eventually)
 -- |   * `Sufflamen` config (in `Tidal.Polysignal`, renamed eventually)
 -- |
 -- | The functional dependency `n -> a` ensures the substrate can

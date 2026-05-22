@@ -45,34 +45,34 @@ studioRhythm = polyEuclid (Virtual "rhythmBank")
 
 -- ---------------------------------------------------------------------------
 -- The René voice — reads rhythmBank.0 as its advance gate.
--- Same notes layout as Sessions.Rene (15 Cs + 1 D) so we can hear
+-- Same notes layout as Sessions.Odonus (15 Cs + 1 D) so we can hear
 -- the engine traversal directly, but now clocked by the
 -- polysignal instead of by a self-contained Tidal pattern.
 -- Swap "rhythmBank.0" → "rhythmBank.1" / .2 / etc. to listen to
 -- different euclidean rhythms from the same polysignal source.
 -- ---------------------------------------------------------------------------
 
-studioRene :: Rene "studioRene"
-studioRene = reneWith
+studioOdonus :: Odonus "studioOdonus"
+studioOdonus = odonusWith
   { device:  iac
   , channel: 11
   , vel:     100
   , durMs:   200
   , stepsPerCycle: 16
-  , notes:   reneDefaultNotes
+  , notes:   odonusDefaultNotes
   , skip:    replicate16 false
   , gate:    replicate16 true
   , glide:   replicate16 false
   , navMode: NavForward
   , config:
-      { stepYNow: liveBoolOr false "rene.stepY"
-      , notes:    liveIntArrayOr reneDefaultNotes "rene.note"
-      , skip:     liveBoolArrayOr (replicate16 false) "rene.skip"
+      { stepYNow: liveBoolOr false "odonus.stepY"
+      , notes:    liveIntArrayOr odonusDefaultNotes "odonus.note"
+      , skip:     liveBoolArrayOr (replicate16 false) "odonus.skip"
       , advance:  gateFromBus "rhythmBank.0"
       }
   }
   where
-    reneDefaultNotes =
+    odonusDefaultNotes =
       [ 60, 60, 60, 60
       , 60, 60, 60, 60
       , 60, 60, 60, 60

@@ -1,6 +1,6 @@
-%% @doc René voice supervisor — `simple_one_for_one` for rene_voice
+%% @doc René voice supervisor — `simple_one_for_one` for odonus_voice
 %% gen_servers.  Mirror of balistes_voice_sup / repetitor_voice_sup.
--module(rene_voice_sup).
+-module(odonus_voice_sup).
 -behaviour(supervisor).
 
 -export([start_link/0,
@@ -32,7 +32,7 @@ which_voices() ->
             is_pid(Pid)].
 
 lookup_voice(Name) when is_atom(Name) ->
-    whereis(rene_voice:registered_name(Name));
+    whereis(odonus_voice:registered_name(Name));
 lookup_voice(Name) when is_binary(Name) ->
     lookup_voice(binary_to_atom(Name, utf8)).
 
@@ -40,10 +40,10 @@ init([]) ->
     SupFlags = #{strategy => simple_one_for_one,
                  intensity => 5,
                  period => 30},
-    ChildSpec = #{id => rene_voice,
-                  start => {rene_voice, start_link, []},
+    ChildSpec = #{id => odonus_voice,
+                  start => {odonus_voice, start_link, []},
                   restart => temporary,
                   shutdown => 2000,
                   type => worker,
-                  modules => [rene_voice]},
+                  modules => [odonus_voice]},
     {ok, {SupFlags, [ChildSpec]}}.

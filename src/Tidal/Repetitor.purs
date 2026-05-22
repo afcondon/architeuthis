@@ -182,7 +182,7 @@ evaluateParamsAt cfg controlPairs pos =
 -- | F1 cache-friendly evaluator: takes a pre-built `ControlMap` so the
 -- | voice gen_server can hold it across ticks and only rebuild when the
 -- | control bus's version counter changes.  Mirror of
--- | `Tidal.Rene.evaluateParamsAtControls`.
+-- | `Tidal.Odonus.evaluateParamsAtControls`.
 evaluateParamsAtControls
   :: RepetitorConfig
   -> ControlMap

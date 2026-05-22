@@ -200,11 +200,11 @@ event_to_line({registerRepetitor,
      iolist_to_binary([<<"repetitor\t">>, A, <<"\t">>, D, <<"\t">>,
                        integer_to_binary(Ch), <<"\t">>, Lib,
                        <<"\t">>, Slug])};
-event_to_line({registerRene,
+event_to_line({registerOdonus,
                #{alias := A, deviceAlias := D, channel := Ch,
                  navMode := Nav}}) ->
     {true,
-     iolist_to_binary([<<"rene\t">>, A, <<"\t">>, D, <<"\t">>,
+     iolist_to_binary([<<"odonus\t">>, A, <<"\t">>, D, <<"\t">>,
                        integer_to_binary(Ch), <<"\t">>, Nav])};
 event_to_line({reportClaimError,
                #{deviceAlias := D, channel := Ch,
@@ -227,7 +227,7 @@ event_to_line(_) ->
 %% A device event registers the MIDI port + latency with the
 %% dispatcher under the user-given alias.  We also stash the
 %% alias→latencyMs mapping in the accumulator so subsequent vmod
-%% registrations (rene/balistes/repetitor) can pull device latency into
+%% registrations (odonus/balistes/repetitor) can pull device latency into
 %% their VoiceConfig — the F-LAT fix mirrors what
 %% `Tidal.Dispatcher` does for Tidal-pattern emits
 %% (`adjustedUnixUs = wallUs - dev.latencyMs * 1000`).
@@ -516,7 +516,7 @@ apply_event({registerRepetitor,
 %% notes + modal arrays + autonomous traversal.  The four arrays
 %% arrive as PureScript Array (Erlang `array` module) — convert to
 %% lists at this boundary before feeding the engine.
-apply_event({registerRene,
+apply_event({registerOdonus,
              #{ alias         := A
               , deviceAlias   := D
               , deviceName    := PortName
@@ -552,24 +552,24 @@ apply_event({registerRene,
         latency_ms       => LatencyMs
     },
     AliasAtom = binary_to_atom(A, utf8),
-    case rene_voice_sup:lookup_voice(AliasAtom) of
+    case odonus_voice_sup:lookup_voice(AliasAtom) of
         undefined ->
-            case rene_voice_sup:start_voice(AliasAtom, VoiceConfig) of
+            case odonus_voice_sup:start_voice(AliasAtom, VoiceConfig) of
                 {ok, _Pid} ->
                     tidal_log:info(
-                      "rene voice ~s started on ~s ch~B (~s)~n",
+                      "odonus voice ~s started on ~s ch~B (~s)~n",
                       [A, PortName, Ch, NavBin]),
-                    bump(rene, Acc);
+                    bump(odonus, Acc);
                 {error, Reason} ->
-                    tidal_log:err("rene voice ~s: start failed: ~p~n",
+                    tidal_log:err("odonus voice ~s: start failed: ~p~n",
                                   [A, Reason]),
-                    bump(reneErrors, Acc)
+                    bump(odonusErrors, Acc)
             end;
         _Pid ->
-            rene_voice:set_config(AliasAtom,
+            odonus_voice:set_config(AliasAtom,
                 #{notes => Notes, skip => Skip, gate => Gate, glide => Glide,
                   nav_mode => NavAtom, cfg => Cfg}),
-            bump(rene, Acc)
+            bump(odonus, Acc)
     end;
 
 %% Slab C step 1 (2026-05-18): an autonomous FH-2 polysignal declared

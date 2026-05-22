@@ -61,7 +61,7 @@
     %% Output socket.
     midi_socket    :: gen_udp:socket() | undefined,
     %% F-LAT — device latency compensation in microseconds.  See
-    %% rene_voice.erl + tools/timing-data/phase-4-diagnostic-f1/.
+    %% odonus_voice.erl + tools/timing-data/phase-4-diagnostic-f1/.
     latency_us     :: integer(),
     %% F1 — cache the per-tick ControlMap; rebuild only on bus version bump.
     control_version :: integer(),

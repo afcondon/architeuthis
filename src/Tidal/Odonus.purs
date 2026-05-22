@@ -1,4 +1,4 @@
--- | Tidal.Rene — typed Session-level binding for the BEAM-native
+-- | Tidal.Odonus — typed Session-level binding for the BEAM-native
 -- | Make-Noise-René-inspired machine.  Third member of the machine
 -- | family per [[project_machines_naming]], after Balistes (autonomous,
 -- | internal content) and Repetitor (autonomous, internal corpus).
@@ -12,8 +12,8 @@
 -- |
 -- | A typed Session-level binding looks like:
 -- |
--- |     seq :: Rene "seq"
--- |     seq = reneWith
+-- |     seq :: Odonus "seq"
+-- |     seq = odonusWith
 -- |       { device: iac
 -- |       , channel: 11
 -- |       , vel: 100
@@ -33,14 +33,14 @@
 -- | engine fires Y-step BEFORE that step's X-step.  Skip-aware
 -- | traversal hops over `skip` cells without firing; gate-off cells
 -- | are landed on but silent.
-module Tidal.Rene
-  ( Rene(..)
-  , ReneConfig
-  , ReneSnapshot
+module Tidal.Odonus
+  ( Odonus(..)
+  , OdonusConfig
+  , OdonusSnapshot
   , NavMode(..)
-  , rene
-  , reneWith
-  , reneConfig
+  , odonus
+  , odonusWith
+  , odonusConfig
   , replicate16
   , evaluateParamsAt
   , evaluateParamsAtControls
@@ -72,7 +72,7 @@ import Data.Rational (fromInt)
 data NavMode = NavCartesian | NavForward | NavReverse
 
 -- ---------------------------------------------------------------------------
--- ReneConfig — patterned slots queried per step
+-- OdonusConfig — patterned slots queried per step
 -- ---------------------------------------------------------------------------
 
 -- | Per-step patterned configuration.  The Y-clock (`stepYNow`) plus
@@ -88,7 +88,7 @@ data NavMode = NavCartesian | NavForward | NavReverse
 -- | Future extensions: dynamic quantise scale (`Pattern Scale`),
 -- | per-cell `Pattern Int` velocity, per-cell gate weight, running
 -- | nav-mode (`Pattern NavMode`).  Same shape; add fields here.
-type ReneConfig =
+type OdonusConfig =
   { stepYNow :: Pattern Boolean
   , notes    :: Array (Pattern Int)
   , skip     :: Array (Pattern Boolean)
@@ -105,7 +105,7 @@ type ReneConfig =
 -- | Snapshot returned by `evaluateParamsAt`.  Carries the resolved
 -- | per-cell arrays so the voice can refresh the engine's traversal
 -- | state before step_x / step_y / current_event run.
-type ReneSnapshot =
+type OdonusSnapshot =
   { stepYNow :: Boolean
   , notes    :: Array Int
   , skip     :: Array Boolean
@@ -118,8 +118,8 @@ type ReneSnapshot =
 -- | Override `stepYNow` to `pure false` to lock to row 0; override
 -- | notes/skip with `liveIntArrayOr` / `liveBoolArrayOr` to make
 -- | them controller-driven.
-reneConfig :: ReneConfig
-reneConfig =
+odonusConfig :: OdonusConfig
+odonusConfig =
   { stepYNow: pure false
   , notes:    Array.replicate 16 (pure 60)
   , skip:     Array.replicate 16 (pure false)
@@ -138,8 +138,8 @@ replicate16 v = Array.replicate 16 v
 
 -- | A typed René voice declared at the Session level.  16-cell
 -- | content + 4 modal arrays + nav mode + patterned Y-clock.
-data Rene (s :: Symbol)
-  = ReneBinding
+data Odonus (s :: Symbol)
+  = OdonusBinding
       { device        :: MidiDevice
       , channel       :: Int
       , vel           :: Int
@@ -150,7 +150,7 @@ data Rene (s :: Symbol)
       , gate          :: Array Boolean
       , glide         :: Array Boolean
       , navMode       :: NavMode
-      , config        :: ReneConfig
+      , config        :: OdonusConfig
       }
 
 -- ---------------------------------------------------------------------------
@@ -161,13 +161,13 @@ data Rene (s :: Symbol)
 -- | 200 ms, 4 steps per cycle, Cartesian navigation, all gates open,
 -- | nothing skipped, no glides, Y-clock = `pure false` (single-row
 -- | loop until you override).  User supplies 16 notes.
-rene
+odonus
   :: forall s
    . MidiDevice
   -> Int          -- ^ MIDI channel 1..16
   -> Array Int    -- ^ 16 MIDI notes (padded/truncated to 16 on the engine side)
-  -> Rene s
-rene dev ch ns = ReneBinding
+  -> Odonus s
+odonus dev ch ns = OdonusBinding
   { device: dev
   , channel: ch
   , vel: 100
@@ -178,11 +178,11 @@ rene dev ch ns = ReneBinding
   , gate:  replicate16 true
   , glide: replicate16 false
   , navMode: NavCartesian
-  , config: reneConfig
+  , config: odonusConfig
   }
 
--- | Like `rene` but fully explicit.
-reneWith
+-- | Like `odonus` but fully explicit.
+odonusWith
   :: forall s
    . { device :: MidiDevice
      , channel :: Int
@@ -193,20 +193,20 @@ reneWith
      , gate :: Array Boolean
      , glide :: Array Boolean
      , navMode :: NavMode
-     , config :: ReneConfig
+     , config :: OdonusConfig
      }
-  -> Rene s
-reneWith = ReneBinding
+  -> Odonus s
+odonusWith = OdonusBinding
 
 -- ---------------------------------------------------------------------------
 -- Per-step parameter evaluation (called from Erlang)
 -- ---------------------------------------------------------------------------
 
 evaluateParamsAt
-  :: ReneConfig
+  :: OdonusConfig
   -> Array { name :: String, value :: Number }
   -> Number
-  -> ReneSnapshot
+  -> OdonusSnapshot
 evaluateParamsAt cfg controlPairs pos =
   evaluateParamsAtControls cfg (pairsToControlMap controlPairs) pos
 
@@ -216,10 +216,10 @@ evaluateParamsAt cfg controlPairs pos =
 -- | `tidal_control_bus`'s version counter changes (F1 — see the
 -- | timing investigation notes at `tools/timing-data/phase-4-diagnostic/`).
 evaluateParamsAtControls
-  :: ReneConfig
+  :: OdonusConfig
   -> ControlMap
   -> Number
-  -> ReneSnapshot
+  -> OdonusSnapshot
 evaluateParamsAtControls cfg controls pos =
   let sampleN p = sampleIntAt controls 60 p pos
       sampleS p = sampleBoolAt controls false p pos

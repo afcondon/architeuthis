@@ -95,7 +95,7 @@ module Calypso.Prelude
   -- Repetitor vmod (ZR-inspired, BEAM-native rhythm corpus + per-row offsets).
   , module Tidal.Repetitor
   -- René machine (Make-Noise-René-inspired Cartesian sequencer; user-content + autonomous traversal).
-  , module Tidal.Rene
+  , module Tidal.Odonus
   -- Maybe — re-exported for optional fields like PolySignal range.
   , module Data.Maybe
   ) where
@@ -157,14 +157,14 @@ import Tidal.Repetitor
   , repetitorWith
   , repetitorConfig
   )
-import Tidal.Rene
-  ( Rene(..)
-  , ReneConfig
-  , ReneSnapshot
+import Tidal.Odonus
+  ( Odonus(..)
+  , OdonusConfig
+  , OdonusSnapshot
   , NavMode(..)
-  , rene
-  , reneWith
-  , reneConfig
+  , odonus
+  , odonusWith
+  , odonusConfig
   , replicate16
   )
 

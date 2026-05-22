@@ -33,7 +33,7 @@
         , polyPresetNoteConfigFields/1
         , balistesBindingFields/1
         , repetitorBindingFields/1
-        , reneBindingFields/1
+        , odonusBindingFields/1
         ]).
 
 %% --------------------------------------------------------------------
@@ -365,10 +365,10 @@ repetitorBindingFields(_) ->
     {nothing}.
 
 %% --------------------------------------------------------------------
-%% reneBindingFields/1 — pure.
+%% odonusBindingFields/1 — pure.
 %%
 %% Encoding:
-%%   {reneBinding,
+%%   {odonusBinding,
 %%      #{device => {midiDevice, <<Name>>, Latency},
 %%        channel => Ch, vel => V, durMs => D,
 %%        stepsPerCycle => Sp,
@@ -383,7 +383,7 @@ repetitorBindingFields(_) ->
 %% PureScript Array (Erlang `array` module) — apply_event handler
 %% does array:to_list/1 at the engine seam.
 %% --------------------------------------------------------------------
-reneBindingFields({reneBinding,
+odonusBindingFields({odonusBinding,
                    #{device        := {midiDevice, DevName, DevLat},
                      channel       := Ch,
                      vel           := V,
@@ -410,7 +410,7 @@ reneBindingFields({reneBinding,
              glide           => Glide,
              navMode         => nav_mode_to_binary(NavTuple),
              config          => Cfg}};
-reneBindingFields(_) ->
+odonusBindingFields(_) ->
     {nothing}.
 
 nav_mode_to_binary({navCartesian}) -> <<"cartesian">>;

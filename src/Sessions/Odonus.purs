@@ -1,20 +1,20 @@
--- | Sessions.Rene — the René machine on its own.
+-- | Sessions.Odonus — the René machine on its own.
 -- |
 -- | Use case: tutorial / demo of the Make-Noise-René-inspired Cartesian
--- | sequencer.  studioRene is declared inline so this session is
+-- | sequencer.  studioOdonus is declared inline so this session is
 -- | self-contained.  The machine emits MIDI notes autonomously on
 -- | IAC ch11; no parts in `session.parts`.
 -- |
--- | Twister Bank-Rene (bank 1 — see
--- | `Calypso.Frontend.Controller.Bindings.twisterRene`) maps the 16
--- | knobs to `rene.note0` .. `rene.note15` over the drum-rack range
+-- | Twister Bank-Odonus (bank 1 — see
+-- | `Calypso.Frontend.Controller.Bindings.twisterOdonus`) maps the 16
+-- | knobs to `odonus.note0` .. `odonus.note15` over the drum-rack range
 -- | 36..51, so each knob retunes the cell at its 4×4 position.  The
 -- | engine reads a fresh notes array on every step.
 -- |
 -- | To activate: copy this file's content over
 -- | `src/Calypso/Generated/Session.purs` (with the module declaration
 -- | rewritten to `Calypso.Generated.Session`), then fire-typeful.
-module Sessions.Rene where
+module Sessions.Odonus where
 
 import Calypso.Prelude
 import Studio (iac)
@@ -45,22 +45,22 @@ import Tidal.Pattern.Core (fastCat)
 -- for future tests but isn't used in NavForward mode.
 -- ---------------------------------------------------------------------------
 
-studioRene :: Rene "studioRene"
-studioRene = reneWith
+studioOdonus :: Odonus "studioOdonus"
+studioOdonus = odonusWith
   { device:  iac
   , channel: 11
   , vel:     100
   , durMs:   200
   , stepsPerCycle: 16
-  , notes:   reneDefaultNotes
+  , notes:   odonusDefaultNotes
   , skip:    replicate16 false
   , gate:    replicate16 true
   , glide:   replicate16 false
   , navMode: NavForward
   , config:
-      { stepYNow: liveBoolOr false "rene.stepY"
-      , notes:    liveIntArrayOr reneDefaultNotes "rene.note"
-      , skip:     liveBoolArrayOr (replicate16 false) "rene.skip"
+      { stepYNow: liveBoolOr false "odonus.stepY"
+      , notes:    liveIntArrayOr odonusDefaultNotes "odonus.note"
+      , skip:     liveBoolArrayOr (replicate16 false) "odonus.skip"
       , advance:  fastCat (map pure
           [ true, false, false
           , true, false, true
@@ -70,7 +70,7 @@ studioRene = reneWith
   }
   where
     -- 15× C4 (MIDI 60) + 1× D4 (MIDI 62) at the last step.
-    reneDefaultNotes =
+    odonusDefaultNotes =
       [ 60, 60, 60, 60
       , 60, 60, 60, 60
       , 60, 60, 60, 60

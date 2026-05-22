@@ -177,7 +177,7 @@ evaluateParamsAt cfg controlPairs pos =
 
 -- | F1 cache-friendly evaluator: takes a pre-built `ControlMap` so the
 -- | voice gen_server can hold it across ticks and only rebuild when the
--- | control bus's version counter changes.  See the rene_voice F1
+-- | control bus's version counter changes.  See the odonus_voice F1
 -- | implementation and `tools/timing-data/phase-4-diagnostic-f1/`.
 evaluateParamsAtControls
   :: BalistesConfig

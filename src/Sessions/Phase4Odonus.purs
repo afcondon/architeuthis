@@ -1,4 +1,4 @@
--- | Sessions.Phase4Rene — René machine at 16 stepsPerCycle, advancing
+-- | Sessions.Phase4Odonus — René machine at 16 stepsPerCycle, advancing
 -- | every tick (no euclidean gate).  Head-to-head with Phase 3 dense.
 -- |
 -- | Same emit rate as Phase 3 60 BPM (4 notes/s = 250 ms IOI) and
@@ -17,15 +17,15 @@
 -- | To activate: copy this file's content over
 -- | `src/Calypso/Generated/Session.purs` (with module rewritten to
 -- | `Calypso.Generated.Session`), update calypso-session.json to a
--- | single `studioRene`-firing cell, fire-typeful, then ▶ the cell.
-module Sessions.Phase4Rene where
+-- | single `studioOdonus`-firing cell, fire-typeful, then ▶ the cell.
+module Sessions.Phase4Odonus where
 
 import Calypso.Prelude
 import Studio (iac)
 import Data.Functor (map)
 
-phase4Rene :: Rene "phase4Rene"
-phase4Rene = reneWith
+phase4Odonus :: Odonus "phase4Odonus"
+phase4Odonus = odonusWith
   { device:  iac
   , channel: 5               -- ch5 to avoid bass1..bass4 IAC claims; Live MIDI track set to all-channels or ch5
   , vel:     100

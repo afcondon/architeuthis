@@ -1,4 +1,4 @@
-%% @doc René machine voice gen_server — one instance per `rene`
+%% @doc René machine voice gen_server — one instance per `odonus`
 %% Session binding.  Subscribes to master clock; per step, optionally
 %% fires step_y (when the Y-clock pattern is true at this position),
 %% always fires step_x, then emits MIDI for the new cursor cell.
@@ -7,7 +7,7 @@
 %% channel per [[feedback_drumkit_single_midi_channel]].  Live-mutable
 %% via cell-text re-fire (set_config).  Phase 4 will add Twister-driven
 %% live mutation through the live-control bus.
--module(rene_voice).
+-module(odonus_voice).
 -behaviour(gen_server).
 
 -export([start_link/2,
@@ -37,9 +37,9 @@
     vel            :: 0..127,
     dur_ms         :: 1..2000,
     steps_per_cycle :: pos_integer(),
-    %% Engine state (rene_engine map).
+    %% Engine state (odonus_engine map).
     engine         :: map(),
-    %% Live config — opaque PureScript ReneConfig value.  Per-step
+    %% Live config — opaque PureScript OdonusConfig value.  Per-step
     %% FFI query returns a snapshot of {step_y_now :: Bool}.
     cfg            :: term(),
     %% Engine running state.
@@ -84,7 +84,7 @@
 %%   steps_per_cycle  :: pos_integer (default 4)
 %%   notes/skip/gate/glide  :: list of 16 entries
 %%   nav_mode         :: cartesian | forward | reverse
-%%   cfg              :: opaque PS ReneConfig | undefined
+%%   cfg              :: opaque PS OdonusConfig | undefined
 start_link(Name, Config) when is_atom(Name); is_binary(Name) ->
     Atom = to_atom(Name),
     gen_server:start_link({local, registered_name(Atom)}, ?MODULE,
@@ -113,7 +113,7 @@ clear_samples(Name) ->
     gen_server:cast(registered_name(Name), clear_samples).
 
 registered_name(Name) when is_atom(Name) ->
-    binary_to_atom(<<"rene_voice_",
+    binary_to_atom(<<"odonus_voice_",
                      (atom_to_binary(Name, utf8))/binary>>, utf8);
 registered_name(Name) when is_binary(Name) ->
     registered_name(binary_to_atom(Name, utf8)).
@@ -124,7 +124,7 @@ registered_name(Name) when is_binary(Name) ->
 
 init({Name, Config}) ->
     {ok, Sock} = gen_udp:open(0, [binary]),
-    Engine = rene_engine:new(Config),
+    Engine = odonus_engine:new(Config),
     State = #st{
         name            = Name,
         port_name       = ensure_binary(maps:get(port_name, Config)),
@@ -142,7 +142,7 @@ init({Name, Config}) ->
         samples         = []
     },
     tidal_log:info(
-      "rene_voice ~p started on ~s ch~B (nav=~p)~n",
+      "odonus_voice ~p started on ~s ch~B (nav=~p)~n",
       [Name, State#st.port_name, State#st.channel,
        maps:get(nav_mode, Engine)]),
     {ok, State}.
@@ -166,7 +166,7 @@ handle_cast(clear_samples, State) ->
     {noreply, State#st{samples = []}};
 handle_cast({set_config, Cfg}, State) ->
     %% Cfg is a partial-update map.  Engine arrays (notes/skip/gate/
-    %% glide) update via rene_engine:set_field which preserves the
+    %% glide) update via odonus_engine:set_field which preserves the
     %% (x, y) cursor — same shape as Balistes/Repetitor live-mutation:
     %% mid-stream changes don't reset the position counter.
     Engine0 = State#st.engine,
@@ -187,7 +187,7 @@ update_engine(Engine, Cfg) ->
       fun(Field, Eng) ->
               case maps:get(Field, Cfg, undefined) of
                   undefined -> Eng;
-                  Val       -> rene_engine:set_field(Eng, Field, Val)
+                  Val       -> odonus_engine:set_field(Eng, Field, Val)
               end
       end, Engine, Fields).
 
@@ -219,7 +219,7 @@ process_window(Window, State) ->
             true ->
                 {State#st.cached_controls, State};
             false ->
-                Built = 'tidal_rene@ps':buildControlMap(ControlPairs),
+                Built = 'tidal_odonus@ps':buildControlMap(ControlPairs),
                 {Built, State#st{control_version = ControlVersion,
                                  cached_controls = Built}}
         end,
@@ -290,7 +290,7 @@ emit_step(S, Controls, CurrentCycle, CycleDurMs, NowUs, TRecv, State) ->
     Snap = case State#st.cfg of
         undefined -> #{stepYNow => false, advance => true};
         Cfg ->
-            'tidal_rene@ps':evaluateParamsAtControls(Cfg, Controls, StepCycle)
+            'tidal_odonus@ps':evaluateParamsAtControls(Cfg, Controls, StepCycle)
     end,
     TEvalDone = erlang:monotonic_time(microsecond),
     %% The advance gate decides whether this micro-tick steps the
@@ -309,11 +309,11 @@ emit_step(S, Controls, CurrentCycle, CycleDurMs, NowUs, TRecv, State) ->
             Engine0  = refresh_from_snapshot(State#st.engine, Snap),
             TRefreshDone = erlang:monotonic_time(microsecond),
             Engine1 = case StepYNow of
-                true  -> rene_engine:step_y(Engine0);
+                true  -> odonus_engine:step_y(Engine0);
                 false -> Engine0
             end,
-            Engine2 = rene_engine:step_x(Engine1),
-            case rene_engine:current_event(Engine2) of
+            Engine2 = odonus_engine:step_x(Engine1),
+            case odonus_engine:current_event(Engine2) of
                 {emit, Note, _Idx} ->
                     emit_note(Note, WallUs, State);
                 {silent_step, _Idx} ->
@@ -339,20 +339,20 @@ emit_step(S, Controls, CurrentCycle, CycleDurMs, NowUs, TRecv, State) ->
 %% Pull notes + skip arrays out of the snapshot (if present) and
 %% refresh the engine's stored copies before this step's traversal
 %% runs.  This is the seam through which controller-bus writes (Twister
-%% knobs → rene.note0..15) reach the engine's skip-aware step_x and
+%% knobs → odonus.note0..15) reach the engine's skip-aware step_x and
 %% current_event logic.
 %%
 %% Per [[reference_purerl_array_is_erlang_array_module]] PureScript
 %% Arrays cross the boundary as Erlang `array` records, not lists;
-%% convert with array:to_list/1 before handing to rene_engine:set_field.
+%% convert with array:to_list/1 before handing to odonus_engine:set_field.
 refresh_from_snapshot(Engine, Snap) ->
     Engine1 = case maps:get(notes, Snap, undefined) of
         undefined -> Engine;
-        N -> rene_engine:set_field(Engine, notes, array:to_list(N))
+        N -> odonus_engine:set_field(Engine, notes, array:to_list(N))
     end,
     case maps:get(skip, Snap, undefined) of
         undefined -> Engine1;
-        Sk -> rene_engine:set_field(Engine1, skip, array:to_list(Sk))
+        Sk -> odonus_engine:set_field(Engine1, skip, array:to_list(Sk))
     end.
 
 emit_note(Note, WallUs, State) ->
