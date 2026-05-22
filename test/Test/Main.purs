@@ -19,6 +19,7 @@ import Test.TintinnabuliSpec (runTintinnabuliTests)
 import Test.UtilSpec (runUtilTests)
 import Test.VetulaSpec (runVetulaTests)
 import Test.VetulaVoicingSpec (runVetulaVoicingTests)
+import Test.VetulaPatternSpec (runVetulaPatternTests)
 import Data.Array as Array
 import Data.Maybe (Maybe(..))
 import Data.String (joinWith)
@@ -193,8 +194,11 @@ main = do
   -- Run Tidal.Vetula realize tests (task #152 / V-A)
   runVetulaTests
 
-  -- Run Tidal.Vetula.Voicing tests (task #153 / V-B)
+  -- Run Tidal.Vetula.Voicing tests (task #153 / V-B and #154 / V-C)
   runVetulaVoicingTests
+
+  -- Run Tidal.Vetula.Pattern tests (task #155 / V-D)
+  runVetulaPatternTests
 
   log ""
   log "=== All tests completed ==="

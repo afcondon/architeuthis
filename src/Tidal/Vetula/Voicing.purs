@@ -38,6 +38,7 @@ module Tidal.Vetula.Voicing
   , voiceLead
   , enumerateVoicings
   , play
+  , playFrom
   , nearestNote
   ) where
 
@@ -382,16 +383,24 @@ enumerateVoicings voicing@(Voicing current) (Chord pcs) =
 -- | strategy to the first chord and voice-leading every subsequent
 -- | one from the previous voicing.  Returns one Voicing per
 -- | DegreeChord in the progression.
-play :: Key -> VoicingStrategy -> Progression -> Array Voicing
-play key strategy chords =
+-- |
+-- | `centre` is the octave the first voicing centres on; subsequent
+-- | voicings drift via voice-leading.  See `play` for a centre-4
+-- | default.
+playFrom :: Int -> Key -> VoicingStrategy -> Progression -> Array Voicing
+playFrom centre key strategy chords =
   case Array.uncons chords of
     Nothing -> []
     Just { head: first, tail: rest } ->
       let
-        firstV = strategy (closeVoicing { centre: 4 } (realize key first))
+        firstV = strategy (closeVoicing { centre } (realize key first))
       in
         cons firstV
           (Array.scanl (\prev dc -> voiceLead prev (realize key dc)) firstV rest)
+
+-- | `play` with the default centre octave 4 (middle C area).
+play :: Key -> VoicingStrategy -> Progression -> Array Voicing
+play = playFrom 4
 
 -- ---------------------------------------------------------------------------
 -- Voice-leading internals
