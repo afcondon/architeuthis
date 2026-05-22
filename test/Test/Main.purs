@@ -17,6 +17,7 @@ import Test.PredictiveSpec (runPredictiveTests)
 import Test.SinkSpec (runSinkTests)
 import Test.TintinnabuliSpec (runTintinnabuliTests)
 import Test.UtilSpec (runUtilTests)
+import Test.VetulaSpec (runVetulaTests)
 import Data.Array as Array
 import Data.Maybe (Maybe(..))
 import Data.String (joinWith)
@@ -187,6 +188,9 @@ main = do
 
   -- Run Tidal.Fugue scale-aware transposition tests (task #62 sibling)
   runFugueTests
+
+  -- Run Tidal.Vetula realize tests (task #152 / V-A)
+  runVetulaTests
 
   log ""
   log "=== All tests completed ==="
