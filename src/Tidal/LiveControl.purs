@@ -23,7 +23,8 @@
 -- | This lets cells be well-behaved before any external surface has
 -- | written a value.
 module Tidal.LiveControl
-  ( live
+  ( class LiveReadable
+  , live
   , liveOr
   , liveInt
   , liveIntOr
@@ -42,6 +43,25 @@ import Data.Maybe (Maybe(..))
 import Tidal.Pattern.Types
   (Pattern, pattern, State(..), Event(..), Value(..), emptyContext)
 
+-- | Typeclass for typed reads off the live-control bus.  Replaces the
+-- | pre-existing monomorphic `live :: String -> Pattern Number` with
+-- | a polymorphic surface — `live "knob"` resolves to whichever
+-- | `Pattern a` the use-site context demands.
+-- |
+-- | The bus today carries Number, Int, and Boolean values (via the
+-- | `Value` ADT in `Tidal.Pattern.Types`); instances below cover all
+-- | three.  Richer types (e.g. `Voicing` for Vetula's
+-- | `chord1.currentVoicing` reads) need an extension of the `Value`
+-- | ADT plus matching Erlang-side serialisation — design pending,
+-- | tracked under task #150 step 4.
+-- |
+-- | Each instance's default behaviour when the named slot is absent
+-- | or holds a wrong-type value: the type's "zero" (`0.0` for Number,
+-- | `0` for Int, `false` for Boolean).  Callers who want a different
+-- | fallback reach for `liveOr` / `liveIntOr` / `liveBoolOr`.
+class LiveReadable a where
+  live :: String -> Pattern a
+
 -- | Read a numeric control by name; default 0.0 when missing.
 -- |
 -- | Returns a single Analog event spanning the query arc whose
@@ -49,8 +69,14 @@ import Tidal.Pattern.Types
 -- | because the value is a continuous parameter, not a discrete
 -- | musical event — this matters for how it combines with
 -- | downstream pattern queries via `applyPatternBoth`.
-live :: String -> Pattern Number
-live = liveOr 0.0
+instance liveReadableNumber :: LiveReadable Number where
+  live = liveOr 0.0
+
+instance liveReadableInt :: LiveReadable Int where
+  live = liveIntOr 0
+
+instance liveReadableBoolean :: LiveReadable Boolean where
+  live = liveBoolOr false
 
 -- | Like `live` but with a caller-supplied default when the named
 -- | control isn't set or holds a non-Number value.
