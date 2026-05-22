@@ -93,10 +93,10 @@ plaits = vPerOct cvRouter { gateChannel: 6, voctBus: 15 }
 
 -- | QD channel 14 — the primary drum kit.  Standard GM mapping.
 -- |
--- | NOTE 2026-05-18 evening: also shared with studioGrids for the
+-- | NOTE 2026-05-18 evening: also shared with studioBalistes for the
 -- | vmod demo.  Both register a (fh2qd, ch14) claim; the framework
 -- | logs a duplicate-claim warning but both bindings stay live —
--- | qd1's `bd`/`sn`/`hh`/`cp` patterns and Grids' autonomous output
+-- | qd1's `bd`/`sn`/`hh`/`cp` patterns and Balistes' autonomous output
 -- | both emit on the same channel.  Interleaved firing on the FH-2
 -- | is the musician's responsibility (no software arbitration).
 qd1 :: DrumKit

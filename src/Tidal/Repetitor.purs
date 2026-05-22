@@ -1,6 +1,6 @@
 -- | Tidal.Repetitor — typed Session-level binding for the BEAM-native
 -- | Zularic-Repetitor-inspired virtual module.  Sibling of
--- | Tidal.Grids; second member of the vmod family per memory
+-- | Tidal.Balistes; second member of the vmod family per memory
 -- | `project_beam_native_virtual_modules`.
 -- |
 -- | Engine: 14 named African / Indian / Caribbean rhythm patterns,
@@ -34,7 +34,7 @@
 -- |
 -- | Live mutation = refire the cell with new offsets.  The walker
 -- | re-registers under the same alias; the voice's per-step query
--- | reads the latest value.  Same `liveIntOr` plumbing as Grids.
+-- | reads the latest value.  Same `liveIntOr` plumbing as Balistes.
 module Tidal.Repetitor
   ( Repetitor(..)
   , RepetitorConfig
@@ -101,7 +101,7 @@ repetitorConfig =
 
 -- | A typed Repetitor voice declared at the Session level.  Symbol
 -- | parameter is decorative — walker reads the alias from the binding
--- | name (matches PolySignal, Instrument, Grids).
+-- | name (matches PolySignal, Instrument, Balistes).
 data Repetitor (s :: Symbol)
   = RepetitorBinding
       { device        :: MidiDevice
@@ -170,7 +170,7 @@ repetitorWith = RepetitorBinding
 -- | Evaluate each of the four offset slots at a given cycle position,
 -- | using the live control snapshot from the tick window so
 -- | `liveIntOr "name"` slots read their current values.  Called by
--- | `repetitor_voice` per step.  Mirror of `Tidal.Grids.evaluateParamsAt`.
+-- | `repetitor_voice` per step.  Mirror of `Tidal.Balistes.evaluateParamsAt`.
 evaluateParamsAt
   :: RepetitorConfig
   -> Array { name :: String, value :: Number }

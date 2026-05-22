@@ -10,7 +10,7 @@
 -- |
 -- | Output convention: values land in the 0..255 controller range
 -- | so vmod parameter slots (`liveIntOr 128 "lfoBank.0"`,
--- | `gridsConfig.x`, René notes, etc.) pick them up without a
+-- | `balistesConfig.x`, René notes, etc.) pick them up without a
 -- | scaling step on the cell-text side.  An LFO's natural -1..+1
 -- | swing is mapped to 0..255 here; clock / euclid gates write
 -- | 0 (off) or 127 (on).  The OutputRange field of the PolySignal

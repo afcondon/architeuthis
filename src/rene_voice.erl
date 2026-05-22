@@ -3,7 +3,7 @@
 %% fires step_y (when the Y-clock pattern is true at this position),
 %% always fires step_x, then emits MIDI for the new cursor cell.
 %%
-%% Architecture mirrors grids_voice / repetitor_voice.  Single MIDI
+%% Architecture mirrors balistes_voice / repetitor_voice.  Single MIDI
 %% channel per [[feedback_drumkit_single_midi_channel]].  Live-mutable
 %% via cell-text re-fire (set_config).  Phase 4 will add Twister-driven
 %% live mutation through the live-control bus.
@@ -167,7 +167,7 @@ handle_cast(clear_samples, State) ->
 handle_cast({set_config, Cfg}, State) ->
     %% Cfg is a partial-update map.  Engine arrays (notes/skip/gate/
     %% glide) update via rene_engine:set_field which preserves the
-    %% (x, y) cursor — same shape as Grids/Repetitor live-mutation:
+    %% (x, y) cursor — same shape as Balistes/Repetitor live-mutation:
     %% mid-stream changes don't reset the position counter.
     Engine0 = State#st.engine,
     Engine1 = update_engine(Engine0, Cfg),

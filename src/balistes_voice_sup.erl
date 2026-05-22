@@ -1,12 +1,12 @@
-%% @doc Grids voice supervisor — `simple_one_for_one` for grids_voice
+%% @doc Balistes voice supervisor — `simple_one_for_one` for balistes_voice
 %% gen_servers.  Sibling of tidal_voice_sup.  Children are started
-%% dynamically on session walker registration of `RegisterGrids` events.
+%% dynamically on session walker registration of `RegisterBalistes` events.
 %%
 %% Crashes don't restart automatically (`temporary` child spec): a
-%% Grids voice dying mid-session is a configuration bug, not something
+%% Balistes voice dying mid-session is a configuration bug, not something
 %% to retry silently.  The next reload-baseline re-spawns whatever was
 %% registered.
--module(grids_voice_sup).
+-module(balistes_voice_sup).
 -behaviour(supervisor).
 
 -export([start_link/0,
@@ -20,8 +20,8 @@
 start_link() ->
     supervisor:start_link({local, ?MODULE}, ?MODULE, []).
 
-%% @doc Start a Grids voice under this supervisor.  Returns the Pid.
-%% Config map: see grids_voice:init/1 for the keys.
+%% @doc Start a Balistes voice under this supervisor.  Returns the Pid.
+%% Config map: see balistes_voice:init/1 for the keys.
 start_voice(Name, Config) ->
     case supervisor:start_child(?MODULE, [Name, Config]) of
         {ok, Pid} -> {ok, Pid};
@@ -29,7 +29,7 @@ start_voice(Name, Config) ->
         {error, Reason} -> {error, Reason}
     end.
 
-%% @doc Stop a Grids voice by name.  Idempotent.
+%% @doc Stop a Balistes voice by name.  Idempotent.
 stop_voice(Name) ->
     case lookup_voice(Name) of
         undefined -> ok;
@@ -37,16 +37,16 @@ stop_voice(Name) ->
     end.
 
 %% @doc List all Pids under this supervisor.  Used by tidal_clock's
-%% broadcast_compute_window to fan ticks out to every Grids voice.
+%% broadcast_compute_window to fan ticks out to every Balistes voice.
 which_voices() ->
     [Pid || {_, Pid, _, _} <- supervisor:which_children(?MODULE),
             is_pid(Pid)].
 
-%% @doc Resolve a Grids voice by its registered name.  Returns
+%% @doc Resolve a Balistes voice by its registered name.  Returns
 %% undefined if no such voice is running.  Uses the same prefix the
-%% voice registers under (grids_voice:registered_name/1).
+%% voice registers under (balistes_voice:registered_name/1).
 lookup_voice(Name) when is_atom(Name) ->
-    whereis(grids_voice:registered_name(Name));
+    whereis(balistes_voice:registered_name(Name));
 lookup_voice(Name) when is_binary(Name) ->
     lookup_voice(binary_to_atom(Name, utf8)).
 
@@ -54,10 +54,10 @@ init([]) ->
     SupFlags = #{strategy => simple_one_for_one,
                  intensity => 5,
                  period => 30},
-    ChildSpec = #{id => grids_voice,
-                  start => {grids_voice, start_link, []},
+    ChildSpec = #{id => balistes_voice,
+                  start => {balistes_voice, start_link, []},
                   restart => temporary,
                   shutdown => 2000,
                   type => worker,
-                  modules => [grids_voice]},
+                  modules => [balistes_voice]},
     {ok, {SupFlags, [ChildSpec]}}.

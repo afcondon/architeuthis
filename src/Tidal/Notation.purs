@@ -13,7 +13,7 @@
 -- |   * `Pattern a` itself (trivial self-instance, declared here)
 -- |   * `MiniNotation a` (in `Tidal.MiniNotation`)
 -- |   * `Vetula` (future, in `Tidal.Vetula`)
--- |   * `Balistes` config (in `Tidal.Grids`, renamed eventually)
+-- |   * `Balistes` config (in `Tidal.Balistes`, renamed eventually)
 -- |   * `Odonus` config (in `Tidal.Rene`, renamed eventually)
 -- |   * `Sufflamen` config (in `Tidal.Polysignal`, renamed eventually)
 -- |

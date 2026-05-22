@@ -1,6 +1,6 @@
 -- | Tidal.MidiDevice — the MidiDevice ADT.
 -- |
--- | Extracted out of Calypso.Prelude so modules like Tidal.Grids can
+-- | Extracted out of Calypso.Prelude so modules like Tidal.Balistes can
 -- | reach it without cycling through Calypso.Prelude (which re-exports
 -- | them in turn).  Calypso.Prelude re-exports this module so end-user
 -- | Session sources continue to write `MidiDevice "FH-2" 30` exactly

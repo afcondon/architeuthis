@@ -31,7 +31,7 @@
         , polyRandConfigFields/1
         , polyPresetConfigFields/1
         , polyPresetNoteConfigFields/1
-        , gridsBindingFields/1
+        , balistesBindingFields/1
         , repetitorBindingFields/1
         , reneBindingFields/1
         ]).
@@ -277,11 +277,11 @@ polyPresetNoteConfigFields(_) ->
     {nothing}.
 
 %% --------------------------------------------------------------------
-%% gridsBindingFields/1 — pure.
+%% balistesBindingFields/1 — pure.
 %%
-%% Decode the inner record of a `GridsBinding` value.  Encoding:
+%% Decode the inner record of a `BalistesBinding` value.  Encoding:
 %%
-%%   {gridsBinding, #{device => {midiDevice, <<Name>>, Latency},
+%%   {balistesBinding, #{device => {midiDevice, <<Name>>, Latency},
 %%                    channel => Ch, noteBd => N, noteSd => N,
 %%                    noteHh => N, vel => V, velAccent => V,
 %%                    durMs => D, config => OpaqueCfg}}
@@ -291,7 +291,7 @@ polyPresetNoteConfigFields(_) ->
 %% record with the device's name + latencyMs lifted out; `config`
 %% passes through unchanged for the voice's per-step FFI use.
 %% --------------------------------------------------------------------
-gridsBindingFields({gridsBinding,
+balistesBindingFields({balistesBinding,
                     #{device      := {midiDevice, DevName, DevLat},
                       channel     := Ch,
                       noteBd      := NBd,
@@ -314,7 +314,7 @@ gridsBindingFields({gridsBinding,
              velAccent        => VA,
              durMs            => Dur,
              config           => Cfg}};
-gridsBindingFields(_) ->
+balistesBindingFields(_) ->
     {nothing}.
 
 %% --------------------------------------------------------------------

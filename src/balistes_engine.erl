@@ -1,9 +1,9 @@
-%% Mutable Instruments Grids — algorithm core.
+%% Mutable Instruments Balistes — algorithm core.
 %%
 %% Pure functions translating Emilie Gillet's `EvaluateDrums()` and
-%% `ReadDrumMap()` from `stages-firmware/grids/pattern_generator.cc`
+%% `ReadDrumMap()` from `stages-firmware/balistes/pattern_generator.cc`
 %% to Erlang.  No OTP, no state — the per-voice gen_server in
-%% `grids_voice` calls into this with a snapshot of {X, Y, densities,
+%% `balistes_voice` calls into this with a snapshot of {X, Y, densities,
 %% perturbations, step}.
 %%
 %% The "Drums" mode only; Euclidean (also in the firmware) deferred.
@@ -13,7 +13,7 @@
 %% handed to `evaluate_step/5` as a flat Int.
 %%
 %% Reference: pattern_generator.cc lines 69-136.
--module(grids_engine).
+-module(balistes_engine).
 -export([
     u8_mix/3,
     read_drum_map/4,
@@ -57,10 +57,10 @@ read_drum_map(Step, Inst, X, Y) when is_integer(Step), Step >= 0, Step < 32,
                                      is_integer(Y), Y >= 0, Y =< 255 ->
     I = X bsr 6,
     J = Y bsr 6,
-    AMap = grids_tables:drum_map(I, J),
-    BMap = grids_tables:drum_map(I + 1, J),
-    CMap = grids_tables:drum_map(I, J + 1),
-    DMap = grids_tables:drum_map(I + 1, J + 1),
+    AMap = balistes_tables:drum_map(I, J),
+    BMap = balistes_tables:drum_map(I + 1, J),
+    CMap = balistes_tables:drum_map(I, J + 1),
+    DMap = balistes_tables:drum_map(I + 1, J + 1),
     Offset = Inst * 32 + Step,
     A = binary:at(AMap, Offset),
     B = binary:at(BMap, Offset),

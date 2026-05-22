@@ -1,7 +1,7 @@
 -- | Sessions.Full — everything at once.
 -- |
 -- | Use case: smoke test / "is the whole rig alive?" session.
--- | Combines the four machines (Grids, René, Repetitor, polysignals)
+-- | Combines the four machines (Balistes, René, Repetitor, polysignals)
 -- | with the fugue + drum parts from Sessions.Fugue.
 -- |
 -- | Channel layout (all autonomous emitters are on IAC; the FH-2
@@ -10,7 +10,7 @@
 -- |     ch  1..4  → fugue bass1..bass4
 -- |     ch 10     → Repetitor (drums)
 -- |     ch 11     → René (drums)
--- |     ch 12     → Grids (BD/SD/HH)
+-- |     ch 12     → Balistes (BD/SD/HH)
 -- |     ch 14     → qd1 drum kit
 -- |     ch 15     → qd2 drum kit
 -- |     FH-2 cv1  → C-major scale (V/oct presets)
@@ -34,14 +34,14 @@ import Tidal.Fugue
 -- Machines
 -- ---------------------------------------------------------------------------
 
-studioGrids :: Grids "studioGrids"
-studioGrids = grids iac 12 $ gridsConfig
-  { x          = liveIntOr 128 "grids.x"
-  , y          = liveIntOr 128 "grids.y"
-  , fillBd     = liveIntOr 220 "grids.fillBd"
-  , fillSd     = liveIntOr 100 "grids.fillSd"
-  , fillHh     = liveIntOr 200 "grids.fillHh"
-  , randomness = liveIntOr 32  "grids.randomness"
+studioBalistes :: Balistes "studioBalistes"
+studioBalistes = balistes iac 12 $ balistesConfig
+  { x          = liveIntOr 128 "balistes.x"
+  , y          = liveIntOr 128 "balistes.y"
+  , fillBd     = liveIntOr 220 "balistes.fillBd"
+  , fillSd     = liveIntOr 100 "balistes.fillSd"
+  , fillHh     = liveIntOr 200 "balistes.fillHh"
+  , randomness = liveIntOr 32  "balistes.randomness"
   }
 
 studioRene :: Rene "studioRene"

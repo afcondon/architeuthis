@@ -11,7 +11,7 @@
 -- | note: a Source (virtual polyEuclid) wired to a Sink (René's
 -- | advance input) via the bus, with no special-case code per
 -- | combination.  The same shape extends to polyClock-clocking-
--- | Grids, polyLfo-modulating-Repetitor-density, etc.
+-- | Balistes, polyLfo-modulating-Repetitor-density, etc.
 -- |
 -- | To activate: copy this file's content over
 -- | `src/Calypso/Generated/Session.purs` (with module rewritten to

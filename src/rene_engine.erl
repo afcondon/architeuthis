@@ -1,6 +1,6 @@
 %% Make-Noise-René-inspired machine — algorithm core.
 %%
-%% Third BEAM-native machine, after Grids and Repetitor.  Unlike
+%% Third BEAM-native machine, after Balistes and Repetitor.  Unlike
 %% those two, René takes user-supplied note content (16 notes the
 %% user writes) + user-supplied modal arrays (skip, gate, glide) +
 %% autonomous traversal driven by external clock pulses (X-clock and

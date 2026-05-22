@@ -1,6 +1,6 @@
 -- | Phase 5 multi-voice timing test.
 -- |
--- | Two identically-configured Grids voices on iac ch10 and ch11 so we
+-- | Two identically-configured Balistes voices on iac ch10 and ch11 so we
 -- | can measure inter-voice timing offset directly: every step both
 -- | voices fire the same BD/SD/HH triggers at the same nominal WallUs.
 -- | If the BEAM's parallel-scheduler + link-spike + CoreMIDI chain
@@ -16,15 +16,15 @@ import Calypso.Prelude
 import Studio (iac)
 import Control.Applicative (pure)
 
-gridsA :: Grids "gridsA"
-gridsA = grids iac 10
-  ( gridsConfig
+balistesA :: Balistes "balistesA"
+balistesA = balistes iac 10
+  ( balistesConfig
       { fillBd = pure 200, fillSd = pure 160, fillHh = pure 180 }
   )
 
-gridsB :: Grids "gridsB"
-gridsB = grids iac 11
-  ( gridsConfig
+balistesB :: Balistes "balistesB"
+balistesB = balistes iac 11
+  ( balistesConfig
       { fillBd = pure 200, fillSd = pure 160, fillHh = pure 180 }
   )
 

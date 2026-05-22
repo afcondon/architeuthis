@@ -75,11 +75,11 @@ erl: ps
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_session_walker.erl
 	@# Section conductor (MVP-2 play-piece path).
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_conductor.erl
-	@# Grids virtual module (BEAM-native MI Grids clone).
-	@erlc -disable-feature maybe_expr -o ebin src/grids_tables.erl
-	@erlc -disable-feature maybe_expr -o ebin src/grids_engine.erl
-	@erlc -disable-feature maybe_expr -o ebin src/grids_voice_sup.erl
-	@erlc -disable-feature maybe_expr -o ebin src/grids_voice.erl
+	@# Balistes virtual module (BEAM-native MI Balistes clone).
+	@erlc -disable-feature maybe_expr -o ebin src/balistes_tables.erl
+	@erlc -disable-feature maybe_expr -o ebin src/balistes_engine.erl
+	@erlc -disable-feature maybe_expr -o ebin src/balistes_voice_sup.erl
+	@erlc -disable-feature maybe_expr -o ebin src/balistes_voice.erl
 	@# Repetitor virtual module (ZR-inspired, BEAM-native).
 	@erlc -disable-feature maybe_expr -o ebin src/repetitor_library_zr_african.erl
 	@erlc -disable-feature maybe_expr -o ebin src/repetitor_engine.erl

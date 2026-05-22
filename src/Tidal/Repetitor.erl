@@ -2,7 +2,7 @@
 %%
 %% PureScript Number is Erlang float on the BEAM; floor maps to the
 %% standard truncating-toward-negative-infinity floor.  Mirror of
-%% Tidal.Grids's FFI module.
+%% Tidal.Balistes's FFI module.
 -module('tidal_repetitor@foreign').
 -export([floorN/1]).
 

@@ -146,14 +146,14 @@ data RegistrationEvent
       , family :: String
       , polySignalValue :: Foreign
       }
-  -- | Grids vmod Phase 3 (2026-05-18): a BEAM-native MI Grids voice
+  -- | Balistes vmod Phase 3 (2026-05-18): a BEAM-native MI Balistes voice
   -- | declared at the Session level.  Walker captures the binding's
   -- | MIDI device + channel + per-instrument notes + opaque
-  -- | GridsConfig (the seven Pattern Int slots, held as Foreign for
-  -- | per-step FFI query).  Erlang side starts the grids_voice
-  -- | gen_server under grids_voice_sup; same-alias re-fire updates
+  -- | BalistesConfig (the seven Pattern Int slots, held as Foreign for
+  -- | per-step FFI query).  Erlang side starts the balistes_voice
+  -- | gen_server under balistes_voice_sup; same-alias re-fire updates
   -- | the running voice's cfg in place (no restart, no glitch).
-  | RegisterGrids
+  | RegisterBalistes
       { alias :: String
       , deviceAlias :: String
       , deviceName :: String   -- the raw CoreMIDI port name, used for MIDI send
@@ -164,10 +164,10 @@ data RegistrationEvent
       , vel :: Int
       , velAccent :: Int
       , durMs :: Int
-      , config :: Foreign      -- opaque GridsConfig — voice queries via FFI
+      , config :: Foreign      -- opaque BalistesConfig — voice queries via FFI
       }
   -- | Repetitor vmod Phase 3 (2026-05-19): a BEAM-native ZR-inspired
-  -- | voice declared at the Session level.  Sibling of RegisterGrids —
+  -- | voice declared at the Session level.  Sibling of RegisterBalistes —
   -- | same MIDI-routing shape, same claim semantics on (device,
   -- | channel), same per-step FFI query against opaque config.  The
   -- | `library` and `patternSlug` fields select which pattern data
@@ -192,7 +192,7 @@ data RegistrationEvent
   -- | René machine Phase 3 (2026-05-19): a BEAM-native Make-Noise-
   -- | René-inspired voice declared at the Session level.  User
   -- | supplies 16 notes + modal arrays; engine supplies traversal.
-  -- | Same MIDI-routing shape as Grids/Repetitor (single channel),
+  -- | Same MIDI-routing shape as Balistes/Repetitor (single channel),
   -- | same claim semantics on (device, channel).  `navMode` is a
   -- | String classifier ("cartesian" / "forward" / "reverse") so
   -- | the Erlang side can pattern-match without re-decoding the ADT.
@@ -261,11 +261,11 @@ walkBaseline = do
     -- needed.  The walker only projects to a JSON envelope, the
     -- daemon does the real claim work at apply-time.
     polySigEvents = Array.mapMaybe pickPolySignal allPairs
-    -- Grids voices.  Inner MidiDevice tuple resolves to the
+    -- Balistes voices.  Inner MidiDevice tuple resolves to the
     -- declared device alias (same content-keyed lookup
     -- instruments use).  Same MIDI-channel claim semantics as
     -- DrumKit — both are autonomous emitters on (device, channel).
-    gridsEvents = Array.mapMaybe (pickGrids deviceAliases) allPairs
+    balistesEvents = Array.mapMaybe (pickBalistes deviceAliases) allPairs
     repetitorEvents = Array.mapMaybe (pickRepetitor deviceAliases) allPairs
     reneEvents = Array.mapMaybe (pickRene deviceAliases) allPairs
     -- Phase 1: collect implicit (device, channel) claims from
@@ -274,12 +274,12 @@ walkBaseline = do
     -- BEFORE registration events so the Erlang log shows them ahead
     -- of the binding installs they conflict with.
     claims = Array.mapMaybe registrationToClaim
-               (instrEvents <> kitEvents <> gridsEvents
+               (instrEvents <> kitEvents <> balistesEvents
                 <> repetitorEvents <> reneEvents)
     claimErrorEvents = Array.mapMaybe claimErrorToEvent (validateMidiClaims claims)
   pure (claimErrorEvents <> devEvents <> routerEvents
         <> instrEvents <> kitEvents <> polySigEvents
-        <> gridsEvents <> repetitorEvents <> reneEvents)
+        <> balistesEvents <> repetitorEvents <> reneEvents)
 
 registrationToClaim :: RegistrationEvent -> Maybe MidiClaim
 registrationToClaim = case _ of
@@ -295,11 +295,11 @@ registrationToClaim = case _ of
     , channel: r.channel
     , ownerKind: OwnDrumKit
     }
-  RegisterGrids r -> Just
+  RegisterBalistes r -> Just
     { owner: r.alias
     , deviceAlias: r.deviceAlias
     , channel: r.channel
-    , ownerKind: OwnDrumKit  -- Grids = autonomous emitter on (dev,ch),
+    , ownerKind: OwnDrumKit  -- Balistes = autonomous emitter on (dev,ch),
                               -- same conflict semantics as a DrumKit.
     }
   RegisterRepetitor r -> Just
@@ -520,26 +520,26 @@ pickGateDrumKit routerAliases alias value = do
       }
 
 -- ---------------------------------------------------------------------------
--- Grids classifier (vmod Phase 3)
+-- Balistes classifier (vmod Phase 3)
 -- ---------------------------------------------------------------------------
 
--- | Classify a `Grids s` value declared at the Session level.  Single
--- | constructor (`GridsBinding`); the inner record carries the MIDI
+-- | Classify a `Balistes s` value declared at the Session level.  Single
+-- | constructor (`BalistesBinding`); the inner record carries the MIDI
 -- | device + channel + per-instrument notes + a `config` Foreign that
--- | the voice queries per step via `Tidal.Grids.evaluateParamsAt`.
-pickGrids
+-- | the voice queries per step via `Tidal.Balistes.evaluateParamsAt`.
+pickBalistes
   :: Map (Tuple String Int) String
   -> { name :: String, value :: Foreign }
   -> Maybe RegistrationEvent
-pickGrids deviceAliases { name: alias, value } = do
+pickBalistes deviceAliases { name: alias, value } = do
   tag <- constructorTag value
-  if tag /= "gridsBinding" then Nothing
+  if tag /= "balistesBinding" then Nothing
   else do
-    fields <- gridsBindingFields value
+    fields <- balistesBindingFields value
     let deviceAlias = fromMaybe ""
           (Map.lookup (Tuple fields.deviceName fields.deviceLatencyMs)
                        deviceAliases)
-    Just $ RegisterGrids
+    Just $ RegisterBalistes
       { alias
       , deviceAlias
       , deviceName: fields.deviceName
@@ -794,13 +794,13 @@ foreign import polyPresetNoteConfigFields
        , range :: Maybe PolySignal.OutputRange
        }
 
--- | Decode the inner record of a `GridsBinding` value.  Carries the
+-- | Decode the inner record of a `BalistesBinding` value.  Carries the
 -- | declared MIDI device (name + latency, looked up against the
 -- | content-keyed alias map by the classifier), the channel,
 -- | per-instrument MIDI notes, velocities, note duration, and the
--- | opaque GridsConfig — passed through verbatim for per-step FFI
+-- | opaque BalistesConfig — passed through verbatim for per-step FFI
 -- | evaluation by the voice gen_server.
-foreign import gridsBindingFields
+foreign import balistesBindingFields
   :: Foreign
   -> Maybe
        { deviceName :: String
@@ -816,7 +816,7 @@ foreign import gridsBindingFields
        }
 
 -- | Decode the inner record of a `RepetitorBinding` value.  Same
--- | shape as `gridsBindingFields` but four row-notes (M/C1/C2/C3),
+-- | shape as `balistesBindingFields` but four row-notes (M/C1/C2/C3),
 -- | single velocity, plus library + patternSlug selectors.
 foreign import repetitorBindingFields
   :: Foreign

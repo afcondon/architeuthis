@@ -1,23 +1,23 @@
-%% @doc Grids voice gen_server — one instance per `grids` Session
+%% @doc Balistes voice gen_server — one instance per `balistes` Session
 %% binding.  Subscribes (via tidal_clock's broadcast) to the master
 %% `{compute_until, Window}` ticks; on each tick, evaluates any new
-%% 32-step Grids steps that fall in the window, runs the engine, and
+%% 32-step Balistes steps that fall in the window, runs the engine, and
 %% emits MIDI note-on/off events to the configured FH-2 channel.
 %%
 %% Architecture (per `project_parameter_as_pattern_lift`):
 %%
-%%     PureScript: GridsConfig { x :: Pattern Int, y :: Pattern Int, … }
+%%     PureScript: BalistesConfig { x :: Pattern Int, y :: Pattern Int, … }
 %%                          |
 %%                          v   (registered opaquely via walker)
-%%     Erlang:     grids_voice gen_server holds the Foreign GridsConfig
+%%     Erlang:     balistes_voice gen_server holds the Foreign BalistesConfig
 %%                 + step state.  Per step: FFI call to PS-side
-%%                 `Tidal.Grids.evaluateParamsAt(cfg, cyclePos)` → 7 Ints
-%%                 → grids_engine:evaluate_step → MIDI events.
+%%                 `Tidal.Balistes.evaluateParamsAt(cfg, cyclePos)` → 7 Ints
+%%                 → balistes_engine:evaluate_step → MIDI events.
 %%
 %% Phase 2 (this commit): params are a static tuple, no Pattern queries
 %% yet.  Phase 3 swaps in the PS-side FFI call.  The voice's outer
 %% shape doesn't change.
--module(grids_voice).
+-module(balistes_voice).
 -behaviour(gen_server).
 
 -export([start_link/2,
@@ -43,8 +43,8 @@
     vel            :: 0..127,
     vel_accent     :: 0..127,
     dur_ms         :: 1..2000,
-    %% Live config — opaque PureScript GridsConfig value.  The voice
-    %% calls `Tidal.Grids.evaluateParamsAt(cfg, cyclePos)` per step
+    %% Live config — opaque PureScript BalistesConfig value.  The voice
+    %% calls `Tidal.Balistes.evaluateParamsAt(cfg, cyclePos)` per step
     %% to query each of the seven Pattern Int slots.
     cfg            :: term(),
     %% Engine running state.
@@ -85,7 +85,7 @@ start_link(Name, Config) when is_atom(Name); is_binary(Name) ->
 compute_until(Name, Window) ->
     gen_server:cast(registered_name(Name), {compute_until, Window}).
 
-%% @doc Replace the voice's GridsConfig with a fresh value (cell re-fire
+%% @doc Replace the voice's BalistesConfig with a fresh value (cell re-fire
 %% path).  Patterns swap atomically; the very next step will read the
 %% new patterns.  Engine state (step counter, perturbations) is
 %% preserved across re-fires so the pattern doesn't reset mid-bar.
@@ -96,7 +96,7 @@ get_state(Name) ->
     gen_server:call(registered_name(Name), get_state).
 
 registered_name(Name) when is_atom(Name) ->
-    binary_to_atom(<<"grids_voice_", (atom_to_binary(Name, utf8))/binary>>, utf8);
+    binary_to_atom(<<"balistes_voice_", (atom_to_binary(Name, utf8))/binary>>, utf8);
 registered_name(Name) when is_binary(Name) ->
     registered_name(binary_to_atom(Name, utf8)).
 
@@ -128,7 +128,7 @@ init({Name, Config}) ->
         control_version = -1,
         cached_controls = undefined
     },
-    tidal_log:info("grids_voice ~p started on ~s ch~B (BD/SD/HH ~B/~B/~B)~n",
+    tidal_log:info("balistes_voice ~p started on ~s ch~B (BD/SD/HH ~B/~B/~B)~n",
                    [Name, State#st.port_name, State#st.channel,
                     State#st.note_bd, State#st.note_sd, State#st.note_hh]),
     {ok, State}.
@@ -161,7 +161,7 @@ terminate(_Reason, State) ->
 %% =========================================================================
 
 %% Process a {compute_until, Window} broadcast.  Emits any 32-step
-%% Grids steps whose absolute index lies in (last_step, EndStep].
+%% Balistes steps whose absolute index lies in (last_step, EndStep].
 process_window(Window, State) ->
     CurrentCycle = maps:get(currentCycle,    Window),
     LookAhead    = maps:get(lookAheadCycle,  Window),
@@ -177,7 +177,7 @@ process_window(Window, State) ->
             true ->
                 {State#st.cached_controls, State};
             false ->
-                Built = 'tidal_grids@ps':buildControlMap(ControlPairs),
+                Built = 'tidal_balistes@ps':buildControlMap(ControlPairs),
                 {Built, State#st{control_version = ControlVersion,
                                  cached_controls = Built}}
         end,
@@ -212,10 +212,10 @@ process_window(Window, State) ->
             FinalState#st{last_step = EndStepExcl - 1}
     end.
 
-%% Emit a single Grids step S.  S is absolute (across cycles); the
+%% Emit a single Balistes step S.  S is absolute (across cycles); the
 %% wrap to 0..31 happens here.  Per the parameter-as-Pattern lift,
 %% the seven parameter values come from a PureScript-side query
-%% (`Tidal.Grids.evaluateParamsAt`) against the live GridsConfig at
+%% (`Tidal.Balistes.evaluateParamsAt`) against the live BalistesConfig at
 %% this step's cycle position.  At step-in-pattern 0, regenerate
 %% perturbations using the randomness value as scale.
 emit_step(S, Controls, CurrentCycle, CycleDurMs, NowUs, State0) ->
@@ -229,7 +229,7 @@ emit_step(S, Controls, CurrentCycle, CycleDurMs, NowUs, State0) ->
               fillBd => 0, fillSd => 0, fillHh => 0,
               randomness => 0, mode => 0};
         Cfg ->
-            'tidal_grids@ps':evaluateParamsAtControls(Cfg, Controls, StepCycle)
+            'tidal_balistes@ps':evaluateParamsAtControls(Cfg, Controls, StepCycle)
     end,
     X       = maps:get(x,          Snap),
     Y       = maps:get(y,          Snap),
@@ -240,12 +240,12 @@ emit_step(S, Controls, CurrentCycle, CycleDurMs, NowUs, State0) ->
     State1 =
         if StepInPat =:= 0 ->
                {Perts, RngNext} =
-                   grids_engine:fresh_perturbations(Random, State0#st.rng_state),
+                   balistes_engine:fresh_perturbations(Random, State0#st.rng_state),
                State0#st{perturbations = Perts, rng_state = RngNext};
            true ->
                State0
         end,
-    Triggers = grids_engine:evaluate_step(
+    Triggers = balistes_engine:evaluate_step(
                  StepInPat, X, Y,
                  [FBd, FSd, FHh],
                  State1#st.perturbations),

@@ -25,7 +25,7 @@ module Calypso.Prelude
   -- than failing with an Unknown-value error.
   , negate
   -- Applicative `pure` — for `pure 128 :: Pattern Int` etc. in
-  -- parameter-as-Pattern slots (Grids and future vmods).
+  -- parameter-as-Pattern slots (Balistes and future vmods).
   , module Control.Applicative
   -- Application
   , applyFn, ($)
@@ -90,8 +90,8 @@ module Calypso.Prelude
   -- declared as typed Session-level bindings, classified by the
   -- walker and shipped to fh2-daemon at baseline load.
   , module Tidal.PolySignal
-  -- Grids vmod (BEAM-native MI Grids clone, parameter-as-Pattern).
-  , module Tidal.Grids
+  -- Balistes vmod (BEAM-native MI Balistes clone, parameter-as-Pattern).
+  , module Tidal.Balistes
   -- Repetitor vmod (ZR-inspired, BEAM-native rhythm corpus + per-row offsets).
   , module Tidal.Repetitor
   -- René machine (Make-Noise-René-inspired Cartesian sequencer; user-content + autonomous traversal).
@@ -141,13 +141,13 @@ import Tidal.PolySignal
   , polyPreset
   , polyPresetNote
   )
-import Tidal.Grids
-  ( Grids(..)
-  , GridsConfig
-  , GridsSnapshot
-  , grids
-  , gridsWith
-  , gridsConfig
+import Tidal.Balistes
+  ( Balistes(..)
+  , BalistesConfig
+  , BalistesSnapshot
+  , balistes
+  , balistesWith
+  , balistesConfig
   )
 import Tidal.Repetitor
   ( Repetitor(..)
@@ -194,7 +194,7 @@ negate x = PRing.sub PSemiring.zero x
 -- | iac  = MidiDevice "IAC Driver Tidal" 30
 -- |
 -- | (Extracted to `Tidal.MidiDevice` 2026-05-18 to break a cycle
--- | between Tidal.Grids and this module.)
+-- | between Tidal.Balistes and this module.)
 -- | ```
 -- MidiDevice is re-exported below from Tidal.MidiDevice.
 

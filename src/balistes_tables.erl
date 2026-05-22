@@ -1,5 +1,5 @@
-%% Auto-generated from stages-firmware/grids/resources/lookup_tables.py
-%% by tools/extract-grids-tables.py.  Do not edit by hand.
+%% Auto-generated from stages-firmware/balistes/resources/lookup_tables.py
+%% by tools/extract-balistes-tables.py.  Do not edit by hand.
 %%
 %% 25 drum-map nodes, each 96 bytes = 3 instruments x 32 steps.
 %% Layout per node: byte at offset (instrument * 32 + step) is the
@@ -7,7 +7,7 @@
 %%
 %% drum_map(I, J) for I,J in 0..4 returns the binary for node[I][J]
 %% in the 5x5 grid (per pattern_generator.cc:69-75).
--module(grids_tables).
+-module(balistes_tables).
 -compile({no_auto_import, [node/1]}).
 -export([node/1, drum_map/2, num_nodes/0]).
 

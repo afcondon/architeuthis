@@ -170,7 +170,7 @@ terminate(_Reason, _StateName, _State) ->
 
 %% Broadcast `{compute_until, Window}` to every voice in tidal_voice_sup
 %% AND every BEAM-native virtual-module voice (currently just
-%% grids_voice_sup; future vmods can opt in by adding their supervisor
+%% balistes_voice_sup; future vmods can opt in by adding their supervisor
 %% to the broadcast list).  Window is a map with currentCycle,
 %% lookAheadCycle, cycleDurationMs, nowUnixUs — sufficient for each
 %% voice to convert its pattern's cycle-events to absolute Unix
@@ -178,7 +178,7 @@ terminate(_Reason, _StateName, _State) ->
 %% (returns ok immediately) or has no children.
 broadcast_compute_window(Window) ->
     broadcast_to(tidal_voice_sup, fun tidal_voice_sup:which_voices/0, Window),
-    broadcast_to(grids_voice_sup, fun grids_voice_sup:which_voices/0, Window),
+    broadcast_to(balistes_voice_sup, fun balistes_voice_sup:which_voices/0, Window),
     broadcast_to(repetitor_voice_sup, fun repetitor_voice_sup:which_voices/0, Window),
     broadcast_to(rene_voice_sup, fun rene_voice_sup:which_voices/0, Window),
     broadcast_to(virtual_polysignal_voice_sup,

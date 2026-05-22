@@ -1,5 +1,5 @@
 %% @doc René voice supervisor — `simple_one_for_one` for rene_voice
-%% gen_servers.  Mirror of grids_voice_sup / repetitor_voice_sup.
+%% gen_servers.  Mirror of balistes_voice_sup / repetitor_voice_sup.
 -module(rene_voice_sup).
 -behaviour(supervisor).
 

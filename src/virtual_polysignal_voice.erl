@@ -5,7 +5,7 @@
 %% `{index, value}` to the live-control bus at
 %% `<bus_prefix>.<index>`.
 %%
-%% Architecture mirrors grids_voice / rene_voice:
+%% Architecture mirrors balistes_voice / rene_voice:
 %%   * subscribes to the clock's `{compute_until, Window}` broadcast;
 %%   * holds the opaque PureScript PolySignal value (Foreign) as state;
 %%   * `set_config` swaps the value on a same-alias re-fire (live

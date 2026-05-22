@@ -162,7 +162,7 @@ Initial population from a survey of `src/Tidal/Controls.purs` (atlantis,
 14 verbs) + the wider SuperDirt vocab implemented in
 `purerl-tidal-port` (34 verbs, the lpf/hpf/room/vowel family
 expansion), 2026-05-22.  Sinks surveyed from
-`src/Tidal/Dispatch/`, `src/grids_voice.erl`, `src/rene_voice.erl`,
+`src/Tidal/Dispatch/`, `src/balistes_voice.erl`, `src/rene_voice.erl`,
 `src/repetitor_voice.erl`, and `src/virtual_polysignal_voice.erl`.
 
 The wider SD vocab (lpf/hpf/room/attack/etc.) is in purerl-tidal-port

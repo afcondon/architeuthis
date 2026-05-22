@@ -3,7 +3,7 @@
 %% broadcast) to the master `{compute_until, Window}` ticks; on each
 %% tick, emits any pattern steps that fall in the window.
 %%
-%% Architecture mirrors grids_voice.  Phase 2 (this file): config is a
+%% Architecture mirrors balistes_voice.  Phase 2 (this file): config is a
 %% static map containing pattern slug + per-row offsets.  Phase 3
 %% swaps in a PS-side FFI call against a Foreign config so offsets
 %% become `Pattern Int` slots.

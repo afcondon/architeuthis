@@ -91,7 +91,7 @@ liveOr def name = pattern \(State st) ->
     [ Analog { context: emptyContext, part: st.arc, value } ]
 
 -- | Read an integer control by name; default 0 when missing.
--- | Companion to `live` for slots that want a Pattern Int — Grids and
+-- | Companion to `live` for slots that want a Pattern Int — Balistes and
 -- | other vmod parameter slots, midi note numbers, etc.  Truncates
 -- | Numbers to Int via floor (the same rule the wire path uses).
 liveInt :: String -> Pattern Int

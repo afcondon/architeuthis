@@ -1,12 +1,12 @@
--- | Tidal.Grids — typed Session-level binding for the BEAM-native MI
--- | Grids virtual module.  First member of the vmod family per memory
+-- | Tidal.Balistes — typed Session-level binding for the BEAM-native MI
+-- | Balistes virtual module.  First member of the vmod family per memory
 -- | `project_beam_native_virtual_modules`; first concrete instance of
 -- | the parameter-as-Pattern lift per `project_parameter_as_pattern_lift`.
 -- |
 -- | A typed Session-level binding looks like:
 -- |
--- |     drums :: Grids "drums"
--- |     drums = grids fh2qd 14 $ gridsConfig
+-- |     drums :: Balistes "drums"
+-- |     drums = balistes fh2qd 14 $ balistesConfig
 -- |       { x          = pure 128
 -- |       , y          = pure 128
 -- |       , fillBd     = pure 200
@@ -19,26 +19,26 @@
 -- | `pure n`; live-coded values use mini-notation (`mini "<100 150
 -- | 200>"`) or composed patterns (`sine # range 0 255 # slow 4`).
 -- | The walker classifies the value by constructor tag, ships a
--- | `RegisterGrids` event with the opaque config Foreign payload to
--- | the Erlang shell, which spawns a `grids_voice` gen_server.  Per
+-- | `RegisterBalistes` event with the opaque config Foreign payload to
+-- | the Erlang shell, which spawns a `balistes_voice` gen_server.  Per
 -- | step (32 steps per cycle), the voice calls back into PureScript
 -- | via `evaluateParamsAt` to query each pattern at the step's cycle
--- | position, then hands the seven Ints to `grids_engine:evaluate_step`.
+-- | position, then hands the seven Ints to `balistes_engine:evaluate_step`.
 -- |
--- | Live mutation = refire the cell with a new GridsConfig.  The
+-- | Live mutation = refire the cell with a new BalistesConfig.  The
 -- | walker registers the new config under the same alias; the voice's
 -- | per-step query reads the latest value.
-module Tidal.Grids
-  ( Grids(..)
-  , GridsConfig
-  , GridsSnapshot
-  , grids
-  , gridsWith
-  , gridsConfig
+module Tidal.Balistes
+  ( Balistes(..)
+  , BalistesConfig
+  , BalistesSnapshot
+  , balistes
+  , balistesWith
+  , balistesConfig
   , evaluateParamsAt
   , evaluateParamsAtControls
   , buildControlMap
-  , mkStaticGridsConfig
+  , mkStaticBalistesConfig
   ) where
 
 import Prelude
@@ -55,13 +55,13 @@ import Tidal.Pattern.Types (ControlMap, Event(..), Pattern, Value(..))
 import Data.Rational (fromInt)
 
 -- ---------------------------------------------------------------------------
--- GridsConfig — seven Pattern Int slots
+-- BalistesConfig — seven Pattern Int slots
 -- ---------------------------------------------------------------------------
 
--- | All seven Grids parameters as Pattern Int slots.  Static values
+-- | All seven Balistes parameters as Pattern Int slots.  Static values
 -- | are `pure n`; patterned values come from mini-notation or
 -- | combinators (`sine # range 0 255 # slow 4` etc.).
-type GridsConfig =
+type BalistesConfig =
   { x          :: Pattern Int
   , y          :: Pattern Int
   , fillBd     :: Pattern Int
@@ -73,7 +73,7 @@ type GridsConfig =
 
 -- | Snapshot returned by `evaluateParamsAt`.  Field order doesn't
 -- | matter — the Erlang voice reads by key.
-type GridsSnapshot =
+type BalistesSnapshot =
   { x          :: Int
   , y          :: Int
   , fillBd     :: Int
@@ -85,9 +85,9 @@ type GridsSnapshot =
 
 -- | Sensible defaults: central node in the 5×5, moderate density,
 -- | no randomness, Drums mode.  Users override fields they care
--- | about: `gridsConfig { fillBd = pure 200 }`.
-gridsConfig :: GridsConfig
-gridsConfig =
+-- | about: `balistesConfig { fillBd = pure 200 }`.
+balistesConfig :: BalistesConfig
+balistesConfig =
   { x          : pure 128
   , y          : pure 128
   , fillBd     : pure 128
@@ -101,11 +101,11 @@ gridsConfig =
 -- The typed binding
 -- ---------------------------------------------------------------------------
 
--- | A typed Grids voice declared at the Session level.  The Symbol
+-- | A typed Balistes voice declared at the Session level.  The Symbol
 -- | parameter is decorative — the walker reads the alias from the
 -- | binding name (consistent with PolySignal and Instrument).
-data Grids (s :: Symbol)
-  = GridsBinding
+data Balistes (s :: Symbol)
+  = BalistesBinding
       { device     :: MidiDevice
       , channel    :: Int
       , noteBd     :: Int
@@ -114,23 +114,23 @@ data Grids (s :: Symbol)
       , vel        :: Int
       , velAccent  :: Int
       , durMs      :: Int
-      , config     :: GridsConfig
+      , config     :: BalistesConfig
       }
 
 -- ---------------------------------------------------------------------------
 -- Smart constructors
 -- ---------------------------------------------------------------------------
 
--- | Build a Grids binding with system-default note numbers (BD=36,
+-- | Build a Balistes binding with system-default note numbers (BD=36,
 -- | SD=38, HH=42) and velocities (90 normal, 127 accent), 30 ms note
 -- | length.
-grids
+balistes
   :: forall s
    . MidiDevice
   -> Int          -- ^ MIDI channel 1..16
-  -> GridsConfig
-  -> Grids s
-grids dev ch cfg = GridsBinding
+  -> BalistesConfig
+  -> Balistes s
+balistes dev ch cfg = BalistesBinding
   { device: dev
   , channel: ch
   , noteBd: 36
@@ -142,20 +142,20 @@ grids dev ch cfg = GridsBinding
   , config: cfg
   }
 
--- | Like `grids` but with explicit per-instrument MIDI notes — useful
+-- | Like `balistes` but with explicit per-instrument MIDI notes — useful
 -- | when the rig's FH-2 routing has BD/SD/HH on non-standard MCV
 -- | channels.
-gridsWith
+balistesWith
   :: forall s
    . { device :: MidiDevice
      , channel :: Int
      , noteBd :: Int, noteSd :: Int, noteHh :: Int
      , vel :: Int, velAccent :: Int
      , durMs :: Int
-     , config :: GridsConfig
+     , config :: BalistesConfig
      }
-  -> Grids s
-gridsWith = GridsBinding
+  -> Balistes s
+balistesWith = BalistesBinding
 
 -- ---------------------------------------------------------------------------
 -- Per-step parameter evaluation (called from Erlang)
@@ -164,14 +164,14 @@ gridsWith = GridsBinding
 -- | Evaluate each of the seven Pattern Int slots at a given cycle
 -- | position, using the live control snapshot from the tick window
 -- | so `liveIntOr "name"` slots read their current values.  Called
--- | by `grids_voice` once per 32-step tick.
+-- | by `balistes_voice` once per 32-step tick.
 -- |
--- | The query arc is `[pos, pos + 1/32)` — exactly one Grids step.
+-- | The query arc is `[pos, pos + 1/32)` — exactly one Balistes step.
 evaluateParamsAt
-  :: GridsConfig
+  :: BalistesConfig
   -> Array { name :: String, value :: Number }
   -> Number
-  -> GridsSnapshot
+  -> BalistesSnapshot
 evaluateParamsAt cfg controlPairs pos =
   evaluateParamsAtControls cfg (pairsToControlMap controlPairs) pos
 
@@ -180,10 +180,10 @@ evaluateParamsAt cfg controlPairs pos =
 -- | control bus's version counter changes.  See the rene_voice F1
 -- | implementation and `tools/timing-data/phase-4-diagnostic-f1/`.
 evaluateParamsAtControls
-  :: GridsConfig
+  :: BalistesConfig
   -> ControlMap
   -> Number
-  -> GridsSnapshot
+  -> BalistesSnapshot
 evaluateParamsAtControls cfg controls pos =
   { x          : sampleAt controls 128 cfg.x          pos
   , y          : sampleAt controls 128 cfg.y          pos
@@ -205,7 +205,7 @@ sampleAt :: ControlMap -> Int -> Pattern Int -> Number -> Int
 sampleAt controls dflt pat at =
   let arc0 = fromInt (truncTo32nd at)
       -- Quantise the query window onto 32nd-of-a-cycle boundaries so
-      -- adjacent Grids steps land in disjoint arcs.  Truncation, not
+      -- adjacent Balistes steps land in disjoint arcs.  Truncation, not
       -- rounding — step 5 should query [5/32, 6/32) regardless of
       -- floating-point slop in the timestamp we were handed.
       arc1 = fromInt (truncTo32nd at + 1)
@@ -219,20 +219,20 @@ sampleAt controls dflt pat at =
 
 -- | Build a ControlMap from the tick window's control snapshot.
 -- | Mirrors `Tidal.Voice.pairsToControlMap` (kept local to avoid
--- | pulling Voice's full machinery into the Grids module).
+-- | pulling Voice's full machinery into the Balistes module).
 pairsToControlMap
   :: Array { name :: String, value :: Number }
   -> ControlMap
 pairsToControlMap pairs =
   foldl (\m p -> Map.insert p.name (VNumber p.value) m) Map.empty pairs
 
--- | Build a GridsConfig from seven flat Ints — the wire-frame entry
--- | point for the cell-text `grids` declaration.  Each slot becomes
+-- | Build a BalistesConfig from seven flat Ints — the wire-frame entry
+-- | point for the cell-text `balistes` declaration.  Each slot becomes
 -- | `pure n`.  For dynamic patterns the user should declare in
 -- | Studio.purs with `liveIntOr` or richer Pattern expressions.
-mkStaticGridsConfig
-  :: Int -> Int -> Int -> Int -> Int -> Int -> Int -> GridsConfig
-mkStaticGridsConfig x y fBd fSd fHh r m =
+mkStaticBalistesConfig
+  :: Int -> Int -> Int -> Int -> Int -> Int -> Int -> BalistesConfig
+mkStaticBalistesConfig x y fBd fSd fHh r m =
   { x: pure x
   , y: pure y
   , fillBd: pure fBd

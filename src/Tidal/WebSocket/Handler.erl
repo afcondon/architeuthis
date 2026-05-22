@@ -342,13 +342,13 @@ try_parse_prefixed(<<"polysignal ", Rest/binary>>) ->
     %% form `polysignal <json>`, where the JSON envelope is exactly
     %% what fh2-config's `--apply-polysignal` reads on stdin.
     {polysignal, Rest};
-try_parse_prefixed(<<"grids ", Rest/binary>>) ->
-    %% Calypso ships a grids cell as a single line `grids <json>`
+try_parse_prefixed(<<"balistes ", Rest/binary>>) ->
+    %% Calypso ships a balistes cell as a single line `balistes <json>`
     %% where the JSON envelope has alias / deviceName / channel +
     %% the seven scalar parameter values.  Same direct-wire pattern
-    %% polysignal uses, but the target is grids_voice_sup rather
+    %% polysignal uses, but the target is balistes_voice_sup rather
     %% than fh2-daemon.
-    {grids, Rest};
+    {balistes, Rest};
 try_parse_prefixed(<<"kit ", Rest/binary>>) ->
     %% Kit dispatch cell. One form:
     %%
@@ -689,19 +689,19 @@ handle_pattern_message(Text, State) ->
                              "unreachable; spago shell-out, ~7s)">>}
             end,
             {reply, Reply, State};
-        {grids, Json} ->
-            %% Grids cell: a BEAM-native MI Grids voice declared
+        {balistes, Json} ->
+            %% Balistes cell: a BEAM-native MI Balistes voice declared
             %% directly from a Calypso cell.  JSON shape:
             %%
             %%   {"alias":"myKit","deviceName":"FH-2","channel":13,
             %%    "x":128,"y":128,"fillBd":220,"fillSd":100,
             %%    "fillHh":180,"randomness":32,"mode":0}
             %%
-            %% Builds a static GridsConfig (`pure n` per slot) via
+            %% Builds a static BalistesConfig (`pure n` per slot) via
             %% the PS helper and spawns/updates the voice.  For
             %% richer Pattern-driven slots, declare in Studio.purs
             %% with `liveIntOr` etc. instead.
-            Reply = apply_grids_cell(Json),
+            Reply = apply_balistes_cell(Json),
             {reply, Reply, State};
         {drumkit, Json} ->
             %% Drum-kit apply, synchronous through the fh2-config
@@ -975,8 +975,8 @@ handle_pattern_message(Text, State) ->
                                 CE = maps:get(claimErrors, Stats, 0),
                                 PS = maps:get(polySignals, Stats, 0),
                                 PE = maps:get(polySignalErrors, Stats, 0),
-                                GR = maps:get(grids, Stats, 0),
-                                GRE = maps:get(gridsErrors, Stats, 0),
+                                GR = maps:get(balistes, Stats, 0),
+                                GRE = maps:get(balistesErrors, Stats, 0),
                                 ConflictPart = case CE of
                                     0 -> <<>>;
                                     _ -> iolist_to_binary([
@@ -994,16 +994,16 @@ handle_pattern_message(Text, State) ->
                                             integer_to_binary(PE),
                                             " polysignal-error(s)"])
                                 end,
-                                GridsPart = case {GR, GRE} of
+                                BalistesPart = case {GR, GRE} of
                                     {0, 0} -> <<>>;
                                     {_, 0} -> iolist_to_binary([
                                             ", ", integer_to_binary(GR),
-                                            " grids voice(s)"]);
+                                            " balistes voice(s)"]);
                                     _      -> iolist_to_binary([
                                             ", ", integer_to_binary(GR),
-                                            " grids voice(s), ",
+                                            " balistes voice(s), ",
                                             integer_to_binary(GRE),
-                                            " grids-error(s)"])
+                                            " balistes-error(s)"])
                                 end,
                                 iolist_to_binary([
                                     " (",
@@ -1011,7 +1011,7 @@ handle_pattern_message(Text, State) ->
                                     integer_to_binary(I), " instrument(s), ",
                                     integer_to_binary(K), " drum kit(s)",
                                     PolyPart,
-                                    GridsPart,
+                                    BalistesPart,
                                     ConflictPart,
                                     ")"]);
                             {error, _} ->
@@ -1505,12 +1505,12 @@ fh2_apply_polysignal(JsonBinary) ->
     end.
 
 %% --------------------------------------------------------------------
-%% Grids cell apply.  Parses the JSON envelope Calypso sends for a
-%% `grids` cell, builds a static GridsConfig (`pure n` per slot) via
-%% the PS helper, and either spawns a new voice under grids_voice_sup
+%% Balistes cell apply.  Parses the JSON envelope Calypso sends for a
+%% `balistes` cell, builds a static BalistesConfig (`pure n` per slot) via
+%% the PS helper, and either spawns a new voice under balistes_voice_sup
 %% or pushes set_config into the existing one.
 %% --------------------------------------------------------------------
-apply_grids_cell(JsonBinary) ->
+apply_balistes_cell(JsonBinary) ->
     try json:decode(JsonBinary) of
         Map when is_map(Map) ->
             Alias       = maps:get(<<"alias">>,      Map, undefined),
@@ -1525,9 +1525,9 @@ apply_grids_cell(JsonBinary) ->
             Mode        = maps:get(<<"mode">>,       Map, 0),
             case Alias of
                 undefined ->
-                    {text, <<"ERR grids: JSON missing alias field">>};
+                    {text, <<"ERR balistes: JSON missing alias field">>};
                 _ ->
-                    Cfg = 'tidal_grids@ps':mkStaticGridsConfig(
+                    Cfg = 'tidal_balistes@ps':mkStaticBalistesConfig(
                             int_arg(X), int_arg(Y),
                             int_arg(FillBd), int_arg(FillSd), int_arg(FillHh),
                             int_arg(Random), int_arg(Mode)),
@@ -1543,33 +1543,33 @@ apply_grids_cell(JsonBinary) ->
                         cfg        => Cfg
                     },
                     AliasAtom = binary_to_atom(Alias, utf8),
-                    case grids_voice_sup:lookup_voice(AliasAtom) of
+                    case balistes_voice_sup:lookup_voice(AliasAtom) of
                         undefined ->
-                            case grids_voice_sup:start_voice(AliasAtom, VoiceConfig) of
+                            case balistes_voice_sup:start_voice(AliasAtom, VoiceConfig) of
                                 {ok, _Pid} ->
                                     {text, iolist_to_binary([
-                                        <<"OK grids ">>, Alias,
+                                        <<"OK balistes ">>, Alias,
                                         <<" started on ">>, DeviceName,
                                         <<" ch">>, integer_to_binary(int_arg(Channel))
                                     ])};
                                 {error, Reason} ->
                                     R = list_to_binary(io_lib:format("~p", [Reason])),
-                                    {text, <<"ERR grids start: ", R/binary>>}
+                                    {text, <<"ERR balistes start: ", R/binary>>}
                             end;
                         _Pid ->
-                            grids_voice:set_config(AliasAtom, Cfg),
+                            balistes_voice:set_config(AliasAtom, Cfg),
                             {text, iolist_to_binary([
-                                <<"OK grids ">>, Alias, <<" updated">>
+                                <<"OK balistes ">>, Alias, <<" updated">>
                             ])}
                     end
             end;
         Other ->
             R = list_to_binary(io_lib:format("~p", [Other])),
-            {text, <<"ERR grids: JSON not an object: ", R/binary>>}
+            {text, <<"ERR balistes: JSON not an object: ", R/binary>>}
     catch
         Class:What:_ST ->
             R = list_to_binary(io_lib:format("~p:~p", [Class, What])),
-            {text, <<"ERR grids: JSON parse failed: ", R/binary>>}
+            {text, <<"ERR balistes: JSON parse failed: ", R/binary>>}
     end.
 
 %% Coerce a JSON number (integer or float) into an Erlang integer.

@@ -1,5 +1,5 @@
 %% @doc Repetitor voice supervisor — `simple_one_for_one` for
-%% repetitor_voice gen_servers.  Sibling of grids_voice_sup.  Children
+%% repetitor_voice gen_servers.  Sibling of balistes_voice_sup.  Children
 %% are started dynamically on session-walker registration of
 %% `RegisterRepetitor` events.  Crashes don't restart automatically
 %% (`temporary` child spec): a Repetitor voice dying mid-session is a

@@ -10,7 +10,7 @@
 %%         = (row_bits(Pattern, Row))[(Step - Offset) mod len]
 %%
 %% Pure functions; per-instance state lives in repetitor_voice.
-%% Mirror of grids_engine.erl shape.
+%% Mirror of balistes_engine.erl shape.
 %%
 %% References:
 %%   docs/zr-virtual-module-plan.md

@@ -1,6 +1,6 @@
 -- | Tidal.Rene — typed Session-level binding for the BEAM-native
 -- | Make-Noise-René-inspired machine.  Third member of the machine
--- | family per [[project_machines_naming]], after Grids (autonomous,
+-- | family per [[project_machines_naming]], after Balistes (autonomous,
 -- | internal content) and Repetitor (autonomous, internal corpus).
 -- |
 -- | René sits in the hybrid quadrant: **user supplies the content**
@@ -97,7 +97,7 @@ type ReneConfig =
   -- | `pure true` preserves "advance every tick" behaviour.  Drive
   -- | this with a Tidal pattern to get irregular clocking — e.g.
   -- | `mini "1 0 0 1 0 1 0 0"` gives a 3-against-8 euclidean tempo.
-  -- | The same gate-pattern shape will eventually apply to Grids /
+  -- | The same gate-pattern shape will eventually apply to Balistes /
   -- | Repetitor / Steppy-style siblings.
   , advance  :: Pattern Boolean
   }

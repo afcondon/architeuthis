@@ -188,10 +188,10 @@ event_to_line({registerVirtualPolySignal,
     {true,
      iolist_to_binary([<<"vpolysignal\t">>, A, <<"\t">>, F,
                        <<"\t">>, P])};
-event_to_line({registerGrids,
+event_to_line({registerBalistes,
                #{alias := A, deviceAlias := D, channel := Ch}}) ->
     {true,
-     iolist_to_binary([<<"grids\t">>, A, <<"\t">>, D, <<"\t">>,
+     iolist_to_binary([<<"balistes\t">>, A, <<"\t">>, D, <<"\t">>,
                        integer_to_binary(Ch)])};
 event_to_line({registerRepetitor,
                #{alias := A, deviceAlias := D, channel := Ch,
@@ -227,7 +227,7 @@ event_to_line(_) ->
 %% A device event registers the MIDI port + latency with the
 %% dispatcher under the user-given alias.  We also stash the
 %% alias→latencyMs mapping in the accumulator so subsequent vmod
-%% registrations (rene/grids/repetitor) can pull device latency into
+%% registrations (rene/balistes/repetitor) can pull device latency into
 %% their VoiceConfig — the F-LAT fix mirrors what
 %% `Tidal.Dispatcher` does for Tidal-pattern emits
 %% (`adjustedUnixUs = wallUs - dev.latencyMs * 1000`).
@@ -400,12 +400,12 @@ apply_event({registerGateDrumKit,
     tidal_dispatcher:set_binding_from_spec(A, Spec),
     bump(drumKits, Acc);
 
-%% Grids vmod Phase 3 (2026-05-18): a BEAM-native Grids voice declared
-%% at the Session level.  We start the gen_server under grids_voice_sup
+%% Balistes vmod Phase 3 (2026-05-18): a BEAM-native Balistes voice declared
+%% at the Session level.  We start the gen_server under balistes_voice_sup
 %% with the captured config + MIDI output settings.  Same-alias re-fire
 %% just updates the running voice's cfg in place (no restart, no
 %% step-counter reset) — the live-mutation showcase.
-apply_event({registerGrids,
+apply_event({registerBalistes,
              #{ alias       := A
               , deviceAlias := D
               , deviceName  := PortName
@@ -432,28 +432,28 @@ apply_event({registerGrids,
         latency_ms => LatencyMs
     },
     AliasAtom = binary_to_atom(A, utf8),
-    case grids_voice_sup:lookup_voice(AliasAtom) of
+    case balistes_voice_sup:lookup_voice(AliasAtom) of
         undefined ->
-            case grids_voice_sup:start_voice(AliasAtom, VoiceConfig) of
+            case balistes_voice_sup:start_voice(AliasAtom, VoiceConfig) of
                 {ok, _Pid} ->
-                    tidal_log:info("grids voice ~s started on ~s ch~B~n",
+                    tidal_log:info("balistes voice ~s started on ~s ch~B~n",
                                    [A, PortName, Ch]),
-                    bump(grids, Acc);
+                    bump(balistes, Acc);
                 {error, Reason} ->
-                    tidal_log:err("grids voice ~s: start failed: ~p~n",
+                    tidal_log:err("balistes voice ~s: start failed: ~p~n",
                                   [A, Reason]),
-                    bump(gridsErrors, Acc)
+                    bump(balistesErrors, Acc)
             end;
         _Pid ->
             %% Live update — same alias, just swap the config.  Step
             %% counter and perturbations survive; the next step queries
             %% the new patterns.
-            grids_voice:set_config(AliasAtom, Cfg),
-            bump(grids, Acc)
+            balistes_voice:set_config(AliasAtom, Cfg),
+            bump(balistes, Acc)
     end;
 
 %% Repetitor vmod Phase 3 (2026-05-19): a BEAM-native Repetitor voice
-%% declared at the Session level.  Mirror of registerGrids — same
+%% declared at the Session level.  Mirror of registerBalistes — same
 %% MIDI-routing fields plus library + pattern_slug selectors that
 %% choose which corpus entry the voice plays.  Same live-mutation
 %% semantics: same-alias re-fire updates config in place; the
