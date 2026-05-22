@@ -1,14 +1,14 @@
 -- | Sessions.VirtualLfoBalistes — the simplest end-to-end demo of a
 -- | virtual polysignal driving a vmod.
 -- |
--- | A `polyLfo (Virtual "lfoBank")` runs entirely in BEAM, no FH-2
+-- | A `octoLfo (Virtual "lfoBank")` runs entirely in BEAM, no FH-2
 -- | round-trip.  Its eight outputs land on the live-control bus at
 -- | `lfoBank.0`..`lfoBank.7` and the Balistes voice reads two of them
 -- | via `liveIntOr` for its x/y density inputs — producing
 -- | continuously evolving drum patterns with no external CV
 -- | source.
 -- |
--- | The user-facing difference from `Sessions.Polysignals` is
+-- | The user-facing difference from `Sessions.Selenes` is
 -- | exactly one identifier: `Virtual "lfoBank"` instead of
 -- | `fh2Main`.  Everything else (slot shape, LFO ratios, Balistes
 -- | config, `liveIntOr` usage) is unchanged.
@@ -37,8 +37,8 @@ import Studio (iac)
 -- Slots 2..7: still ticking (unused — proves they cost nothing).
 -- ---------------------------------------------------------------------------
 
-studioVirtualLfo :: PolySignal "studioVirtualLfo"
-studioVirtualLfo = polyLfo (Virtual "lfoBank")
+studioVirtualLfo :: Selene "studioVirtualLfo"
+studioVirtualLfo = octoLfo (Virtual "lfoBank")
   [ { ratio: 0.125, shape: LfoSqr }
   , { ratio: 1.0,   shape: LfoSaw }
   , { ratio: 2.0,   shape: LfoSin }

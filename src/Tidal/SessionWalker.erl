@@ -219,11 +219,11 @@ vPerOctFields(_) ->
 %%                       range => RangeValue}}
 %%
 %% Because Bank, LfoSlot, LfoWave, and OutputRange are all defined in
-%% Tidal.PolySignal, the encoding inside the record matches what the
+%% Tidal.Selene, the encoding inside the record matches what the
 %% PureScript types expect.  We pass the inner record through verbatim;
 %% the PureScript classifier reads it as the typed record directly.
 %% No mapping happens at this seam — domain semantics (wire token
-%% mapping) all live in `Tidal.PolySignal`.
+%% mapping) all live in `Tidal.Selene`.
 %% --------------------------------------------------------------------
 polyLfoConfigFields({polyLfoConfig, #{bank := _, slots := _, range := _} = M}) ->
     {just, M};

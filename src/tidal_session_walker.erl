@@ -179,14 +179,14 @@ event_to_line({registerGateDrumKit,
     {true,
      iolist_to_binary([<<"gatekit\t">>, A, <<"\t">>, R, <<"\t">>,
                        HitsBin])};
-event_to_line({registerPolySignal,
+event_to_line({registerSelene,
                #{alias := A, family := F}}) ->
     {true,
-     iolist_to_binary([<<"polysignal\t">>, A, <<"\t">>, F])};
-event_to_line({registerVirtualPolySignal,
+     iolist_to_binary([<<"selene\t">>, A, <<"\t">>, F])};
+event_to_line({registerVirtualSelene,
                #{alias := A, family := F, busPrefix := P}}) ->
     {true,
-     iolist_to_binary([<<"vpolysignal\t">>, A, <<"\t">>, F,
+     iolist_to_binary([<<"vselene\t">>, A, <<"\t">>, F,
                        <<"\t">>, P])};
 event_to_line({registerBalistes,
                #{alias := A, deviceAlias := D, channel := Ch}}) ->
@@ -573,14 +573,14 @@ apply_event({registerOdonus,
     end;
 
 %% Slab C step 1 (2026-05-18): an autonomous FH-2 polysignal declared
-%% at the Session level (typed PolySignal binding).  The PureScript
+%% at the Session level (typed Selene binding).  The PureScript
 %% walker projected the value to the JSON envelope the daemon already
 %% understands; we hand it verbatim to fh2-daemon via
 %% `apply-polysignal <json>` on its Unix socket.  Daemon does the real
 %% claim work at `Rig.applyWithClaims` — name conflicts come back as
 %% an `ERR` line that we surface via `tidal_log:err` (same warn-on-
 %% conflict policy as the front-end reservations Phase 1 path).
-apply_event({registerPolySignal,
+apply_event({registerSelene,
              #{ alias        := A
               , family       := F
               , jsonEnvelope := J
@@ -589,30 +589,30 @@ apply_event({registerPolySignal,
     case fh2_daemon_call(Cmd) of
         {ok, <<"OK", _/binary>> = Reply} ->
             tidal_log:debug(
-                "session_walker: polysignal ~s (~s) -> ~s~n",
+                "session_walker: selene ~s (~s) -> ~s~n",
                 [A, F, Reply]),
-            bump(polySignals, Acc);
+            bump(selenes, Acc);
         {ok, ErrReply} ->
             tidal_log:err(
-                "session_walker: polysignal ~s (~s) refused: ~s~n",
+                "session_walker: selene ~s (~s) refused: ~s~n",
                 [A, F, ErrReply]),
-            bump(polySignalErrors, Acc);
+            bump(seleneErrors, Acc);
         {error, Reason} ->
             tidal_log:err(
-                "session_walker: polysignal ~s (~s) daemon error: ~p~n",
+                "session_walker: selene ~s (~s) daemon error: ~p~n",
                 [A, F, Reason]),
-            bump(polySignalErrors, Acc)
+            bump(seleneErrors, Acc)
     end;
 
 %% A virtual polysignal — runs entirely in BEAM, no fh2-daemon
-%% round-trip.  Start (or live-update) a virtual_polysignal_voice
-%% under virtual_polysignal_voice_sup.  Same-alias re-fire swaps the
-%% PolySignal value in place; cycle phase is preserved across edits.
-apply_event({registerVirtualPolySignal,
+%% round-trip.  Start (or live-update) a virtual_selene_voice
+%% under virtual_selene_voice_sup.  Same-alias re-fire swaps the
+%% Selene value in place; cycle phase is preserved across edits.
+apply_event({registerVirtualSelene,
              #{ alias           := A
               , busPrefix       := Prefix
               , family          := F
-              , polySignalValue := PV
+              , seleneValue := PV
               }}, Acc) ->
     VoiceConfig = #{
         bus_prefix => Prefix,
@@ -620,24 +620,24 @@ apply_event({registerVirtualPolySignal,
         polysig    => PV
     },
     AliasAtom = binary_to_atom(A, utf8),
-    case virtual_polysignal_voice_sup:lookup_voice(AliasAtom) of
+    case virtual_selene_voice_sup:lookup_voice(AliasAtom) of
         undefined ->
-            case virtual_polysignal_voice_sup:start_voice(AliasAtom, VoiceConfig) of
+            case virtual_selene_voice_sup:start_voice(AliasAtom, VoiceConfig) of
                 {ok, _Pid} ->
                     tidal_log:info(
-                      "virtual polysignal ~s (~s) started, prefix=~s~n",
+                      "virtual selene ~s (~s) started, prefix=~s~n",
                       [A, F, Prefix]),
-                    bump(virtualPolySignals, Acc);
+                    bump(virtualSelenes, Acc);
                 {error, Reason} ->
                     tidal_log:err(
-                      "virtual polysignal ~s (~s): start failed: ~p~n",
+                      "virtual selene ~s (~s): start failed: ~p~n",
                       [A, F, Reason]),
-                    bump(virtualPolySignalErrors, Acc)
+                    bump(virtualSeleneErrors, Acc)
             end;
         _Pid ->
-            virtual_polysignal_voice:set_config(AliasAtom,
+            virtual_selene_voice:set_config(AliasAtom,
                 #{polysig => PV}),
-            bump(virtualPolySignals, Acc)
+            bump(virtualSelenes, Acc)
     end;
 
 %% A claim-error event surfaces a Phase-1 reservation-validation

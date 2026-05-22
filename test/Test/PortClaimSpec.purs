@@ -230,18 +230,18 @@ applyEs9Tests = do
   log "  applyClaim — ES-9 (SwapOk policy):"
 
   let
-    polyLfo =
-      es9Claim OwnPolySignal "myLfo" BankEs9Panel [0,1,2,3,4,5,6,7] NeedCV
+    octoLfo =
+      es9Claim OwnSelene "myLfo" BankEs9Panel [0,1,2,3,4,5,6,7] NeedCV
     polyClk =
-      es9Claim OwnPolySignal "myClk" BankEs9Panel [0,1,2,3,4,5,6,7] NeedGate
+      es9Claim OwnSelene "myClk" BankEs9Panel [0,1,2,3,4,5,6,7] NeedGate
 
   -- Exact-match across owners on ES-9: SwapOk evicts the previous claim.
-  case applyClaim polyLfo emptyTable >>= applyClaim polyClk of
+  case applyClaim octoLfo emptyTable >>= applyClaim polyClk of
     Right table ->
       let
         owners = map _.owner (tableClaims table)
       in
-        if owners == [OwnerId OwnPolySignal "myClk"]
+        if owners == [OwnerId OwnSelene "myClk"]
           then log "    ✓ ES-9 exact-match across owners: previous evicted (SwapOk)"
           else log $ "    ✗ ES-9 exact-match: wrong owners after swap: " <> show owners
     Left err -> log $ "    ✗ ES-9 exact-match unexpectedly failed: " <> show err
@@ -249,12 +249,12 @@ applyEs9Tests = do
   -- Partial overlap on ES-9 panel: error regardless of swap policy.
   let
     halfA =
-      es9Claim OwnPolySignal "myLfo" BankEs9Panel [0,1,2,3] NeedCV
+      es9Claim OwnSelene "myLfo" BankEs9Panel [0,1,2,3] NeedCV
     crossB =
-      es9Claim OwnPolySignal "myKit" BankEs9Panel [2,3,4,5] NeedGate
+      es9Claim OwnSelene "myKit" BankEs9Panel [2,3,4,5] NeedGate
   case applyClaim halfA emptyTable >>= applyClaim crossB of
     Left (PartialConflict r)
-      | r.owner == OwnerId OwnPolySignal "myKit"
+      | r.owner == OwnerId OwnSelene "myKit"
       , Array.length r.conflicts == 1 ->
         log "    ✓ partial overlap on ES-9 panel: PartialConflict raised"
     other -> log $ "    ✗ partial overlap: unexpected " <> show (eitherToShape other)
@@ -262,7 +262,7 @@ applyEs9Tests = do
   -- Capability error: NeedCV on a gate-only bank.
   let
     cvOnGt =
-      es9Claim OwnPolySignal "myEnv" (BankEs9Gt 0) [0,1,2,3] NeedCV
+      es9Claim OwnSelene "myEnv" (BankEs9Gt 0) [0,1,2,3] NeedCV
   case applyClaim cvOnGt emptyTable of
     Left (CapabilityError r) ->
       let slotsBad = map _.slot r.conflicts

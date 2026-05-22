@@ -337,11 +337,11 @@ try_parse_prefixed(<<"osc ", Rest/binary>>) ->
     parse_osc_verb(Rest);
 try_parse_prefixed(<<"fh2-config ", Rest/binary>>) ->
     parse_fh2_config_verb(Rest);
-try_parse_prefixed(<<"polysignal ", Rest/binary>>) ->
+try_parse_prefixed(<<"selene ", Rest/binary>>) ->
     %% Calypso ships polysignal cell blocks as a single line of the
     %% form `polysignal <json>`, where the JSON envelope is exactly
     %% what fh2-config's `--apply-polysignal` reads on stdin.
-    {polysignal, Rest};
+    {selene, Rest};
 try_parse_prefixed(<<"balistes ", Rest/binary>>) ->
     %% Calypso ships a balistes cell as a single line `balistes <json>`
     %% where the JSON envelope has alias / deviceName / channel +
@@ -662,7 +662,7 @@ handle_pattern_message(Text, State) ->
                              " on ch ", (integer_to_binary(Channel))/binary,
                              " (SysEx push in flight)">>},
             {reply, Reply, State};
-        {polysignal, Json} ->
+        {selene, Json} ->
             %% Polysignal: a multi-output autonomous FH-2 panel
             %% configuration (polylfo / polyclock / polyenv /
             %% polyeuclid / polyeuclid-pairs / polyrand). The cell
@@ -684,8 +684,8 @@ handle_pattern_message(Text, State) ->
                 {ok, ReplyBin} ->
                     {text, ReplyBin};
                 {error, _Reason} ->
-                    spawn(fun() -> fh2_apply_polysignal_standalone(Json) end),
-                    {text, <<"OK: polysignal apply in flight (daemon "
+                    spawn(fun() -> fh2_apply_selene_standalone(Json) end),
+                    {text, <<"OK: selene apply in flight (daemon "
                              "unreachable; spago shell-out, ~7s)">>}
             end,
             {reply, Reply, State};
@@ -973,8 +973,8 @@ handle_pattern_message(Text, State) ->
                                 I  = maps:get(instruments, Stats, 0),
                                 K  = maps:get(drumKits, Stats, 0),
                                 CE = maps:get(claimErrors, Stats, 0),
-                                PS = maps:get(polySignals, Stats, 0),
-                                PE = maps:get(polySignalErrors, Stats, 0),
+                                PS = maps:get(selenes, Stats, 0),
+                                PE = maps:get(seleneErrors, Stats, 0),
                                 GR = maps:get(balistes, Stats, 0),
                                 GRE = maps:get(balistesErrors, Stats, 0),
                                 ConflictPart = case CE of
@@ -987,10 +987,10 @@ handle_pattern_message(Text, State) ->
                                     {0, 0} -> <<>>;
                                     {_, 0} -> iolist_to_binary([
                                             ", ", integer_to_binary(PS),
-                                            " polysignal(s)"]);
+                                            " selene(s)"]);
                                     _      -> iolist_to_binary([
                                             ", ", integer_to_binary(PS),
-                                            " polysignal(s), ",
+                                            " selene(s), ",
                                             integer_to_binary(PE),
                                             " polysignal-error(s)"])
                                 end,
@@ -1501,7 +1501,7 @@ fh2_apply_polysignal(JsonBinary) ->
             io:format("[polysignal daemon] ~s~n", [Reply]);
         {error, _Reason} ->
             io:format("[polysignal] no daemon, falling back to spago shell-out~n"),
-            fh2_apply_polysignal_standalone(JsonBinary)
+            fh2_apply_selene_standalone(JsonBinary)
     end.
 
 %% --------------------------------------------------------------------
@@ -1577,7 +1577,7 @@ int_arg(N) when is_integer(N) -> N;
 int_arg(N) when is_float(N)   -> trunc(N);
 int_arg(_)                    -> 0.
 
-fh2_apply_polysignal_standalone(JsonBinary) ->
+fh2_apply_selene_standalone(JsonBinary) ->
     Path = "/Users/afc/work/afc-work/music/expert-sleepers/fh2-config",
     %% Unique tempfile per call so concurrent fires don't clobber each
     %% other. Erlang's monotonic_time gives us nanosecond granularity.
@@ -1588,7 +1588,7 @@ fh2_apply_polysignal_standalone(JsonBinary) ->
         ok -> ok;
         {error, WriteErr} ->
             io:format("[polysignal] tempfile write failed: ~p~n", [WriteErr]),
-            erlang:error({polysignal_tempfile, WriteErr})
+            erlang:error({selene_tempfile, WriteErr})
     end,
     Cmd = io_lib:format(
         "cd ~s && spago run -- --apply-polysignal < ~s 2>&1",

@@ -129,8 +129,8 @@ liveBoolOr def name = pattern \(State st) ->
 -- | use: an autonomous emitter (virtual polysignal, future vmod
 -- | output, MIDI-controller pad, …) writes 0 / non-zero values to
 -- | a bus key, and a downstream consumer reads those as gate-shaped
--- | triggers — `advance = gateFromBus "polyEuclid.0"` makes a
--- | virtual polyEuclid bank clock a René voice.
+-- | triggers — `advance = gateFromBus "octoEuclid.0"` makes a
+-- | virtual octoEuclid bank clock a René voice.
 -- |
 -- | Semantically equivalent to `liveBool` (any non-zero value reads
 -- | true; absent / zero reads false).  The distinct name marks

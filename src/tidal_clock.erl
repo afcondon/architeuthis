@@ -181,8 +181,8 @@ broadcast_compute_window(Window) ->
     broadcast_to(balistes_voice_sup, fun balistes_voice_sup:which_voices/0, Window),
     broadcast_to(repetitor_voice_sup, fun repetitor_voice_sup:which_voices/0, Window),
     broadcast_to(odonus_voice_sup, fun odonus_voice_sup:which_voices/0, Window),
-    broadcast_to(virtual_polysignal_voice_sup,
-                 fun virtual_polysignal_voice_sup:which_voices/0, Window),
+    broadcast_to(virtual_selene_voice_sup,
+                 fun virtual_selene_voice_sup:which_voices/0, Window),
     ok.
 
 broadcast_to(SupName, WhichFn, Window) ->

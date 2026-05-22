@@ -40,8 +40,8 @@ import Tidal.MidiClaim
   )
 import Tidal.PortClaim (ClaimError, OwnerKind(..))
 import Foreign (unsafeToForeign)
-import Tidal.PolySignal as PolySignal
-import Tidal.PolySignal (Bank(..))
+import Tidal.Selene as Selene
+import Tidal.Selene (Bank(..))
 
 -- ---------------------------------------------------------------------------
 -- The boundary ADT
@@ -126,7 +126,7 @@ data RegistrationEvent
   -- | `fh2_daemon_call("apply-polysignal <json>")` — claim happens
   -- | at the daemon's `Rig.applyWithClaims` boundary, conflicts
   -- | surface as boot-time errors via the daemon's reply.
-  | RegisterPolySignal
+  | RegisterSelene
       { alias :: String
       , family :: String
       , jsonEnvelope :: String
@@ -134,17 +134,17 @@ data RegistrationEvent
   -- | A polysignal targeting a `Virtual <busPrefix>` bank — runs
   -- | entirely in BEAM, no fh2-daemon round-trip.  The walker
   -- | classified the typed value, captured its raw form as
-  -- | `polySignalValue` (Foreign — passed through opaquely so the
+  -- | `seleneValue` (Foreign — passed through opaquely so the
   -- | voice can re-discriminate via the family tag), and hands the
   -- | event to the Erlang side which spawns a
-  -- | `virtual_polysignal_voice` under
-  -- | `virtual_polysignal_voice_sup`.  The eight outputs land on
+  -- | `virtual_selene_voice` under
+  -- | `virtual_selene_voice_sup`.  The eight outputs land on
   -- | the live-control bus at `<busPrefix>.0`..`<busPrefix>.7`.
-  | RegisterVirtualPolySignal
+  | RegisterVirtualSelene
       { alias :: String
       , busPrefix :: String
       , family :: String
-      , polySignalValue :: Foreign
+      , seleneValue :: Foreign
       }
   -- | Balistes vmod Phase 3 (2026-05-18): a BEAM-native MI Balistes voice
   -- | declared at the Session level.  Walker captures the binding's
@@ -260,7 +260,7 @@ walkBaseline = do
     -- whose alias is the binding name; no device/router lookup
     -- needed.  The walker only projects to a JSON envelope, the
     -- daemon does the real claim work at apply-time.
-    polySigEvents = Array.mapMaybe pickPolySignal allPairs
+    seleneEvents = Array.mapMaybe pickSelene allPairs
     -- Balistes voices.  Inner MidiDevice tuple resolves to the
     -- declared device alias (same content-keyed lookup
     -- instruments use).  Same MIDI-channel claim semantics as
@@ -278,7 +278,7 @@ walkBaseline = do
                 <> repetitorEvents <> odonusEvents)
     claimErrorEvents = Array.mapMaybe claimErrorToEvent (validateMidiClaims claims)
   pure (claimErrorEvents <> devEvents <> routerEvents
-        <> instrEvents <> kitEvents <> polySigEvents
+        <> instrEvents <> kitEvents <> seleneEvents
         <> balistesEvents <> repetitorEvents <> odonusEvents)
 
 registrationToClaim :: RegistrationEvent -> Maybe MidiClaim
@@ -623,59 +623,59 @@ pickOdonus deviceAliases { name: alias, value } = do
       }
 
 -- ---------------------------------------------------------------------------
--- PolySignal classifier (Slab C step 1)
+-- Selene classifier (Slab C step 1)
 -- ---------------------------------------------------------------------------
 
--- | Classify a `PolySignal` value declared at the Session level.
+-- | Classify a `Selene` value declared at the Session level.
 -- | Dispatches on the constructor tag — one clause per family.  The
 -- | FFI passes each family's inner record map through verbatim
 -- | (purs-backend-erl's encoding matches the typed records bit-for-bit
 -- | for these specific types).
-pickPolySignal
+pickSelene
   :: { name :: String, value :: Foreign }
   -> Maybe RegistrationEvent
-pickPolySignal { name: alias, value } = do
+pickSelene { name: alias, value } = do
   tag <- constructorTag value
   case tag of
     "polyLfoConfig" -> do
       f <- polyLfoConfigFields value
-      mkEvent alias $ PolySignal.polyLfo f.bank f.slots f.range
+      mkEvent alias $ Selene.octoLfo f.bank f.slots f.range
     "polyClockConfig" -> do
       f <- polyClockConfigFields value
-      mkEvent alias $ PolySignal.polyClock f.bank f.slots f.range
+      mkEvent alias $ Selene.octoClock f.bank f.slots f.range
     "polyEnvConfig" -> do
       f <- polyEnvConfigFields value
-      mkEvent alias $ PolySignal.polyEnv f.bank f.slots f.range
+      mkEvent alias $ Selene.octoEnv f.bank f.slots f.range
     "polyEuclidConfig" -> do
       f <- polyEuclidConfigFields value
-      mkEvent alias $ PolySignal.polyEuclid f.bank f.slots f.range
+      mkEvent alias $ Selene.octoEuclid f.bank f.slots f.range
     "polyRandConfig" -> do
       f <- polyRandConfigFields value
-      mkEvent alias $ PolySignal.polyRand f.bank f.slots f.range
+      mkEvent alias $ Selene.octoRand f.bank f.slots f.range
     "polyPresetConfig" -> do
       f <- polyPresetConfigFields value
-      mkEvent alias $ PolySignal.polyPreset f.bank f.slots f.range
+      mkEvent alias $ Selene.octoPreset f.bank f.slots f.range
     "polyPresetNoteConfig" -> do
       f <- polyPresetNoteConfigFields value
-      mkEvent alias $ PolySignal.polyPresetNote f.bank f.slots f.range
+      mkEvent alias $ Selene.octoPresetNote f.bank f.slots f.range
     _ -> Nothing
   where
   mkEvent
     :: forall s
      . String
-    -> PolySignal.PolySignal s
+    -> Selene.Selene s
     -> Maybe RegistrationEvent
-  mkEvent a polysig = case PolySignal.polySignalBank polysig of
-    Virtual prefix -> Just $ RegisterVirtualPolySignal
+  mkEvent a polysig = case Selene.seleneBank polysig of
+    Virtual prefix -> Just $ RegisterVirtualSelene
       { alias: a
       , busPrefix: prefix
-      , family: PolySignal.polySignalFamily polysig
-      , polySignalValue: unsafeToForeign polysig
+      , family: Selene.seleneFamily polysig
+      , seleneValue: unsafeToForeign polysig
       }
-    _ -> Just $ RegisterPolySignal
+    _ -> Just $ RegisterSelene
       { alias: a
-      , family: PolySignal.polySignalFamily polysig
-      , jsonEnvelope: PolySignal.polySignalAsJson a polysig
+      , family: Selene.seleneFamily polysig
+      , jsonEnvelope: Selene.seleneAsJson a polysig
       }
 
 -- ---------------------------------------------------------------------------
@@ -741,57 +741,57 @@ foreign import vPerOctFields
 foreign import polyLfoConfigFields
   :: Foreign
   -> Maybe
-       { bank :: PolySignal.Bank
-       , slots :: Array PolySignal.LfoSlot
-       , range :: Maybe PolySignal.OutputRange
+       { bank :: Selene.Bank
+       , slots :: Array Selene.LfoSlot
+       , range :: Maybe Selene.OutputRange
        }
 
 foreign import polyClockConfigFields
   :: Foreign
   -> Maybe
-       { bank :: PolySignal.Bank
-       , slots :: Array PolySignal.ClockSlot
-       , range :: Maybe PolySignal.OutputRange
+       { bank :: Selene.Bank
+       , slots :: Array Selene.ClockSlot
+       , range :: Maybe Selene.OutputRange
        }
 
 foreign import polyEnvConfigFields
   :: Foreign
   -> Maybe
-       { bank :: PolySignal.Bank
-       , slots :: Array PolySignal.EnvSlot
-       , range :: Maybe PolySignal.OutputRange
+       { bank :: Selene.Bank
+       , slots :: Array Selene.EnvSlot
+       , range :: Maybe Selene.OutputRange
        }
 
 foreign import polyEuclidConfigFields
   :: Foreign
   -> Maybe
-       { bank :: PolySignal.Bank
-       , slots :: Array PolySignal.EuclidSlot
-       , range :: Maybe PolySignal.OutputRange
+       { bank :: Selene.Bank
+       , slots :: Array Selene.EuclidSlot
+       , range :: Maybe Selene.OutputRange
        }
 
 foreign import polyRandConfigFields
   :: Foreign
   -> Maybe
-       { bank :: PolySignal.Bank
-       , slots :: Array PolySignal.RandSlot
-       , range :: Maybe PolySignal.OutputRange
+       { bank :: Selene.Bank
+       , slots :: Array Selene.RandSlot
+       , range :: Maybe Selene.OutputRange
        }
 
 foreign import polyPresetConfigFields
   :: Foreign
   -> Maybe
-       { bank :: PolySignal.Bank
-       , slots :: Array PolySignal.PresetSlot
-       , range :: Maybe PolySignal.OutputRange
+       { bank :: Selene.Bank
+       , slots :: Array Selene.PresetSlot
+       , range :: Maybe Selene.OutputRange
        }
 
 foreign import polyPresetNoteConfigFields
   :: Foreign
   -> Maybe
-       { bank :: PolySignal.Bank
-       , slots :: Array PolySignal.PresetNoteSlot
-       , range :: Maybe PolySignal.OutputRange
+       { bank :: Selene.Bank
+       , slots :: Array Selene.PresetNoteSlot
+       , range :: Maybe Selene.OutputRange
        }
 
 -- | Decode the inner record of a `BalistesBinding` value.  Carries the

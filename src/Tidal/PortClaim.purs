@@ -407,7 +407,7 @@ isSubsetClaim (ClaimMask a) bClaim =
 data OwnerKind
   = OwnInstrument
   | OwnDrumKit
-  | OwnPolySignal
+  | OwnSelene
   | OwnTvoice
   | OwnYarns
 
@@ -421,7 +421,7 @@ describeOwnerKind :: OwnerKind -> String
 describeOwnerKind = case _ of
   OwnInstrument -> "instrument"
   OwnDrumKit    -> "drum kit"
-  OwnPolySignal -> "polysignal"
+  OwnSelene -> "selene"
   OwnTvoice     -> "tvoice"
   OwnYarns      -> "yarns"
 

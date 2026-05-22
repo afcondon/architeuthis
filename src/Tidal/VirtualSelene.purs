@@ -1,8 +1,8 @@
--- | Tidal.VirtualPolySignal — pure evaluator for polysignal values
+-- | Tidal.VirtualSelene — pure evaluator for polysignal values
 -- | targeting a `Virtual` bank.
 -- |
--- | The voice gen_server (`virtual_polysignal_voice.erl`) holds the
--- | typed PolySignal value as opaque Foreign and calls
+-- | The voice gen_server (`virtual_selene_voice.erl`) holds the
+-- | typed Selene value as opaque Foreign and calls
 -- | `evaluateAt(value, cyclePos)` per clock tick.  The result is a
 -- | flat `Array { index :: Int, value :: Number }` — one entry per
 -- | active slot — which the voice writes to the live-control bus at
@@ -13,7 +13,7 @@
 -- | `balistesConfig.x`, René notes, etc.) pick them up without a
 -- | scaling step on the cell-text side.  An LFO's natural -1..+1
 -- | swing is mapped to 0..255 here; clock / euclid gates write
--- | 0 (off) or 127 (on).  The OutputRange field of the PolySignal
+-- | 0 (off) or 127 (on).  The OutputRange field of the Selene
 -- | is ignored on the virtual path — it's an FH-2 firmware concept
 -- | that doesn't translate to integer-valued control-bus slots.
 -- |
@@ -21,7 +21,7 @@
 -- | Preset / PresetNote are returned as empty arrays for now (the
 -- | voice logs once and moves on).  Adding a family is one new
 -- | clause in `evaluateAt` plus its slot evaluator.
-module Tidal.VirtualPolySignal
+module Tidal.VirtualSelene
   ( evaluateAt
   , Output
   ) where
@@ -31,8 +31,8 @@ import Prelude
 import Data.Array as Array
 import Data.Int as Int
 import Math as Math
-import Tidal.PolySignal
-  ( PolySignal(..)
+import Tidal.Selene
+  ( Selene(..)
   , ClockSlot
   , EuclidSlot
   , LfoSlot
@@ -46,7 +46,7 @@ type Output = { index :: Int, value :: Number }
 
 -- | Evaluate a virtual polysignal at the given cycle position
 -- | (cycles, not seconds).  Returns one Output per active slot.
-evaluateAt :: forall s. PolySignal s -> Number -> Array Output
+evaluateAt :: forall s. Selene s -> Number -> Array Output
 evaluateAt polysig pos = case polysig of
   PolyLfoConfig    cfg -> evaluateLfo    cfg.slots pos
   PolyClockConfig  cfg -> evaluateClock  cfg.slots pos

@@ -1,4 +1,4 @@
--- | Tidal.PolySignal — typed polysignals as first-class Session
+-- | Tidal.Selene — typed polysignals as first-class Session
 -- | bindings.  Slab C steps 1 & 2 (2026-05-18).
 -- |
 -- | A polysignal is an autonomous, multi-output configuration installed
@@ -10,8 +10,8 @@
 -- |
 -- | A typed Session-level binding looks like:
 -- |
--- |     testLfo :: PolySignal "testLfo"
--- |     testLfo = polyLfo fh2Main
+-- |     testLfo :: Selene "testLfo"
+-- |     testLfo = octoLfo fh2Main
 -- |       [ { ratio: 1.0, shape: LfoTri }, …8 slots… ]
 -- |       (Just Bipolar5V)
 -- |
@@ -22,7 +22,7 @@
 -- |
 -- | The walker classifies the value by constructor tag, builds the
 -- | JSON envelope (same shape as Calypso's cell-text
--- | `polySignalEnvelopeJson`), and emits a `RegisterPolySignal` event.
+-- | `polySignalEnvelopeJson`), and emits a `RegisterSelene` event.
 -- | The Erlang side hands the envelope verbatim to fh2-daemon via
 -- | `fh2_daemon_call`, which puts it through `Rig.applyWithClaims` —
 -- | the unified port-claims layer from `project_port_claims_design`.
@@ -43,15 +43,15 @@
 -- | voltage (or pitch) on each claimed CV output and leave it there.
 -- | Useful for calibration, drone bedrock, or as a static counterweight
 -- | to other polysignals.
-module Tidal.PolySignal
-  ( PolySignal(..)
+module Tidal.Selene
+  ( Selene(..)
   , OutputRange(..)
   , Bank(..)
   , Fh2Bank(..)
   , fh2Main
   , fh28Gt
   , fh28Cv
-  , polySignalBank
+  , seleneBank
   , LfoWave(..)
   , ClockBase(..)
   , RandDirection(..)
@@ -64,15 +64,15 @@ module Tidal.PolySignal
   , RandSlot
   , PresetSlot
   , PresetNoteSlot
-  , polyLfo
-  , polyClock
-  , polyEnv
-  , polyEuclid
-  , polyRand
-  , polyPreset
-  , polyPresetNote
-  , polySignalAsJson
-  , polySignalFamily
+  , octoLfo
+  , octoClock
+  , octoEnv
+  , octoEuclid
+  , octoRand
+  , octoPreset
+  , octoPresetNote
+  , seleneAsJson
+  , seleneFamily
   , bankToWire
   , rangeToWire
   , lfoWaveToWire
@@ -124,7 +124,7 @@ rangeToWire = case _ of
 -- |   string is the bus-key prefix and the eight outputs land at
 -- |   `<prefix>.0`..`<prefix>.7` on the live-control bus.  The
 -- |   walker detects this case and routes to
--- |   `virtual_polysignal_voice_sup` instead of fh2-daemon.
+-- |   `virtual_selene_voice_sup` instead of fh2-daemon.
 data Bank
   = FH2 Fh2Bank
   | Virtual String
@@ -139,8 +139,8 @@ data Fh2Bank
 
 derive instance eqFh2Bank :: Eq Fh2Bank
 
--- | Smart helpers — cell text reads `polyLfo fh2Main ...` and
--- | `polyLfo (fh28Cv 2) ...` without the `FH2 (...)` wrapping
+-- | Smart helpers — cell text reads `octoLfo fh2Main ...` and
+-- | `octoLfo (fh28Cv 2) ...` without the `FH2 (...)` wrapping
 -- | ceremony.  These ARE the user surface; raw constructors are
 -- | available for code that needs to pattern-match on the bank.
 fh2Main :: Bank
@@ -368,10 +368,10 @@ type PresetNoteSlot =
   }
 
 -- ---------------------------------------------------------------------------
--- PolySignal sum
+-- Selene sum
 -- ---------------------------------------------------------------------------
 
-data PolySignal (s :: Symbol)
+data Selene (s :: Symbol)
   = PolyLfoConfig
       { bank :: Bank
       , slots :: Array LfoSlot
@@ -412,50 +412,50 @@ data PolySignal (s :: Symbol)
 -- Smart constructors
 -- ---------------------------------------------------------------------------
 
-polyLfo
+octoLfo
   :: forall s
-   . Bank -> Array LfoSlot -> Maybe OutputRange -> PolySignal s
-polyLfo bank slots range = PolyLfoConfig { bank, slots, range }
+   . Bank -> Array LfoSlot -> Maybe OutputRange -> Selene s
+octoLfo bank slots range = PolyLfoConfig { bank, slots, range }
 
-polyClock
+octoClock
   :: forall s
-   . Bank -> Array ClockSlot -> Maybe OutputRange -> PolySignal s
-polyClock bank slots range = PolyClockConfig { bank, slots, range }
+   . Bank -> Array ClockSlot -> Maybe OutputRange -> Selene s
+octoClock bank slots range = PolyClockConfig { bank, slots, range }
 
-polyEnv
+octoEnv
   :: forall s
-   . Bank -> Array EnvSlot -> Maybe OutputRange -> PolySignal s
-polyEnv bank slots range = PolyEnvConfig { bank, slots, range }
+   . Bank -> Array EnvSlot -> Maybe OutputRange -> Selene s
+octoEnv bank slots range = PolyEnvConfig { bank, slots, range }
 
-polyEuclid
+octoEuclid
   :: forall s
-   . Bank -> Array EuclidSlot -> Maybe OutputRange -> PolySignal s
-polyEuclid bank slots range = PolyEuclidConfig { bank, slots, range }
+   . Bank -> Array EuclidSlot -> Maybe OutputRange -> Selene s
+octoEuclid bank slots range = PolyEuclidConfig { bank, slots, range }
 
-polyRand
+octoRand
   :: forall s
-   . Bank -> Array RandSlot -> Maybe OutputRange -> PolySignal s
-polyRand bank slots range = PolyRandConfig { bank, slots, range }
+   . Bank -> Array RandSlot -> Maybe OutputRange -> Selene s
+octoRand bank slots range = PolyRandConfig { bank, slots, range }
 
-polyPreset
+octoPreset
   :: forall s
-   . Bank -> Array PresetSlot -> Maybe OutputRange -> PolySignal s
-polyPreset bank slots range = PolyPresetConfig { bank, slots, range }
+   . Bank -> Array PresetSlot -> Maybe OutputRange -> Selene s
+octoPreset bank slots range = PolyPresetConfig { bank, slots, range }
 
-polyPresetNote
+octoPresetNote
   :: forall s
-   . Bank -> Array PresetNoteSlot -> Maybe OutputRange -> PolySignal s
-polyPresetNote bank slots range = PolyPresetNoteConfig { bank, slots, range }
+   . Bank -> Array PresetNoteSlot -> Maybe OutputRange -> Selene s
+octoPresetNote bank slots range = PolyPresetNoteConfig { bank, slots, range }
 
 -- ---------------------------------------------------------------------------
 -- JSON envelope projection
 -- ---------------------------------------------------------------------------
 
--- | The bank a typed PolySignal value targets.  The walker reads
+-- | The bank a typed Selene value targets.  The walker reads
 -- | this to choose between the hardware (fh2-daemon) and virtual
 -- | (BEAM gen_server) routing paths.
-polySignalBank :: forall s. PolySignal s -> Bank
-polySignalBank = case _ of
+seleneBank :: forall s. Selene s -> Bank
+seleneBank = case _ of
   PolyLfoConfig         { bank } -> bank
   PolyClockConfig       { bank } -> bank
   PolyEnvConfig         { bank } -> bank
@@ -464,10 +464,10 @@ polySignalBank = case _ of
   PolyPresetConfig      { bank } -> bank
   PolyPresetNoteConfig  { bank } -> bank
 
--- | The family name for a typed PolySignal value — same string the
+-- | The family name for a typed Selene value — same string the
 -- | daemon's wire parser dispatches on (`polylfo`, `polyclock`, …).
-polySignalFamily :: forall s. PolySignal s -> String
-polySignalFamily = case _ of
+seleneFamily :: forall s. Selene s -> String
+seleneFamily = case _ of
   PolyLfoConfig _         -> "polylfo"
   PolyClockConfig _       -> "polyclock"
   PolyEnvConfig _         -> "polyenv"
@@ -476,11 +476,11 @@ polySignalFamily = case _ of
   PolyPresetConfig _      -> "polypreset"
   PolyPresetNoteConfig _  -> "polypresetnote"
 
--- | Project a PolySignal to the JSON envelope the daemon expects.
+-- | Project a Selene to the JSON envelope the daemon expects.
 -- | The alias argument carries the binding name (resolved by the
 -- | walker from `enumerateExports`).
-polySignalAsJson :: forall s. String -> PolySignal s -> String
-polySignalAsJson alias = case _ of
+seleneAsJson :: forall s. String -> Selene s -> String
+seleneAsJson alias = case _ of
   PolyLfoConfig cfg ->
     envelope "polylfo" cfg.bank alias cfg.range
       (map lfoSlotJson cfg.slots)

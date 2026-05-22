@@ -101,7 +101,7 @@ repetitorConfig =
 
 -- | A typed Repetitor voice declared at the Session level.  Symbol
 -- | parameter is decorative — walker reads the alias from the binding
--- | name (matches PolySignal, Instrument, Balistes).
+-- | name (matches Selene, Instrument, Balistes).
 data Repetitor (s :: Symbol)
   = RepetitorBinding
       { device        :: MidiDevice

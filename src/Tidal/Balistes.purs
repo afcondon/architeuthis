@@ -103,7 +103,7 @@ balistesConfig =
 
 -- | A typed Balistes voice declared at the Session level.  The Symbol
 -- | parameter is decorative — the walker reads the alias from the
--- | binding name (consistent with PolySignal and Instrument).
+-- | binding name (consistent with Selene and Instrument).
 data Balistes (s :: Symbol)
   = BalistesBinding
       { device     :: MidiDevice

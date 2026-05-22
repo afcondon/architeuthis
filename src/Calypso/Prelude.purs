@@ -89,14 +89,14 @@ module Calypso.Prelude
   -- Polysignals (Slab C step 1) — autonomous FH-2 bank configurations
   -- declared as typed Session-level bindings, classified by the
   -- walker and shipped to fh2-daemon at baseline load.
-  , module Tidal.PolySignal
+  , module Tidal.Selene
   -- Balistes vmod (BEAM-native MI Balistes clone, parameter-as-Pattern).
   , module Tidal.Balistes
   -- Repetitor vmod (ZR-inspired, BEAM-native rhythm corpus + per-row offsets).
   , module Tidal.Repetitor
   -- René machine (Make-Noise-René-inspired Cartesian sequencer; user-content + autonomous traversal).
   , module Tidal.Odonus
-  -- Maybe — re-exported for optional fields like PolySignal range.
+  -- Maybe — re-exported for optional fields like Selene range.
   , module Data.Maybe
   ) where
 
@@ -113,8 +113,8 @@ import Tidal.Notation
 import Tidal.Routed
 import Tidal.MidiDevice (MidiDevice(..))
 import Tidal.Pitch (PitchedNote12)
-import Tidal.PolySignal
-  ( PolySignal(..)
+import Tidal.Selene
+  ( Selene(..)
   , OutputRange(..)
   , Bank(..)
   , Fh2Bank(..)
@@ -133,13 +133,13 @@ import Tidal.PolySignal
   , RandSlot
   , PresetSlot
   , PresetNoteSlot
-  , polyLfo
-  , polyClock
-  , polyEnv
-  , polyEuclid
-  , polyRand
-  , polyPreset
-  , polyPresetNote
+  , octoLfo
+  , octoClock
+  , octoEnv
+  , octoEuclid
+  , octoRand
+  , octoPreset
+  , octoPresetNote
   )
 import Tidal.Balistes
   ( Balistes(..)

@@ -1,22 +1,22 @@
 %% @doc Virtual polysignal voice — runs a polysignal entirely in BEAM,
 %% no FH-2 round-trip.  Per clock tick, calls into
-%% `Tidal.VirtualPolySignal.evaluateAt` with the captured PolySignal
+%% `Tidal.VirtualSelene.evaluateAt` with the captured Selene
 %% value and the current cycle position; writes each returned
 %% `{index, value}` to the live-control bus at
 %% `<bus_prefix>.<index>`.
 %%
 %% Architecture mirrors balistes_voice / odonus_voice:
 %%   * subscribes to the clock's `{compute_until, Window}` broadcast;
-%%   * holds the opaque PureScript PolySignal value (Foreign) as state;
+%%   * holds the opaque PureScript Selene value (Foreign) as state;
 %%   * `set_config` swaps the value on a same-alias re-fire (live
 %%     mutation: cycle phase is preserved across edits);
 %%   * temporary restart strategy under
-%%     `virtual_polysignal_voice_sup`.
+%%     `virtual_selene_voice_sup`.
 %%
 %% The PureScript evaluator returns an Erlang `array` of records
 %% (PureScript Array convention).  Walk to a list at the boundary
 %% before iterating.
--module(virtual_polysignal_voice).
+-module(virtual_selene_voice).
 -behaviour(gen_server).
 
 -export([start_link/2,
@@ -31,7 +31,7 @@
     name        :: atom(),
     bus_prefix  :: binary(),        %% e.g. <<"lfoBank">>
     family      :: binary(),        %% e.g. <<"polylfo">>
-    polysig     :: term(),          %% opaque PolySignal value (Foreign)
+    polysig     :: term(),          %% opaque Selene value (Foreign)
     last_pos    :: number() | undefined
 }).
 
@@ -51,7 +51,7 @@ start_link(Name, Config) when is_atom(Name); is_binary(Name) ->
 compute_until(Name, Window) ->
     gen_server:cast(registered_name(Name), {compute_until, Window}).
 
-%% @doc Swap the underlying PolySignal value.  Live-mutation path —
+%% @doc Swap the underlying Selene value.  Live-mutation path —
 %% the cycle phase counter is preserved so the LFO doesn't reset
 %% mid-cycle on a cell re-fire.
 set_config(Name, Cfg) ->
@@ -78,7 +78,7 @@ init({Name, Config}) ->
         last_pos   = undefined
     },
     tidal_log:info(
-      "virtual_polysignal_voice ~p started: family=~s prefix=~s~n",
+      "virtual_selene_voice ~p started: family=~s prefix=~s~n",
       [Name, State#st.family, State#st.bus_prefix]),
     {ok, State}.
 
@@ -131,7 +131,7 @@ process_window(Window, State) ->
 %% tuple); we hand it back to PureScript unchanged.  Returns an
 %% Erlang `array` of records (the PureScript Array a convention).
 evaluate(PolySig, CyclePos) ->
-    'tidal_virtualPolySignal@ps':evaluateAt(PolySig, float(CyclePos)).
+    'tidal_virtualSelene@ps':evaluateAt(PolySig, float(CyclePos)).
 
 %% =========================================================================
 %% Helpers

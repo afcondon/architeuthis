@@ -1,17 +1,17 @@
 -- | Sessions.Wired — first cross-machine wiring demo.
 -- |
--- | A virtual polyEuclid bank emits gates on bus keys
+-- | A virtual octoEuclid bank emits gates on bus keys
 -- | `rhythmBank.0`..`rhythmBank.7`.  A René voice reads slot 0 as
--- | its `advance` input.  Result: the polyEuclid clocks the René,
+-- | its `advance` input.  Result: the octoEuclid clocks the René,
 -- | step-by-step, with no Tidal pattern, no MIDI controller, no
 -- | hardware — entirely in BEAM, signal flowing between machines
 -- | through the live-control bus.
 -- |
 -- | This is the architectural keystone from the signals-and-sources
--- | note: a Source (virtual polyEuclid) wired to a Sink (René's
+-- | note: a Source (virtual octoEuclid) wired to a Sink (René's
 -- | advance input) via the bus, with no special-case code per
--- | combination.  The same shape extends to polyClock-clocking-
--- | Balistes, polyLfo-modulating-Repetitor-density, etc.
+-- | combination.  The same shape extends to octoClock-clocking-
+-- | Balistes, octoLfo-modulating-Repetitor-density, etc.
 -- |
 -- | To activate: copy this file's content over
 -- | `src/Calypso/Generated/Session.purs` (with module rewritten to
@@ -22,7 +22,7 @@ import Calypso.Prelude
 import Studio (iac)
 
 -- ---------------------------------------------------------------------------
--- The clock source — a virtual polyEuclid bank running in BEAM.
+-- The clock source — a virtual octoEuclid bank running in BEAM.
 -- Eight slots, each emitting a euclidean rhythm to a bus key.  Only
 -- slot 0 is consumed in this demo (by René's advance); the rest
 -- still tick (proves the polysignal infrastructure does the work
@@ -30,8 +30,8 @@ import Studio (iac)
 -- wirings.
 -- ---------------------------------------------------------------------------
 
-studioRhythm :: PolySignal "studioRhythm"
-studioRhythm = polyEuclid (Virtual "rhythmBank")
+studioRhythm :: Selene "studioRhythm"
+studioRhythm = octoEuclid (Virtual "rhythmBank")
   [ { beats: 3, steps: 8,  rate: 1, accentRate: 1 }  -- 3-against-8 clave
   , { beats: 5, steps: 8,  rate: 1, accentRate: 1 }  -- 5-against-8
   , { beats: 7, steps: 8,  rate: 1, accentRate: 1 }  -- 7-against-8

@@ -1,14 +1,14 @@
 %% @doc Virtual polysignal voice supervisor — `simple_one_for_one`
-%% for virtual_polysignal_voice gen_servers.  Sibling of
+%% for virtual_selene_voice gen_servers.  Sibling of
 %% balistes_voice_sup / odonus_voice_sup / repetitor_voice_sup.  Children
 %% start dynamically when the session walker emits
-%% `RegisterVirtualPolySignal` events.
+%% `RegisterVirtualSelene` events.
 %%
 %% Crashes don't restart automatically (`temporary` child spec): a
 %% voice dying mid-session is a configuration bug, not something
 %% to retry silently.  The next reload-baseline re-spawns whatever
 %% was registered.
--module(virtual_polysignal_voice_sup).
+-module(virtual_selene_voice_sup).
 -behaviour(supervisor).
 
 -export([start_link/0,
@@ -40,7 +40,7 @@ which_voices() ->
             is_pid(Pid)].
 
 lookup_voice(Name) when is_atom(Name) ->
-    whereis(virtual_polysignal_voice:registered_name(Name));
+    whereis(virtual_selene_voice:registered_name(Name));
 lookup_voice(Name) when is_binary(Name) ->
     lookup_voice(binary_to_atom(Name, utf8)).
 
@@ -48,10 +48,10 @@ init([]) ->
     SupFlags = #{strategy => simple_one_for_one,
                  intensity => 5,
                  period => 30},
-    ChildSpec = #{id => virtual_polysignal_voice,
-                  start => {virtual_polysignal_voice, start_link, []},
+    ChildSpec = #{id => virtual_selene_voice,
+                  start => {virtual_selene_voice, start_link, []},
                   restart => temporary,
                   shutdown => 2000,
                   type => worker,
-                  modules => [virtual_polysignal_voice]},
+                  modules => [virtual_selene_voice]},
     {ok, {SupFlags, [ChildSpec]}}.

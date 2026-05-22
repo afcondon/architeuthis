@@ -1,4 +1,4 @@
--- | Sessions.Polysignals — autonomous FH-2 bank configurations.
+-- | Sessions.Selenes — autonomous FH-2 bank configurations.
 -- |
 -- | Use case: tutorial / demo of the polysignals notation — a typed
 -- | declaration of what a whole FH-2 expander bank should be doing,
@@ -30,7 +30,7 @@
 -- | To activate: copy this file's content over
 -- | `src/Calypso/Generated/Session.purs` (with module rewritten to
 -- | `Calypso.Generated.Session`), then fire-typeful.
-module Sessions.Polysignals where
+module Sessions.Selenes where
 
 import Calypso.Prelude
 import Studio (iac)
@@ -43,8 +43,8 @@ import Studio (iac)
 -- ratio relative to Link tempo.
 -- ---------------------------------------------------------------------------
 
-studioTestLfo :: PolySignal "studioTestLfo"
-studioTestLfo = polyLfo fh2Main
+studioTestLfo :: Selene "studioTestLfo"
+studioTestLfo = octoLfo fh2Main
   [ { ratio: 1.0,  shape: LfoTri }
   , { ratio: 0.5,  shape: LfoSaw }
   , { ratio: 2.0,  shape: LfoSin }
@@ -66,8 +66,8 @@ studioTestLfo = polyLfo fh2Main
 -- BankGt index is 0-based per FHX-8GT position in the chain; cv1..N
 -- numbering doesn't shift it.  Previous Studio.purs had this on gt1
 -- (a phantom second expander) and silently did nothing.
-studioTestClock :: PolySignal "studioTestClock"
-studioTestClock = polyClock (fh28Gt 0)
+studioTestClock :: Selene "studioTestClock"
+studioTestClock = octoClock (fh28Gt 0)
   [ { base: ClockSixteenth,  multiplier: 1, pulseWidth: 0, phase: 0 }
   , { base: ClockSixteenth,  multiplier: 2, pulseWidth: 0, phase: 0 }
   , { base: ClockEighth,     multiplier: 1, pulseWidth: 0, phase: 0 }
@@ -85,8 +85,8 @@ studioTestClock = polyClock (fh28Gt 0)
 -- a static counterweight to other polysignals.
 -- ---------------------------------------------------------------------------
 
-studioCalibLadder :: PolySignal "studioCalibLadder"
-studioCalibLadder = polyPreset (fh28Cv 2)
+studioCalibLadder :: Selene "studioCalibLadder"
+studioCalibLadder = octoPreset (fh28Cv 2)
   [ { value: -5.0 }, { value: -3.0 }
   , { value: -1.0 }, { value:  0.0 }
   , { value:  1.0 }, { value:  2.0 }
@@ -100,8 +100,8 @@ studioCalibLadder = polyPreset (fh28Cv 2)
 -- eight tuned voices on tap.
 -- ---------------------------------------------------------------------------
 
-studioCMajorScale :: PolySignal "studioCMajorScale"
-studioCMajorScale = polyPresetNote (fh28Cv 1)
+studioCMajorScale :: Selene "studioCMajorScale"
+studioCMajorScale = octoPresetNote (fh28Cv 1)
   [ { note: 60 }, { note: 62 }, { note: 64 }, { note: 65 }
   , { note: 67 }, { note: 69 }, { note: 71 }, { note: 72 }
   ]
