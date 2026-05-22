@@ -36,6 +36,8 @@ module Tidal.Grids
   , gridsWith
   , gridsConfig
   , evaluateParamsAt
+  , evaluateParamsAtControls
+  , buildControlMap
   , mkStaticGridsConfig
   ) where
 
@@ -171,15 +173,33 @@ evaluateParamsAt
   -> Number
   -> GridsSnapshot
 evaluateParamsAt cfg controlPairs pos =
-  let controls = pairsToControlMap controlPairs
-  in { x          : sampleAt controls 128 cfg.x          pos
-     , y          : sampleAt controls 128 cfg.y          pos
-     , fillBd     : sampleAt controls 128 cfg.fillBd     pos
-     , fillSd     : sampleAt controls 128 cfg.fillSd     pos
-     , fillHh     : sampleAt controls 128 cfg.fillHh     pos
-     , randomness : sampleAt controls 0   cfg.randomness pos
-     , mode       : sampleAt controls 0   cfg.mode       pos
-     }
+  evaluateParamsAtControls cfg (pairsToControlMap controlPairs) pos
+
+-- | F1 cache-friendly evaluator: takes a pre-built `ControlMap` so the
+-- | voice gen_server can hold it across ticks and only rebuild when the
+-- | control bus's version counter changes.  See the rene_voice F1
+-- | implementation and `tools/timing-data/phase-4-diagnostic-f1/`.
+evaluateParamsAtControls
+  :: GridsConfig
+  -> ControlMap
+  -> Number
+  -> GridsSnapshot
+evaluateParamsAtControls cfg controls pos =
+  { x          : sampleAt controls 128 cfg.x          pos
+  , y          : sampleAt controls 128 cfg.y          pos
+  , fillBd     : sampleAt controls 128 cfg.fillBd     pos
+  , fillSd     : sampleAt controls 128 cfg.fillSd     pos
+  , fillHh     : sampleAt controls 128 cfg.fillHh     pos
+  , randomness : sampleAt controls 0   cfg.randomness pos
+  , mode       : sampleAt controls 0   cfg.mode       pos
+  }
+
+-- | F1 — Erlang-side entry point: build the opaque PureScript
+-- | ControlMap once per control-bus version, reuse across steps.
+buildControlMap
+  :: Array { name :: String, value :: Number }
+  -> ControlMap
+buildControlMap = pairsToControlMap
 
 sampleAt :: ControlMap -> Int -> Pattern Int -> Number -> Int
 sampleAt controls dflt pat at =

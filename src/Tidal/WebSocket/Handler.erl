@@ -220,6 +220,31 @@ try_parse_prefixed(<<"get-studio">>) ->
     {get_studio};
 try_parse_prefixed(<<"get-studio ", _/binary>>) ->
     {get_studio};
+try_parse_prefixed(<<"dump-rene-samples ", Rest/binary>>) ->
+    %% dump-rene-samples <voice-name> — return per-step timing
+    %% samples collected by an instrumented rene_voice gen_server.
+    %% Used for the timing-jitter diagnostic
+    %% ([[project_timing_jitter_investigation_queued]]).  Reply is
+    %% CSV: one line per step with NowUs,TRecv,TEvalDone,TRefreshDone,
+    %% TEmitDone,WallUs.
+    case trim_binary(Rest) of
+        <<>> -> none;
+        Name -> {dump_rene_samples, Name}
+    end;
+try_parse_prefixed(<<"clear-rene-samples ", Rest/binary>>) ->
+    %% clear-rene-samples <voice-name> — wipe the timing-sample
+    %% buffer so the next capture starts fresh.
+    case trim_binary(Rest) of
+        <<>> -> none;
+        Name -> {clear_rene_samples, Name}
+    end;
+try_parse_prefixed(<<"dump-anchor-log">>) ->
+    %% dump-anchor-log — return the diagnostic event ring buffer
+    %% (anchor receipts, clock transitions, voice dropouts) as CSV
+    %% so we can forensic-trace clock weirdness next time it happens.
+    {dump_anchor_log};
+try_parse_prefixed(<<"clear-anchor-log">>) ->
+    {clear_anchor_log};
 try_parse_prefixed(<<"play-piece ", Rest/binary>>) ->
     %% play-piece <name> — install the named Section value (a top-level
     %% `Pattern AnyPart` declaration in Calypso.Generated.Session) into
@@ -1002,6 +1027,69 @@ handle_pattern_message(Text, State) ->
                              <<"ERR reload-baseline: ", ErrBin/binary>>},
                     {reply, Reply, State}
             end;
+        {dump_rene_samples, VoiceName} ->
+            %% Pull the timing-sample buffer out of an instrumented
+            %% rene_voice gen_server and format as CSV.  See
+            %% [[project_timing_jitter_investigation_queued]] for the
+            %% analysis pipeline downstream.
+            try
+                Samples = rene_voice:get_samples(VoiceName),
+                Rows = [io_lib:format(
+                          "~p,~B,~B,~B,~B,~B~n",
+                          [NowUs, TRecv, TEvalDone, TRefreshDone,
+                           TEmitDone, WallUs])
+                        || {NowUs, TRecv, TEvalDone, TRefreshDone,
+                            TEmitDone, WallUs}
+                            <- lists:reverse(Samples)],
+                Header = <<"NowUs,TRecv,TEvalDone,TRefreshDone,TEmitDone,WallUs\n">>,
+                Body = iolist_to_binary([Header | Rows]),
+                {reply,
+                 {text, <<"OK: dump-rene-samples ", VoiceName/binary, " ",
+                          (integer_to_binary(length(Samples)))/binary,
+                          " rows\n", Body/binary>>},
+                 State}
+            catch _:Err ->
+                ErrBin = list_to_binary(io_lib:format("~p", [Err])),
+                {reply,
+                 {text, <<"ERR dump-rene-samples: ", ErrBin/binary>>},
+                 State}
+            end;
+        {clear_rene_samples, VoiceName} ->
+            try
+                rene_voice:clear_samples(VoiceName),
+                {reply,
+                 {text, <<"OK: clear-rene-samples ", VoiceName/binary>>},
+                 State}
+            catch _:Err ->
+                ErrBin = list_to_binary(io_lib:format("~p", [Err])),
+                {reply,
+                 {text, <<"ERR clear-rene-samples: ", ErrBin/binary>>},
+                 State}
+            end;
+        {dump_anchor_log} ->
+            %% Drain the anchor-log ring buffer as CSV.  Three event
+            %% kinds today (anchor_rx / clock_transition / voice_dropout);
+            %% the format column tells the consumer how to parse the rest.
+            try
+                Entries = tidal_anchor_log:dump(),
+                Rows = [io_lib:format("~B,~B,~p~n", [Seq, NowUs, Event])
+                        || {Seq, NowUs, Event} <- Entries],
+                Header = <<"Seq,NowUs,Event\n">>,
+                Body = iolist_to_binary([Header | Rows]),
+                {reply,
+                 {text, <<"OK: dump-anchor-log ",
+                          (integer_to_binary(length(Entries)))/binary,
+                          " rows\n", Body/binary>>},
+                 State}
+            catch _:DErr ->
+                ErrBin = list_to_binary(io_lib:format("~p", [DErr])),
+                {reply,
+                 {text, <<"ERR dump-anchor-log: ", ErrBin/binary>>},
+                 State}
+            end;
+        {clear_anchor_log} ->
+            tidal_anchor_log:clear(),
+            {reply, {text, <<"OK: clear-anchor-log">>}, State};
         {play_piece, Name} ->
             %% Hand the named Pattern AnyPart value to the conductor.
             %% The conductor resolves it via

@@ -14,6 +14,8 @@
          compute_until/2,
          set_config/2,
          get_state/1,
+         get_samples/1,
+         clear_samples/1,
          registered_name/1]).
 
 -export([init/1, handle_call/3, handle_cast/2, terminate/2]).
@@ -43,7 +45,31 @@
     %% Engine running state.
     last_step      :: integer(),
     %% Output socket.
-    midi_socket    :: gen_udp:socket() | undefined
+    midi_socket    :: gen_udp:socket() | undefined,
+    %% F-LAT — device latency compensation in microseconds.  Tidal's
+    %% Dispatcher.purs subtracts `dev.latencyMs * 1000` from `wallUs`
+    %% before scheduleNoteAt; without that lead time, link-spike /
+    %% CoreMIDI fire at-or-past target and Live block-quantises,
+    %% producing the 17 ms IOI stdev / 12.6 % short beats we saw on
+    %% Phase 4.  Sourced from the device's `latencyMs` at register
+    %% time (walker pulls it from the device-latencies map it built
+    %% from registerMidiDevice events).
+    latency_us     :: integer(),
+    %% F1 — cache the per-tick ControlMap so we rebuild it from the
+    %% control-bus snapshot only when its version counter changes.
+    %% `cached_controls` is an opaque purescript `Map String Value`
+    %% value; we never inspect it from Erlang.  `control_version` is
+    %% the value of `tidal_control_bus:version/0` at the time the
+    %% cache was built; -1 means "no cache yet, rebuild on first use".
+    control_version :: integer(),
+    cached_controls :: term() | undefined,
+    %% Phase 4 timing instrumentation — per-step timestamp record.
+    %% Each entry is the tuple emitted in emit_step/6.  Prepended
+    %% (most recent first); no bound — caller is expected to dump
+    %% and clear between captures.  Cost per step: ~6 monotonic_time
+    %% calls (~300 ns total) plus a list cons; well under what
+    %% we're trying to measure.
+    samples        :: [tuple()]
 }).
 
 %% =========================================================================
@@ -73,6 +99,19 @@ set_config(Name, Cfg) ->
 get_state(Name) ->
     gen_server:call(registered_name(Name), get_state).
 
+%% @doc Dump per-step timing samples accumulated since last clear.
+%% Each entry: {NowUsCast, TRecv, TEvalDone, TRefreshDone, TEngineDone,
+%% TEmitDone, WallUs} — all microseconds, monotonic time origin.
+%% Returns a list (most-recent first).  Use for timing-jitter
+%% diagnosis ([[project_timing_jitter_investigation_queued]]).
+get_samples(Name) ->
+    gen_server:call(registered_name(Name), get_samples).
+
+%% @doc Reset the timing-sample buffer.  Call between measurement
+%% takes so a fresh dump only includes the take of interest.
+clear_samples(Name) ->
+    gen_server:cast(registered_name(Name), clear_samples).
+
 registered_name(Name) when is_atom(Name) ->
     binary_to_atom(<<"rene_voice_",
                      (atom_to_binary(Name, utf8))/binary>>, utf8);
@@ -96,7 +135,11 @@ init({Name, Config}) ->
         engine          = Engine,
         cfg             = maps:get(cfg, Config, undefined),
         last_step       = -1,
-        midi_socket     = Sock
+        midi_socket     = Sock,
+        latency_us      = round(maps:get(latency_ms, Config, 0.0) * 1000),
+        control_version = -1,
+        cached_controls = undefined,
+        samples         = []
     },
     tidal_log:info(
       "rene_voice ~p started on ~s ch~B (nav=~p)~n",
@@ -112,11 +155,15 @@ handle_call(get_state, _From, State) ->
         engine     => State#st.engine,
         last_step  => State#st.last_step
     },
-    {reply, Snap, State}.
+    {reply, Snap, State};
+handle_call(get_samples, _From, State) ->
+    {reply, State#st.samples, State}.
 
 handle_cast({compute_until, Window}, State) ->
     NewState = process_window(Window, State),
     {noreply, NewState};
+handle_cast(clear_samples, State) ->
+    {noreply, State#st{samples = []}};
 handle_cast({set_config, Cfg}, State) ->
     %% Cfg is a partial-update map.  Engine arrays (notes/skip/gate/
     %% glide) update via rene_engine:set_field which preserves the
@@ -149,27 +196,75 @@ update_engine(Engine, Cfg) ->
 %% =========================================================================
 
 process_window(Window, State) ->
+    %% T_RECV — instrumentation: time the cast actually starts being
+    %% handled in this gen_server.  Compared to NowUs in the Window
+    %% (which is when tidal_clock fired the broadcast), the delta
+    %% measures gen_server mailbox / scheduler latency.
+    TRecv = erlang:monotonic_time(microsecond),
     CurrentCycle = maps:get(currentCycle,    Window),
     LookAhead    = maps:get(lookAheadCycle,  Window),
     CycleDurMs   = maps:get(cycleDurationMs, Window),
     NowUs        = maps:get(nowUnixUs,       Window),
     ControlPairs = maps:get(controlPairs, Window, array:from_list([])),
-    StepsPerCycle = State#st.steps_per_cycle,
-    LastStep = State#st.last_step,
+    %% F1 — rebuild the opaque PureScript ControlMap only when the
+    %% bus's version counter advances.  Pre-F1 each step rebuilt the
+    %% Map from scratch inside `evaluateParamsAt`, costing ~1 ms of
+    %% the 2.18 ms mean FFI time.  See tools/timing-data/phase-4-diagnostic/.
+    %% `controlVersion` is missing in older callers (tests, replay);
+    %% fall through to "always rebuild" by treating absence as -1.
+    ControlVersion = maps:get(controlVersion, Window, -1),
+    {Controls, State1} =
+        case ControlVersion =:= State#st.control_version
+             andalso State#st.cached_controls =/= undefined of
+            true ->
+                {State#st.cached_controls, State};
+            false ->
+                Built = 'tidal_rene@ps':buildControlMap(ControlPairs),
+                {Built, State#st{control_version = ControlVersion,
+                                 cached_controls = Built}}
+        end,
+    StepsPerCycle = State1#st.steps_per_cycle,
+    LastStep = State1#st.last_step,
     StartStep =
         if LastStep =:= -1 -> trunc(CurrentCycle * StepsPerCycle);
            true            -> LastStep + 1
         end,
-    EndStepExcl = trunc(LookAhead * StepsPerCycle),
+    %% F-FUTURE — discover each step one ahead of `trunc(lookAhead*sp)`.
+    %% Without this, a step at cycle-position StepCycle was only emitted
+    %% once `lookAhead` crossed StepCycle + 1/sp, by which point currentCycle
+    %% had already passed StepCycle and WallUs landed ~150 ms in the past
+    %% on every step.  With the +1, step S is emitted as lookAhead reaches
+    %% StepCycle, so WallUs is reliably ~lookAheadMs in the future — same
+    %% shape Voice.purs has for the Tidal-pattern path (which queries by
+    %% integer-cycle window and never falls behind).  See
+    %% tools/timing-data/phase-4-diagnostic-f1/ for the discovery I made.
+    EndStepExcl = trunc(LookAhead * StepsPerCycle) + 1,
+    StepCount = EndStepExcl - StartStep,
+    %% Anchor-log ghost trap: forward clock jump signature.  Normal
+    %% cast emits 0-1 steps at typical lookAhead/step ratios; >8 means
+    %% the clock leapt forward (anchor transition, BPM change, etc.).
+    case StepCount > 8 of
+        true ->
+            tidal_anchor_log:record({voice_step_burst, State1#st.name,
+                                     StartStep, EndStepExcl, CurrentCycle,
+                                     StepsPerCycle});
+        false -> ok
+    end,
     case EndStepExcl > StartStep of
-        false -> State;
+        false ->
+            %% Anchor-log ghost trap: silent dropout — clock retreated
+            %% relative to LastStep+1, voice can't emit.
+            tidal_anchor_log:record({voice_dropout, State1#st.name,
+                                     State1#st.last_step,
+                                     CurrentCycle, EndStepExcl, StepsPerCycle}),
+            State1;
         true ->
             Steps = lists:seq(StartStep, EndStepExcl - 1),
             FinalState = lists:foldl(
                 fun(S, Acc) ->
-                    emit_step(S, ControlPairs, CurrentCycle,
-                              CycleDurMs, NowUs, Acc)
-                end, State, Steps),
+                    emit_step(S, Controls, CurrentCycle,
+                              CycleDurMs, NowUs, TRecv, Acc)
+                end, State1, Steps),
             FinalState#st{last_step = EndStepExcl - 1}
     end.
 
@@ -180,18 +275,24 @@ process_window(Window, State) ->
 %%
 %% The engine guarantees the cursor lands on a non-skipped cell, so
 %% emit logic just discriminates emit vs silent_step.
-emit_step(S, ControlPairs, CurrentCycle, CycleDurMs, NowUs, State) ->
+emit_step(S, Controls, CurrentCycle, CycleDurMs, NowUs, TRecv, State) ->
     StepCycle = S / State#st.steps_per_cycle,
-    WallUs = round(NowUs + (StepCycle - CurrentCycle) * CycleDurMs * 1000),
+    %% F-LAT — subtract device latency so link-spike / CoreMIDI have
+    %% lead time to schedule precisely; mirrors Dispatcher.purs's
+    %% `adjustedUnixUs = wallUs - dev.latencyMs * 1000`.
+    WallUs = round(NowUs + (StepCycle - CurrentCycle) * CycleDurMs * 1000)
+             - State#st.latency_us,
     %% Snapshot the live config — stepYNow + 16 per-cell notes + 16
     %% per-cell skip values, all sampled at this step's cycle position.
     %% When cfg is undefined (registration without a config) the engine
-    %% keeps its registration-time arrays.
+    %% keeps its registration-time arrays.  Controls is the cached
+    %% ControlMap built once per bus version in process_window/2 (F1).
     Snap = case State#st.cfg of
         undefined -> #{stepYNow => false, advance => true};
         Cfg ->
-            'tidal_rene@ps':evaluateParamsAt(Cfg, ControlPairs, StepCycle)
+            'tidal_rene@ps':evaluateParamsAtControls(Cfg, Controls, StepCycle)
     end,
+    TEvalDone = erlang:monotonic_time(microsecond),
     %% The advance gate decides whether this micro-tick steps the
     %% engine at all.  When false, we still consume the step (so
     %% last_step bookkeeping in the caller works) but produce no
@@ -206,6 +307,7 @@ emit_step(S, ControlPairs, CurrentCycle, CycleDurMs, NowUs, State) ->
         true ->
             StepYNow = maps:get(stepYNow, Snap, false),
             Engine0  = refresh_from_snapshot(State#st.engine, Snap),
+            TRefreshDone = erlang:monotonic_time(microsecond),
             Engine1 = case StepYNow of
                 true  -> rene_engine:step_y(Engine0);
                 false -> Engine0
@@ -217,7 +319,21 @@ emit_step(S, ControlPairs, CurrentCycle, CycleDurMs, NowUs, State) ->
                 {silent_step, _Idx} ->
                     ok
             end,
-            State#st{engine = Engine2}
+            TEmitDone = erlang:monotonic_time(microsecond),
+            %% Per-step diagnostic sample.  Tuple shape (microseconds):
+            %% { NowUs       — when tidal_clock fired the broadcast
+            %% , TRecv       — when this gen_server began handling
+            %% , TEvalDone   — after FFI evaluateParamsAt returned
+            %% , TRefreshDone — after refresh_from_snapshot returned
+            %% , TEmitDone   — after scheduleNoteAt thunk returned
+            %% , WallUs      — scheduled MIDI-emit wall time
+            %% }
+            %% Engine step_x/y is so cheap we fold it into the eval
+            %% phase rather than instrument separately.
+            Sample = {NowUs, TRecv, TEvalDone, TRefreshDone,
+                      TEmitDone, WallUs},
+            State#st{engine = Engine2,
+                     samples = [Sample | State#st.samples]}
     end.
 
 %% Pull notes + skip arrays out of the snapshot (if present) and

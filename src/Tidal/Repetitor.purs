@@ -43,6 +43,8 @@ module Tidal.Repetitor
   , repetitorWith
   , repetitorConfig
   , evaluateParamsAt
+  , evaluateParamsAtControls
+  , buildControlMap
   , mkStaticRepetitorConfig
   ) where
 
@@ -175,12 +177,29 @@ evaluateParamsAt
   -> Number
   -> RepetitorSnapshot
 evaluateParamsAt cfg controlPairs pos =
-  let controls = pairsToControlMap controlPairs
-  in { offsetM:  sampleAt controls 0 cfg.offsetM  pos
-     , offsetC1: sampleAt controls 0 cfg.offsetC1 pos
-     , offsetC2: sampleAt controls 0 cfg.offsetC2 pos
-     , offsetC3: sampleAt controls 0 cfg.offsetC3 pos
-     }
+  evaluateParamsAtControls cfg (pairsToControlMap controlPairs) pos
+
+-- | F1 cache-friendly evaluator: takes a pre-built `ControlMap` so the
+-- | voice gen_server can hold it across ticks and only rebuild when the
+-- | control bus's version counter changes.  Mirror of
+-- | `Tidal.Rene.evaluateParamsAtControls`.
+evaluateParamsAtControls
+  :: RepetitorConfig
+  -> ControlMap
+  -> Number
+  -> RepetitorSnapshot
+evaluateParamsAtControls cfg controls pos =
+  { offsetM:  sampleAt controls 0 cfg.offsetM  pos
+  , offsetC1: sampleAt controls 0 cfg.offsetC1 pos
+  , offsetC2: sampleAt controls 0 cfg.offsetC2 pos
+  , offsetC3: sampleAt controls 0 cfg.offsetC3 pos
+  }
+
+-- | F1 — Erlang-side entry point for the ControlMap cache.
+buildControlMap
+  :: Array { name :: String, value :: Number }
+  -> ControlMap
+buildControlMap = pairsToControlMap
 
 sampleAt :: ControlMap -> Int -> Pattern Int -> Number -> Int
 sampleAt controls dflt pat at =

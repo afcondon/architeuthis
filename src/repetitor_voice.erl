@@ -59,7 +59,13 @@
     %% Engine running state.
     last_step      :: integer(),   % absolute step counter; -1 before first emit
     %% Output socket.
-    midi_socket    :: gen_udp:socket() | undefined
+    midi_socket    :: gen_udp:socket() | undefined,
+    %% F-LAT — device latency compensation in microseconds.  See
+    %% rene_voice.erl + tools/timing-data/phase-4-diagnostic-f1/.
+    latency_us     :: integer(),
+    %% F1 — cache the per-tick ControlMap; rebuild only on bus version bump.
+    control_version :: integer(),
+    cached_controls :: term() | undefined
 }).
 
 %% =========================================================================
@@ -125,7 +131,10 @@ init({Name, Config}) ->
         offsets         = normalise_offsets(maps:get(offsets, Config, #{})),
         pattern         = Pat,
         last_step       = -1,
-        midi_socket     = Sock
+        midi_socket     = Sock,
+        latency_us      = round(maps:get(latency_ms, Config, 0.0) * 1000),
+        control_version = -1,
+        cached_controls = undefined
     },
     tidal_log:info(
       "repetitor_voice ~p started on ~s ch~B (pattern ~p, M/C1/C2/C3 ~B/~B/~B/~B)~n",
@@ -187,22 +196,46 @@ process_window(Window, State) ->
     CycleDurMs   = maps:get(cycleDurationMs, Window),
     NowUs        = maps:get(nowUnixUs,       Window),
     ControlPairs = maps:get(controlPairs, Window, array:from_list([])),
-    StepsPerCycle = State#st.steps_per_cycle,
-    LastStep = State#st.last_step,
+    ControlVersion = maps:get(controlVersion, Window, -1),
+    %% F1 — cache the per-tick ControlMap; rebuild only on version change.
+    {Controls, State1} =
+        case ControlVersion =:= State#st.control_version
+             andalso State#st.cached_controls =/= undefined of
+            true ->
+                {State#st.cached_controls, State};
+            false ->
+                Built = 'tidal_repetitor@ps':buildControlMap(ControlPairs),
+                {Built, State#st{control_version = ControlVersion,
+                                 cached_controls = Built}}
+        end,
+    StepsPerCycle = State1#st.steps_per_cycle,
+    LastStep = State1#st.last_step,
     StartStep =
         if LastStep =:= -1 -> trunc(CurrentCycle * StepsPerCycle);
            true            -> LastStep + 1
         end,
-    EndStepExcl = trunc(LookAhead * StepsPerCycle),
+    %% F-FUTURE — discover one step ahead so WallUs lands in the future.
+    EndStepExcl = trunc(LookAhead * StepsPerCycle) + 1,
+    case EndStepExcl - StartStep > 8 of
+        true ->
+            tidal_anchor_log:record({voice_step_burst, State1#st.name,
+                                     StartStep, EndStepExcl, CurrentCycle,
+                                     StepsPerCycle});
+        false -> ok
+    end,
     case EndStepExcl > StartStep of
-        false -> State;
+        false ->
+            tidal_anchor_log:record({voice_dropout, State1#st.name,
+                                     State1#st.last_step,
+                                     CurrentCycle, EndStepExcl, StepsPerCycle}),
+            State1;
         true ->
             Steps = lists:seq(StartStep, EndStepExcl - 1),
             FinalState = lists:foldl(
                 fun(S, Acc) ->
-                    emit_step(S, ControlPairs, CurrentCycle,
+                    emit_step(S, Controls, CurrentCycle,
                               CycleDurMs, NowUs, Acc)
-                end, State, Steps),
+                end, State1, Steps),
             FinalState#st{last_step = EndStepExcl - 1}
     end.
 
@@ -211,20 +244,22 @@ process_window(Window, State) ->
 %% characteristic ZR cross-cycle hits-against-the-bar pattern.
 %% When cfg is a Foreign payload, query PureScript per step so the
 %% four offset slots can be live patterns (Pattern Int).
-emit_step(S, ControlPairs, CurrentCycle, CycleDurMs, NowUs, State) ->
+emit_step(S, Controls, CurrentCycle, CycleDurMs, NowUs, State) ->
     Pat = State#st.pattern,
     StepCycle = S / State#st.steps_per_cycle,
     Offsets = case State#st.cfg of
         undefined -> State#st.offsets;
         Cfg ->
-            Snap = 'tidal_repetitor@ps':evaluateParamsAt(
-                     Cfg, ControlPairs, StepCycle),
+            Snap = 'tidal_repetitor@ps':evaluateParamsAtControls(
+                     Cfg, Controls, StepCycle),
             #{m  => maps:get(offsetM,  Snap, 0),
               c1 => maps:get(offsetC1, Snap, 0),
               c2 => maps:get(offsetC2, Snap, 0),
               c3 => maps:get(offsetC3, Snap, 0)}
     end,
-    WallUs = round(NowUs + (StepCycle - CurrentCycle) * CycleDurMs * 1000),
+    %% F-LAT — subtract device latency.
+    WallUs = round(NowUs + (StepCycle - CurrentCycle) * CycleDurMs * 1000)
+             - State#st.latency_us,
     Bits = repetitor_engine:evaluate_step(Pat, S, Offsets),
     lists:foreach(
       fun({_, 0}) -> ok;

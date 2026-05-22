@@ -72,6 +72,17 @@ running(state_timeout, tick, State) ->
     Bpm = maps:get(bpm, Info),
     StartTimeMs = maps:get(startTimeMs, Info),
     Clock = tidal_link_anchor:scheduler_clock(round(StartTimeMs), Bpm),
+    %% Anchor-log ghost trap: record transitions between anchored
+    %% (Link-synced) and free-running modes.  Each transition shifts
+    %% CurrentCycle, which can leave vmod voices' LastStep ahead of
+    %% the new clock position → silent dropout in process_window.
+    Synced = maps:get(synced, Clock, false),
+    case persistent_term:get({tidal_clock, last_synced}, undefined) of
+        Synced -> ok;
+        Prev   ->
+            tidal_anchor_log:record({clock_transition, Prev, Synced}),
+            persistent_term:put({tidal_clock, last_synced}, Synced)
+    end,
     ElapsedMs = maps:get(elapsedMs, Clock),
     CycleDur = maps:get(cycleDurationMs, Clock),
     LookAhead = maps:get(lookAheadMs, Info),
@@ -88,6 +99,7 @@ running(state_timeout, tick, State) ->
     ControlPairsList = [#{name => K, value => V}
                         || {K, V} <- tidal_control_bus:snapshot()],
     ControlPairs = array:from_list(ControlPairsList),
+    ControlVersion = tidal_control_bus:version(),
     %% Active scale for Degree → MIDI rendering — read once per tick
     %% so all voices in this pass see the same scale (set-scale
     %% mid-tick still atomic relative to event emission).
@@ -97,6 +109,7 @@ running(state_timeout, tick, State) ->
                cycleDurationMs => CycleDur,
                nowUnixUs => float(NowUs),
                controlPairs => ControlPairs,
+               controlVersion => ControlVersion,
                activeScale => ActiveScale},
     broadcast_compute_window(Window),
     broadcast_conductor(Window),

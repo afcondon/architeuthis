@@ -43,6 +43,8 @@ module Tidal.Rene
   , reneConfig
   , replicate16
   , evaluateParamsAt
+  , evaluateParamsAtControls
+  , buildControlMap
   ) where
 
 import Prelude
@@ -206,14 +208,34 @@ evaluateParamsAt
   -> Number
   -> ReneSnapshot
 evaluateParamsAt cfg controlPairs pos =
-  let controls = pairsToControlMap controlPairs
-      sampleN p = sampleIntAt controls 60 p pos
+  evaluateParamsAtControls cfg (pairsToControlMap controlPairs) pos
+
+-- | Cache-friendly evaluator: takes a pre-built `ControlMap` instead
+-- | of rebuilding from the snapshot pairs every step.  The voice
+-- | gen_server holds onto the map across ticks and only rebuilds when
+-- | `tidal_control_bus`'s version counter changes (F1 — see the
+-- | timing investigation notes at `tools/timing-data/phase-4-diagnostic/`).
+evaluateParamsAtControls
+  :: ReneConfig
+  -> ControlMap
+  -> Number
+  -> ReneSnapshot
+evaluateParamsAtControls cfg controls pos =
+  let sampleN p = sampleIntAt controls 60 p pos
       sampleS p = sampleBoolAt controls false p pos
   in { stepYNow: sampleBoolAt controls false cfg.stepYNow pos
      , notes:    map sampleN cfg.notes
      , skip:     map sampleS cfg.skip
      , advance:  sampleBoolAt controls true cfg.advance pos
      }
+
+-- | Erlang-facing entry point so a voice can build the `ControlMap`
+-- | once per control-bus version and reuse the opaque PureScript value
+-- | across many `evaluateParamsAtControls` calls.
+buildControlMap
+  :: Array { name :: String, value :: Number }
+  -> ControlMap
+buildControlMap = pairsToControlMap
 
 sampleBoolAt :: ControlMap -> Boolean -> Pattern Boolean -> Number -> Boolean
 sampleBoolAt controls dflt pat at =

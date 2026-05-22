@@ -51,6 +51,7 @@ erl: ps
 	@find output-erl -name "*.erl" -exec erlc -disable-feature maybe_expr -o ebin {} \; 2>&1 | grep -v "Warning:" || true
 	@# Standalone Erlang utility modules (no PureScript counterpart, not foreign).
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_log.erl
+	@erlc -disable-feature maybe_expr -o ebin src/tidal_anchor_log.erl
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_link_anchor.erl
 	@# OTP application + top-level supervisor.
 	@erlc -disable-feature maybe_expr -o ebin src/purerl_tidal_app.erl

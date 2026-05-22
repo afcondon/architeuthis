@@ -52,7 +52,14 @@
     perturbations  :: [integer()],  % [Pb, Ps, Ph]
     rng_state      :: integer(),
     %% Output socket — shared by all calls from this voice.
-    midi_socket    :: gen_udp:socket() | undefined
+    midi_socket    :: gen_udp:socket() | undefined,
+    %% F-LAT — device latency compensation in microseconds.  See
+    %% rene_voice.erl for rationale and tools/timing-data/phase-4-diagnostic-f1/.
+    latency_us     :: integer(),
+    %% F1 — cache the per-tick ControlMap; rebuild only when the
+    %% control-bus version counter advances.
+    control_version :: integer(),
+    cached_controls :: term() | undefined
 }).
 
 %% =========================================================================
@@ -116,7 +123,10 @@ init({Name, Config}) ->
         last_step   = -1,
         perturbations = [0, 0, 0],
         rng_state   = Seed0 band 16#FFFFFFFF,
-        midi_socket = Sock
+        midi_socket = Sock,
+        latency_us  = round(maps:get(latency_ms, Config, 0.0) * 1000),
+        control_version = -1,
+        cached_controls = undefined
     },
     tidal_log:info("grids_voice ~p started on ~s ch~B (BD/SD/HH ~B/~B/~B)~n",
                    [Name, State#st.port_name, State#st.channel,
@@ -157,31 +167,48 @@ process_window(Window, State) ->
     LookAhead    = maps:get(lookAheadCycle,  Window),
     CycleDurMs   = maps:get(cycleDurationMs, Window),
     NowUs        = maps:get(nowUnixUs,       Window),
-    %% controlPairs is the live-control snapshot the clock takes per
-    %% tick from `tidal_control_bus:snapshot/0`.  Thread it through so
-    %% `liveIntOr "name"` slots in the GridsConfig read the current
-    %% values.  Defaulted to empty array if a future Window omits it
-    %% (defensive — the current clock always populates it).
     ControlPairs = maps:get(controlPairs, Window, array:from_list([])),
-    %% Steps to emit: every absolute step S such that
-    %%   last_step < S < floor(LookAhead * 32)
-    %% On the very first window, also catch up from CurrentCycle (we
-    %% don't emit retroactively for events that should have happened
-    %% before `now`).
-    LastStep = State#st.last_step,
+    ControlVersion = maps:get(controlVersion, Window, -1),
+    %% F1 — rebuild ControlMap only on bus version change.  See
+    %% rene_voice for the rationale and benchmark.
+    {Controls, State1} =
+        case ControlVersion =:= State#st.control_version
+             andalso State#st.cached_controls =/= undefined of
+            true ->
+                {State#st.cached_controls, State};
+            false ->
+                Built = 'tidal_grids@ps':buildControlMap(ControlPairs),
+                {Built, State#st{control_version = ControlVersion,
+                                 cached_controls = Built}}
+        end,
+    LastStep = State1#st.last_step,
     StartStep =
         if LastStep =:= -1 -> trunc(CurrentCycle * ?STEPS_PER_CYCLE);
            true            -> LastStep + 1
         end,
-    EndStepExcl = trunc(LookAhead * ?STEPS_PER_CYCLE),
+    %% F-FUTURE — discover step S as soon as lookAhead reaches StepCycle,
+    %% rather than waiting for trunc to advance past StepCycle + 1/sp.
+    %% Lands WallUs ~lookAheadMs in the future instead of in the past.
+    EndStepExcl = trunc(LookAhead * ?STEPS_PER_CYCLE) + 1,
+    case EndStepExcl - StartStep > 8 of
+        true ->
+            tidal_anchor_log:record({voice_step_burst, State1#st.name,
+                                     StartStep, EndStepExcl, CurrentCycle,
+                                     ?STEPS_PER_CYCLE});
+        false -> ok
+    end,
     case EndStepExcl > StartStep of
-        false -> State;
+        false ->
+            tidal_anchor_log:record({voice_dropout, State1#st.name,
+                                     State1#st.last_step,
+                                     CurrentCycle, EndStepExcl, ?STEPS_PER_CYCLE}),
+            State1;
         true ->
             Steps = lists:seq(StartStep, EndStepExcl - 1),
             FinalState = lists:foldl(
                 fun(S, Acc) ->
-                    emit_step(S, ControlPairs, CurrentCycle, CycleDurMs, NowUs, Acc)
-                end, State, Steps),
+                    emit_step(S, Controls, CurrentCycle, CycleDurMs, NowUs, Acc)
+                end, State1, Steps),
             FinalState#st{last_step = EndStepExcl - 1}
     end.
 
@@ -191,7 +218,7 @@ process_window(Window, State) ->
 %% (`Tidal.Grids.evaluateParamsAt`) against the live GridsConfig at
 %% this step's cycle position.  At step-in-pattern 0, regenerate
 %% perturbations using the randomness value as scale.
-emit_step(S, ControlPairs, CurrentCycle, CycleDurMs, NowUs, State0) ->
+emit_step(S, Controls, CurrentCycle, CycleDurMs, NowUs, State0) ->
     StepInPat = S rem ?STEPS_PER_CYCLE,
     StepCycle = S / ?STEPS_PER_CYCLE,
     Snap = case State0#st.cfg of
@@ -202,7 +229,7 @@ emit_step(S, ControlPairs, CurrentCycle, CycleDurMs, NowUs, State0) ->
               fillBd => 0, fillSd => 0, fillHh => 0,
               randomness => 0, mode => 0};
         Cfg ->
-            'tidal_grids@ps':evaluateParamsAt(Cfg, ControlPairs, StepCycle)
+            'tidal_grids@ps':evaluateParamsAtControls(Cfg, Controls, StepCycle)
     end,
     X       = maps:get(x,          Snap),
     Y       = maps:get(y,          Snap),
@@ -222,7 +249,10 @@ emit_step(S, ControlPairs, CurrentCycle, CycleDurMs, NowUs, State0) ->
                  StepInPat, X, Y,
                  [FBd, FSd, FHh],
                  State1#st.perturbations),
-    WallUs = round(NowUs + (StepCycle - CurrentCycle) * CycleDurMs * 1000),
+    %% F-LAT — subtract device latency so link-spike / CoreMIDI have
+    %% lead time to schedule precisely.
+    WallUs = round(NowUs + (StepCycle - CurrentCycle) * CycleDurMs * 1000)
+             - State1#st.latency_us,
     lists:foreach(fun(T) -> emit_trigger(T, WallUs, State1) end, Triggers),
     State1.
 

@@ -71,7 +71,13 @@ walk_baseline() ->
             Stats = lists:foldl(
                 fun apply_event/2,
                 #{devices => 0, cvRouters => 0,
-                  instruments => 0, drumKits => 0, claimErrors => 0},
+                  instruments => 0, drumKits => 0, claimErrors => 0,
+                  %% device_latencies — internal bookkeeping the walker
+                  %% reads when registering vmod voices so it can pass
+                  %% `latency_ms` into VoiceConfig.  Stripped from the
+                  %% caller-facing summary before returning.  Keyed by
+                  %% device alias (binary) → latencyMs (float ms).
+                  device_latencies => #{}},
                 Events),
             %% Capture a Studio-pane snapshot from the raw event list so
             %% `get-studio` (and any future Studio-state queries) can
@@ -219,11 +225,18 @@ event_to_line(_) ->
 %% ====================================================================
 
 %% A device event registers the MIDI port + latency with the
-%% dispatcher under the user-given alias.
+%% dispatcher under the user-given alias.  We also stash the
+%% alias→latencyMs mapping in the accumulator so subsequent vmod
+%% registrations (rene/grids/repetitor) can pull device latency into
+%% their VoiceConfig — the F-LAT fix mirrors what
+%% `Tidal.Dispatcher` does for Tidal-pattern emits
+%% (`adjustedUnixUs = wallUs - dev.latencyMs * 1000`).
 apply_event({registerMidiDevice,
              #{alias := A, name := N, latencyMs := L}}, Acc) ->
     tidal_dispatcher:register_midi_device(A, N, L),
-    bump(devices, Acc);
+    Lats = maps:get(device_latencies, Acc, #{}),
+    NewAcc = Acc#{device_latencies => Lats#{A => float(L)}},
+    bump(devices, NewAcc);
 
 %% A cv-router event (PR 2c) records the named cv-router endpoint in
 %% the Studio snapshot.  In the single-router runtime (PR 2c) the
@@ -394,7 +407,7 @@ apply_event({registerGateDrumKit,
 %% step-counter reset) — the live-mutation showcase.
 apply_event({registerGrids,
              #{ alias       := A
-              , deviceAlias := _D
+              , deviceAlias := D
               , deviceName  := PortName
               , channel     := Ch
               , noteBd      := NBd
@@ -405,6 +418,7 @@ apply_event({registerGrids,
               , durMs       := Dur
               , config      := Cfg
               }}, Acc) ->
+    LatencyMs = maps:get(D, maps:get(device_latencies, Acc, #{}), 0.0),
     VoiceConfig = #{
         port_name => PortName,
         channel   => Ch,
@@ -414,7 +428,8 @@ apply_event({registerGrids,
         vel       => V,
         vel_accent => VA,
         dur_ms    => Dur,
-        cfg       => Cfg
+        cfg       => Cfg,
+        latency_ms => LatencyMs
     },
     AliasAtom = binary_to_atom(A, utf8),
     case grids_voice_sup:lookup_voice(AliasAtom) of
@@ -445,7 +460,7 @@ apply_event({registerGrids,
 %% engine's step counter is preserved.
 apply_event({registerRepetitor,
              #{ alias         := A
-              , deviceAlias   := _D
+              , deviceAlias   := D
               , deviceName    := PortName
               , channel       := Ch
               , noteM         := NM
@@ -460,6 +475,7 @@ apply_event({registerRepetitor,
               , config        := Cfg
               }}, Acc) ->
     LibMod = binary_to_atom(<<"repetitor_library_", Lib/binary>>, utf8),
+    LatencyMs = maps:get(D, maps:get(device_latencies, Acc, #{}), 0.0),
     VoiceConfig = #{
         port_name        => PortName,
         channel          => Ch,
@@ -472,7 +488,8 @@ apply_event({registerRepetitor,
         steps_per_cycle  => Sp,
         library_mod      => LibMod,
         pattern_slug     => Slug,
-        cfg              => Cfg
+        cfg              => Cfg,
+        latency_ms       => LatencyMs
     },
     AliasAtom = binary_to_atom(A, utf8),
     case repetitor_voice_sup:lookup_voice(AliasAtom) of
@@ -501,7 +518,7 @@ apply_event({registerRepetitor,
 %% lists at this boundary before feeding the engine.
 apply_event({registerRene,
              #{ alias         := A
-              , deviceAlias   := _D
+              , deviceAlias   := D
               , deviceName    := PortName
               , channel       := Ch
               , vel           := V
@@ -519,6 +536,7 @@ apply_event({registerRene,
     Skip  = try array:to_list(SkipArr)  catch _:_ -> [] end,
     Gate  = try array:to_list(GateArr)  catch _:_ -> [] end,
     Glide = try array:to_list(GlideArr) catch _:_ -> [] end,
+    LatencyMs = maps:get(D, maps:get(device_latencies, Acc, #{}), 0.0),
     VoiceConfig = #{
         port_name        => PortName,
         channel          => Ch,
@@ -530,7 +548,8 @@ apply_event({registerRene,
         gate             => Gate,
         glide            => Glide,
         nav_mode         => NavAtom,
-        cfg              => Cfg
+        cfg              => Cfg,
+        latency_ms       => LatencyMs
     },
     AliasAtom = binary_to_atom(A, utf8),
     case rene_voice_sup:lookup_voice(AliasAtom) of

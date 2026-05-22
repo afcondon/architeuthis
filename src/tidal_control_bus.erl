@@ -28,9 +28,16 @@
          set/2,
          get/2,
          snapshot/0,
+         version/0,
          clear/0]).
 
 -define(TABLE, tidal_control_bus).
+%% Special ETS row holding the monotonic version counter.  Bumped on
+%% every `set/2` / `clear/0`.  Voices read it to decide whether the
+%% cached ControlMap is still valid; see [[reference_purerl_tidal_live_control_substrate]]
+%% and the F1 ControlMap cache work.  An atom key won't collide with
+%% the binary control-name keys, and `snapshot/0` filters it out.
+-define(VERSION_KEY, '$version').
 
 %% =========================================================================
 %% Public API
@@ -56,7 +63,18 @@ init() ->
 set(Name, Value) when is_binary(Name), is_number(Value) ->
     init(),
     ets:insert(?TABLE, {Name, float(Value)}),
+    ets:update_counter(?TABLE, ?VERSION_KEY, 1, {?VERSION_KEY, 0}),
     ok.
+
+%% Monotonic version counter.  Bumped on every write or clear.
+%% Voices compare against a cached version to decide whether to
+%% reuse a previously-built ControlMap or rebuild from the snapshot.
+version() ->
+    init(),
+    case ets:lookup(?TABLE, ?VERSION_KEY) of
+        [{_, V}] -> V;
+        []       -> 0
+    end.
 
 %% Read a single control value, returning Default if not set.
 %% Used as a smoke-test entry point; production reads go through
@@ -78,11 +96,13 @@ get(Name, Default) when is_binary(Name) ->
 %% field expects).
 snapshot() ->
     init(),
-    ets:tab2list(?TABLE).
+    [Pair || Pair = {K, _} <- ets:tab2list(?TABLE), K =/= ?VERSION_KEY].
 
 %% Clear all controls.  Useful for tests and for resetting the
-%% rig to a clean state.
+%% rig to a clean state.  Bumps the version counter so any cached
+%% ControlMap in a voice is invalidated.
 clear() ->
     init(),
     ets:delete_all_objects(?TABLE),
+    ets:update_counter(?TABLE, ?VERSION_KEY, 1, {?VERSION_KEY, 0}),
     ok.

@@ -57,7 +57,15 @@ init([]) ->
 
     Bpm         = application:get_env(purerl_tidal, bpm, 120.0),
     TickMs      = application:get_env(purerl_tidal, tickIntervalMs, 50),
-    LookAheadMs = application:get_env(purerl_tidal, lookAheadMs, 100.0),
+    %% Default 300 ms — 1.5× max expected step interval at 120 BPM × 16
+    %% stepsPerCycle (= 125 ms).  Vmod voices rely on `WallUs = NowUs +
+    %% (StepCycle - currentCycle) * cycleDur` landing comfortably in the
+    %% future; minimum lead time at higher densities was hitting near zero
+    %% with the 100 ms default, exposing rare BEAM preemptions as audible
+    %% glitches.  See tools/timing-data/phase-4-diagnostic-f1-f2/.  The
+    %% Tidal-pattern path is insensitive to this value (it queries by
+    %% integer-cycle window).
+    LookAheadMs = application:get_env(purerl_tidal, lookAheadMs, 300.0),
     StartTimeMs = float(erlang:system_time(millisecond)),
     ClockConfig = #{bpm             => Bpm,
                     tickIntervalMs  => TickMs,

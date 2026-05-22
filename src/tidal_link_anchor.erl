@@ -173,6 +173,16 @@ loop(State) ->
             case decode_link_anchor(Packet) of
                 {ok, {UnixUs, Beat, Tempo, Quantum}} ->
                     NowUs = erlang:system_time(microsecond),
+                    PrevRecvUs = maps:get(last_recv_us, State, 0),
+                    AgeUs = case PrevRecvUs of
+                                0 -> 0;
+                                _ -> NowUs - PrevRecvUs
+                            end,
+                    %% Anchor-log ghost trap: record every receive so we
+                    %% have a forensic record next time clock dropouts
+                    %% recur.  Cost: ~µs per packet at 10 Hz.
+                    tidal_anchor_log:record(
+                      {anchor_rx, Beat, Tempo, Quantum, AgeUs}),
                     NewState = State#{anchor => {UnixUs, Beat, Tempo, Quantum},
                                       last_recv_us => NowUs},
                     loop(NewState);
