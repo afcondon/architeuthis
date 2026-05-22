@@ -27,7 +27,7 @@ Concretely:
   cMajor\n  ...` mini-grammar.
 - An Odonus position array is `[0, 2, 4, 3, 2, 0] :: Array Int`, not a
   comma-separated string.
-- A Sufflamen polysignal config is a record-of-records, not a YAML
+- A Selene config is a record-of-records, not a YAML
   fragment.
 - A cell body is a PureScript expression — possibly multi-statement
   via `let ... in ...` — that evaluates to a `Voice` or `Array Voice`.
@@ -85,7 +85,7 @@ tvoice → its own compiled PureScript module) not break the picture in
 | `Vetula`                   | `Pattern Voicing`            |
 | `Balistes`                 | `Pattern (Array DrumHit)`    |
 | `Odonus`                   | `Pattern Pitch`              |
-| `Sufflamen`                | `Pattern PolysignalEvent`    |
+| `Selene`                | `Pattern OctoSignal`    |
 | `Pattern a` (self-instance)| `Pattern a`                  |
 
 `Emitable` instances we expect:
@@ -96,7 +96,7 @@ tvoice → its own compiled PureScript module) not break the picture in
 | `MidiPort`       | Note-On/Off + CCs to a CoreMIDI destination        |
 | `MidiDrumKit`    | Note-On per slot, with sound→slot map              |
 | `CvRouter`       | V/oct + Gate via OSC to cv-router daemon           |
-| `Fh2Daemon`      | SysEx writes for polysignal config                 |
+| `Fh2Daemon`      | SysEx writes for selene config                 |
 
 This is the whole architecture in two lines: vocabularies are
 `Notation`, sinks are `Emitable`, the substrate composes them.
@@ -212,7 +212,7 @@ sinks change):
 | `cut`        | D         | M (note-off) | D (group)    | —     | D (gate-)| D          |
 | `nudge`      | D         | D (schedule) | D (schedule) | D     | D        | D          |
 | `cps`        | G         | G            | G            | G     | G        | G          |
-| polysignal   | —         | —            | —            | D     | —        | —          |
+| octo-signal   | —         | —            | —            | D     | —        | —          |
 | chord/voicing| (via N)   | (via N)      | —            | —     | (via N)  | D          |
 
 The **M-cells are the per-rig translation work**.  They live in a
@@ -267,7 +267,7 @@ type VetulaOutput =
 
 Every vocabulary publishes a similar record.  `Odonus` publishes its
 current pitch and position; `Balistes` its current step and density;
-`Sufflamen` its current modulator values.  The field names become the
+`Selene` its current modulator values.  The field names become the
 bus slot names: `chord1.currentVoicing`, `chord1.rms`,
 `bass1.currentPitch`, etc.
 
@@ -483,9 +483,9 @@ don't define the language.
    M-cell mappings (this MIDI instrument: lpf → CC74; this modular
    voice: lpf → aux CV jack B7).  Soft-synth and modular sinks gain
    wide-coverage cells without sink-side code.
-7. **Sufflamen as `Notation`** — current polysignal-as-notation work
-   (Slab C, task #59) slots in as a `Notation Sufflamen
-   PolysignalEvent` instance and a `Emitable Fh2Daemon` instance.
+7. **Selene as `Notation`** — current octo-signal-as-notation work
+   (Slab C, task #59) slots in as a `Notation Selene
+   Selene` instance and a `Emitable Fh2Daemon` instance.
 8. **Multi-cv-router runtime** — task #68 becomes "another `CvRouter`
    instance per router process"; trivial once `Emitable` is a class.
 9. **Vetula implementation** — task #134; becomes a `Notation Vetula
@@ -545,7 +545,7 @@ Once shipped, the following should be true:
    agent (direct WebSocket).  Each produces identical events for
    identical cell text.
 
-6. A new `Emitable` (say, a hypothetical Sufflamen-but-for-Hapax)
+6. A new `Emitable` (say, a hypothetical Selene-but-for-Hapax)
    ships as one PureScript module + one Erlang gen_server.  No
    substrate changes.
 

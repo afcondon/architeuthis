@@ -37,7 +37,7 @@ vowel — and that's correct.
 | SuperDirt      | `/dirt/play` OSC bundles → localhost:57120 (sample player)     |
 | MIDI generic   | Note-On/Off + CCs on a CoreMIDI destination, single channel    |
 | MIDI drumkit   | Note-On per slot (sound → MIDI-note map), single channel       |
-| FH-2 daemon    | SysEx writes through `~/.fh2/control.sock` (polysignal config) |
+| FH-2 daemon    | SysEx writes through `~/.fh2/control.sock` (selene config) |
 | CvRouter       | OSC to cv-router → ES-9 V/oct + Gate jacks                     |
 | Yarns poly     | MIDI multi-channel poly mode (future)                          |
 
@@ -89,8 +89,8 @@ vowel — and that's correct.
 | `cps` / `bpm`      | G     | G              | G            | G    | G                | G          |
 | `unit_`            | D     | —              | —            | —    | —                | —          |
 | `orbit`            | D     | —              | —            | —    | —                | —          |
-| **Sufflamen only** |       |                |              |      |                  |            |
-| polysignal record  | —     | —              | —            | D    | —                | —          |
+| **Selene only** |       |                |              |      |                  |            |
+| selene config  | —     | —              | —            | D    | —                | —          |
 | **Vetula only**    |       |                |              |      |                  |            |
 | chord / voicing    | (via N) | (via N)      | —            | —    | (via N)          | D          |
 
@@ -112,7 +112,7 @@ note events; each note event then follows the row's column rules.
   vocab was designed against it.  CvRouter's column is mostly M —
   modular synthesis requires per-rig patching decisions.  FH-2's
   column is almost all — — it doesn't emit events at all, it
-  consumes polysignal config records.
+  consumes selene config records.
 
 - **The M cells are work, but configurable.**  Each M cell becomes
   one line in a Studio-level destination declaration:
@@ -144,8 +144,8 @@ note events; each note event then follows the row's column rules.
 
 ## What this table is missing (TODO)
 
-- **Sufflamen-specific verbs.**  Once Sufflamen's typed PolySignal
-  record is firmed up (currently in `Tidal.Polysignal*` modules under
+- **Selene-specific verbs.**  Once Selene's typed octo-signal
+  record is firmed up (currently in `Tidal.Selene*` modules under
   task #59), add its verb surface as a separate row group.
 - **Vetula-specific verbs.**  Once Vetula lands (task #134), add its
   `voicing`, `progression`, `leading` etc. as a row group, with the
@@ -163,7 +163,7 @@ Initial population from a survey of `src/Tidal/Controls.purs` (atlantis,
 `purerl-tidal-port` (34 verbs, the lpf/hpf/room/vowel family
 expansion), 2026-05-22.  Sinks surveyed from
 `src/Tidal/Dispatch/`, `src/balistes_voice.erl`, `src/rene_voice.erl`,
-`src/repetitor_voice.erl`, and `src/virtual_polysignal_voice.erl`.
+`src/repetitor_voice.erl`, and `src/virtual_selene_voice.erl`.
 
 The wider SD vocab (lpf/hpf/room/attack/etc.) is in purerl-tidal-port
 but not yet in atlantis.  Either port back, or add new SD-only verbs
