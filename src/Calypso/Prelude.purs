@@ -58,6 +58,20 @@ module Calypso.Prelude
   , DrumPart(..)
   , class On
   , on
+  -- The `>>` operator — notation routed to a destination.  Sugar
+  -- over `on`: `(mini "..." >> bass1Inst) "bass1"` is equivalent
+  -- to `on "bass1" bass1Inst (mini "...")`.  Reads naturally
+  -- left-to-right; see `docs/north-star.md` §3.
+  , module Tidal.Routed
+  -- The `Notation` typeclass — any source-side value that yields a
+  -- Pattern.  Lets cells write `vetula { ... } >> piano1` once
+  -- Vetula lands, with the same operator that works for Pattern
+  -- and MiniNotation today.
+  , module Tidal.Notation
+  -- MiniNotation as a first-class type — `miniTyped` preserves the
+  -- parsed tree (round-trip to source via `miniSource`, compose via
+  -- `<>`) where `Pitch.Parse.mini` resolves immediately to Pattern.
+  , module Tidal.MiniNotation
   -- Session bag
   , Session(..)
   , AnyPart(..)
@@ -94,6 +108,9 @@ import Data.Ring (class Ring, sub) as PRing
 import Tidal.Cell.Prelude
 import Data.Maybe (Maybe(..))
 import Tidal.Emit (class Emitable)
+import Tidal.MiniNotation
+import Tidal.Notation
+import Tidal.Routed
 import Tidal.MidiDevice (MidiDevice(..))
 import Tidal.Pitch (PitchedNote12)
 import Tidal.PolySignal
@@ -395,6 +412,29 @@ instance onInstrument :: On (Instrument note) note (PitchedPart note) where
 instance onDrumKit :: On DrumKit DrumHitRef DrumPart where
   on mvoice destination body =
     DrumPart { mvoice, destination, body }
+
+-- ---------------------------------------------------------------------------
+-- The `>>` operator's instances — instances live here (where the
+-- destination types are declared) per the orphan-instance rule.
+-- The class itself lives in `Tidal.Routed` (declared without
+-- destination-type imports to avoid a circular dependency).
+-- ---------------------------------------------------------------------------
+
+-- | `notation >> instrument` → `String -> PitchedPart note`.
+-- | The mvoice argument is supplied at use-site (or by a cell
+-- | template wrapper applying the cell name).
+instance routedInstrument
+  :: Notation n note
+  => RoutedTo n (Instrument note) (String -> PitchedPart note) where
+  routedTo n dest = \mvoice ->
+    PitchedPart { mvoice, destination: dest, body: toPattern n }
+
+-- | `notation >> drumkit` → `String -> DrumPart`.
+instance routedDrumKit
+  :: Notation n DrumHitRef
+  => RoutedTo n DrumKit (String -> DrumPart) where
+  routedTo n dest = \mvoice ->
+    DrumPart { mvoice, destination: dest, body: toPattern n }
 
 -- ---------------------------------------------------------------------------
 -- Session bag — erased Parts the runtime walks at baseline load
