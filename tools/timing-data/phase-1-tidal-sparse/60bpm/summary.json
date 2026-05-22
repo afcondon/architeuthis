@@ -1,0 +1,19 @@
+{
+  "title": "Phase 1 \u2014 Tidal sparse, 60 BPM (1 note/cycle = 4s IOI)",
+  "n": 18,
+  "mean_ms": -2.5263741715914672e-12,
+  "median_ms": 0.016202829996473156,
+  "stdev_ms": 0.13148239899142655,
+  "min_ms": -0.19213604706419574,
+  "max_ms": 0.24536531268677209,
+  "p50_ms": 0.016202829996473156,
+  "p95_ms": 0.17453814498439885,
+  "p99_ms": 0.23119987914629733,
+  "intercept_ms": -0.16155227983734494,
+  "drift_ms_per_event": 0.01900615056880219,
+  "worst_idx": 10,
+  "worst_offset_ms": 0.24536531268677209,
+  "bpm": 15.0,
+  "sample_rate": 48000,
+  "source": "/Users/afc/Music/Ableton/Live Recordings/2026-05-21 071924 Temp Project/Samples/Recorded/1-Audio 0003 [2026-05-21 082852].aif"
+}

@@ -1,0 +1,19 @@
+{
+  "title": "Phase 3 \u2014 Tidal dense, 60 BPM (16 notes/cycle = 250 ms IOI)",
+  "n": 304,
+  "mean_ms": -1.1466850860654774e-12,
+  "median_ms": 0.004454363697732333,
+  "stdev_ms": 0.13144063487885094,
+  "min_ms": -0.2455498233716753,
+  "max_ms": 0.31696275933791185,
+  "p50_ms": 0.004454363697732333,
+  "p95_ms": 0.2804868716237216,
+  "p99_ms": 0.31695814891616464,
+  "intercept_ms": -0.17053243082035216,
+  "drift_ms_per_event": 0.0011256266060673628,
+  "worst_idx": 202,
+  "worst_offset_ms": 0.31696275933791185,
+  "bpm": 240.0,
+  "sample_rate": 48000,
+  "source": "/Users/afc/Music/Ableton/Live Recordings/2026-05-21 071924 Temp Project/Samples/Recorded/1-Audio 0005 [2026-05-21 083027].aif"
+}

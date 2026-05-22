@@ -1,0 +1,19 @@
+{
+  "title": "Phase 4 \u2014 Ren\u00e9 60 BPM ch6 (16 stepsPerCycle)",
+  "n": 288,
+  "mean_ms": 1.056932319443149e-13,
+  "median_ms": 0.4922907248710544,
+  "stdev_ms": 15.141388001119607,
+  "min_ms": -25.726456729738857,
+  "max_ms": 31.086042627452116,
+  "p50_ms": 0.4922907248710544,
+  "p95_ms": 23.796457456367893,
+  "p99_ms": 26.413541827745263,
+  "intercept_ms": 0.4087112763679535,
+  "drift_ms_per_event": -0.002848162204653987,
+  "worst_idx": 77,
+  "worst_offset_ms": 31.086042627452116,
+  "bpm": 240.0,
+  "sample_rate": 48000,
+  "source": "/Users/afc/Music/Ableton/Live Recordings/2026-05-21 071924 Temp Project/Samples/Recorded/1-Audio 0008 [2026-05-21 105526].aif"
+}

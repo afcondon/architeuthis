@@ -1,0 +1,19 @@
+{
+  "title": "F-LEAD rene 60bpm ch7",
+  "n": 288,
+  "mean_ms": 4.579053186009534e-13,
+  "median_ms": -0.027343749952706276,
+  "stdev_ms": 0.2310683487548875,
+  "min_ms": -0.25651343812626237,
+  "max_ms": 2.4726548692342476,
+  "p50_ms": -0.027343749952706276,
+  "p95_ms": 0.18099007436758258,
+  "p99_ms": 0.6266105933175637,
+  "intercept_ms": -0.2236074014986941,
+  "drift_ms_per_event": 0.0015582397317014073,
+  "worst_idx": 252,
+  "worst_offset_ms": 2.4726548692342476,
+  "bpm": 240.0,
+  "sample_rate": 48000,
+  "source": "/Users/afc/Music/Ableton/Live Recordings/2026-05-21 071924 Temp Project/Samples/Recorded/1-Audio 0020 [2026-05-21 134152].aif"
+}

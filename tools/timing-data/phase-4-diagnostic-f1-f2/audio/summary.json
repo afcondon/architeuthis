@@ -1,0 +1,19 @@
+{
+  "title": "F1+F-LAT+F-FUTURE rene 60bpm ch7",
+  "n": 304,
+  "mean_ms": -1.864239756717947e-13,
+  "median_ms": -0.00860237125743879,
+  "stdev_ms": 0.16466424321234252,
+  "min_ms": -0.25860694280993357,
+  "max_ms": 1.2830635926511604,
+  "p50_ms": -0.00860237125743879,
+  "p95_ms": 0.1789026442256727,
+  "p99_ms": 0.38535725525947595,
+  "intercept_ms": -0.1972584592815883,
+  "drift_ms_per_event": 0.0013020360348607385,
+  "worst_idx": 68,
+  "worst_offset_ms": 1.2830635926511604,
+  "bpm": 240.0,
+  "sample_rate": 48000,
+  "source": "/Users/afc/Music/Ableton/Live Recordings/2026-05-21 071924 Temp Project/Samples/Recorded/1-Audio 0017 [2026-05-21 131335].aif"
+}

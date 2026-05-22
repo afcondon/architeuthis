@@ -1,0 +1,19 @@
+{
+  "title": "F4 rene 120bpm ch7",
+  "n": 576,
+  "mean_ms": -3.878625815584908e-13,
+  "median_ms": -0.05258494980444084,
+  "stdev_ms": 0.7144251563793343,
+  "min_ms": -0.4067548721905041,
+  "max_ms": 15.88491179618768,
+  "p50_ms": -0.05258494980444084,
+  "p95_ms": 0.18119928846135736,
+  "p99_ms": 1.4993507043036516,
+  "intercept_ms": -0.10579291285042804,
+  "drift_ms_per_event": 0.00036797534904361783,
+  "worst_idx": 13,
+  "worst_offset_ms": 15.88491179618768,
+  "bpm": 480.0,
+  "sample_rate": 48000,
+  "source": "/Users/afc/Music/Ableton/Live Recordings/2026-05-21 071924 Temp Project/Samples/Recorded/1-Audio 0019 [2026-05-21 133157].aif"
+}

@@ -1,0 +1,19 @@
+{
+  "title": "Phase 0 \u2014 Live 60 BPM metronome (rimshot)",
+  "n": 66,
+  "mean_ms": -1.6259619913098917e-12,
+  "median_ms": -1.1103111319243908e-07,
+  "stdev_ms": 3.6987012294657944e-06,
+  "min_ms": -7.325943442992866e-06,
+  "max_ms": 8.357048500329256e-06,
+  "p50_ms": -1.1103111319243908e-07,
+  "p95_ms": 5.0532999011920765e-06,
+  "p99_ms": 7.825443390174764e-06,
+  "intercept_ms": -2.8917483798744802e-08,
+  "drift_ms_per_event": 8.897187026693337e-10,
+  "worst_idx": 32,
+  "worst_offset_ms": 8.357048500329256e-06,
+  "bpm": 60.0,
+  "sample_rate": 48000,
+  "source": "/Users/afc/Music/Ableton/Live Recordings/2026-05-21 071924 Temp Project/Samples/Processed/Crop/2-Audio 1 [2026-05-21 074739].aif"
+}

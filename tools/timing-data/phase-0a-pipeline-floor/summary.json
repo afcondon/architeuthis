@@ -1,0 +1,19 @@
+{
+  "title": "Phase 0a \u2014 synthetic 60 BPM (pipeline floor)",
+  "n": 60,
+  "mean_ms": -3.539761076846541e-13,
+  "median_ms": -0.009272348121157847,
+  "stdev_ms": 0.07182329969674432,
+  "min_ms": -0.009272348121612595,
+  "max_ms": 0.5470685390701173,
+  "p50_ms": -0.009272348121157847,
+  "p95_ms": -0.009272348117519869,
+  "p99_ms": 0.2188274156294095,
+  "intercept_ms": 0.026905010118335113,
+  "drift_ms_per_event": -0.0009120342413115008,
+  "worst_idx": 0,
+  "worst_offset_ms": 0.5470685390701173,
+  "bpm": 60.0,
+  "sample_rate": 48000,
+  "source": "/Users/afc/work/afc-work/music/live-coding/purerl-tidal/tools/timing-data/phase-0a-pipeline-floor/synth-60bpm.wav"
+}

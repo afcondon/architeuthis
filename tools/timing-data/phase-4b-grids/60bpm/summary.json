@@ -1,0 +1,19 @@
+{
+  "title": "Phase 4b \u2014 Grids 60 BPM ch8 (BD always-fire)",
+  "n": 304,
+  "mean_ms": -3.503162672227757e-13,
+  "median_ms": -0.2232783849608495,
+  "stdev_ms": 14.954932426835787,
+  "min_ms": -26.003095197673247,
+  "max_ms": 33.267739129209076,
+  "p50_ms": -0.2232783849608495,
+  "p95_ms": 24.091853533855463,
+  "p99_ms": 27.52509979895222,
+  "intercept_ms": -0.933991930393704,
+  "drift_ms_per_event": 0.006164963236919828,
+  "worst_idx": 222,
+  "worst_offset_ms": 33.267739129209076,
+  "bpm": 240.0,
+  "sample_rate": 48000,
+  "source": "/Users/afc/Music/Ableton/Live Recordings/2026-05-21 071924 Temp Project/Samples/Recorded/1-Audio 0012 [2026-05-21 112448].aif"
+}

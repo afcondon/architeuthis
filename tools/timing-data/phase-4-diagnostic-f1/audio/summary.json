@@ -1,0 +1,19 @@
+{
+  "title": "F1-rene-60bpm-ch7",
+  "n": 302,
+  "mean_ms": -6.183133475422328e-14,
+  "median_ms": 0.5862271720980061,
+  "stdev_ms": 15.01537742346878,
+  "min_ms": -28.049182567589014,
+  "max_ms": 28.450810614980583,
+  "p50_ms": 0.5862271720980061,
+  "p95_ms": 22.35289870418855,
+  "p99_ms": 25.88102209052319,
+  "intercept_ms": -1.6251479527983428,
+  "drift_ms_per_event": 0.010798325267762664,
+  "worst_idx": 42,
+  "worst_offset_ms": 28.450810614980583,
+  "bpm": 240.0,
+  "sample_rate": 48000,
+  "source": "/Users/afc/Music/Ableton/Live Recordings/2026-05-21 071924 Temp Project/Samples/Recorded/1-Audio 0016 [2026-05-21 121740].aif"
+}

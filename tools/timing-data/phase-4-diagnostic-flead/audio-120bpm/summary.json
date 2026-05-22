@@ -1,0 +1,19 @@
+{
+  "title": "F-LEAD rene 120bpm ch7",
+  "n": 576,
+  "mean_ms": 1.9626029196868127e-12,
+  "median_ms": -0.027664013654430164,
+  "stdev_ms": 0.2996093343638252,
+  "min_ms": -0.2776670673333683,
+  "max_ms": 5.368159084340732,
+  "p50_ms": -0.027664013654430164,
+  "p95_ms": 0.2015011509793112,
+  "p99_ms": 0.6598314107559418,
+  "intercept_ms": -0.2053046074970833,
+  "drift_ms_per_event": 0.0007141029826053769,
+  "worst_idx": 157,
+  "worst_offset_ms": 5.368159084340732,
+  "bpm": 480.0,
+  "sample_rate": 48000,
+  "source": "/Users/afc/Music/Ableton/Live Recordings/2026-05-21 071924 Temp Project/Samples/Recorded/1-Audio 0021 [2026-05-21 134206].aif"
+}
