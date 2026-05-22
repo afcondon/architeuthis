@@ -33,16 +33,24 @@ module Tidal.Vetula.Voicing
   , Selector(..)
   , takeChord
   , takeVoicing
+  -- Voice leading (V-C)
+  , Progression
+  , voiceLead
+  , enumerateVoicings
+  , play
+  , nearestNote
   ) where
 
 import Prelude
 
 import Data.Array as Array
-import Data.Array (cons, deleteAt, filter, nub, range, sort, (!!))
-import Data.Foldable (elem, foldl)
+import Data.Array (cons, deleteAt, filter, nub, range, sort, (!!), zipWith)
+import Data.Foldable (elem, foldl, sum)
+import Data.Function (on)
 import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Tuple (Tuple(..), fst)
 
-import Tidal.Vetula (Chord(..))
+import Tidal.Vetula (Chord(..), DegreeChord, Key, realize)
 
 -- ---------------------------------------------------------------------------
 -- Voicing — sorted-ascending array of MIDI note numbers
@@ -179,10 +187,10 @@ cluster (Voicing xs) = case Array.uncons xs of
   Nothing -> Voicing []
   Just { head: bottom } ->
     let
-      bottomOctave = bottom `div` 12
+      bottomOct = bottom `div` 12
       pcs = sort (nub (map (\n -> n `mod` 12) xs))
     in
-      Voicing (map (\pc -> pc + 12 * bottomOctave) pcs)
+      Voicing (map (\pc -> pc + 12 * bottomOct) pcs)
 
 -- | Distribute the voicing's notes across an octave range.  Lowest
 -- | note shifted to (or near) the `low` octave, highest to (or near)
@@ -218,14 +226,14 @@ spread { low, high } (Voicing xs) =
       let
         below = candidate - 12
         above = candidate + 12
-        d0 = absInt (candidate - target)
-        dBelow = absInt (below - target)
-        dAbove = absInt (above - target)
+        d0 = absVal (candidate - target)
+        dBelow = absVal (below - target)
+        dAbove = absVal (above - target)
       in
         if dBelow < d0 && dBelow <= dAbove then below
         else if dAbove < d0 then above
         else candidate
-    absInt n = if n < 0 then -n else n
+    absVal n = if n < 0 then -n else n
 
 -- ---------------------------------------------------------------------------
 -- Selectors — sub-chord plumbing
@@ -309,3 +317,144 @@ rangeIncl :: Int -> Int -> Array Int
 rangeIncl lo hi
   | hi < lo   = []
   | otherwise = range lo hi
+
+-- ---------------------------------------------------------------------------
+-- Voice leading — V-C
+-- ---------------------------------------------------------------------------
+
+-- | A progression is an ordered list of chord recipes.
+type Progression = Array DegreeChord
+
+-- | Voice-lead from the current voicing into the next chord.  Returns
+-- | a voicing of `nextChord` whose notes are as close as possible to
+-- | `currentVoicing` — common pitch classes stay at the same MIDI
+-- | number, non-common ones move to the nearest octave.
+-- |
+-- | Implementation: enumerate every permutation of the next chord's
+-- | distinct pitch classes (factorial in chord size — fine for ≤7
+-- | voices), pair each current voice with one PC via nearest-octave
+-- | placement, score by total |motion|, return the minimum.
+-- |
+-- | If the current voicing and next chord have different sizes, falls
+-- | back to `closeVoicing` centred on the current voicing's bottom
+-- | octave.  Voice-counts-changing-mid-progression is V-D territory.
+voiceLead :: Voicing -> Chord -> Voicing
+voiceLead (Voicing []) chord =
+  closeVoicing { centre: 4 } chord
+voiceLead voicing@(Voicing current) (Chord pcs) =
+  let
+    nextPcs = nub pcs
+    n = Array.length current
+    m = Array.length nextPcs
+  in
+    if n /= m
+      then closeVoicing { centre: bottomOctave voicing } (Chord nextPcs)
+      else case fst <$> bestPerm current nextPcs of
+        Just v  -> v
+        Nothing -> closeVoicing { centre: bottomOctave voicing } (Chord nextPcs)
+
+-- | All distinct (voicing, motion) candidates for voice-leading from
+-- | a current voicing into a next chord, sorted by motion ascending.
+-- | The smallest-motion result is `voiceLead`'s output; subsequent
+-- | entries are progressively less smooth alternatives.
+-- |
+-- | Same size constraint as `voiceLead` — returns a single fallback
+-- | entry on size mismatch.
+enumerateVoicings :: Voicing -> Chord -> Array (Tuple Voicing Int)
+enumerateVoicings (Voicing []) chord =
+  [ Tuple (closeVoicing { centre: 4 } chord) 0 ]
+enumerateVoicings voicing@(Voicing current) (Chord pcs) =
+  let
+    nextPcs = nub pcs
+    n = Array.length current
+    m = Array.length nextPcs
+  in
+    if n /= m
+      then [ Tuple (closeVoicing { centre: bottomOctave voicing } (Chord nextPcs)) 0 ]
+      else
+        Array.sortBy (compare `on` snd)
+          (Array.nubByEq (\a b -> fst a == fst b)
+             (map (scorePerm current) (permutations nextPcs)))
+  where
+    snd (Tuple _ s) = s
+
+-- | Glue: realise a progression in a key, applying the voicing
+-- | strategy to the first chord and voice-leading every subsequent
+-- | one from the previous voicing.  Returns one Voicing per
+-- | DegreeChord in the progression.
+play :: Key -> VoicingStrategy -> Progression -> Array Voicing
+play key strategy chords =
+  case Array.uncons chords of
+    Nothing -> []
+    Just { head: first, tail: rest } ->
+      let
+        firstV = strategy (closeVoicing { centre: 4 } (realize key first))
+      in
+        cons firstV
+          (Array.scanl (\prev dc -> voiceLead prev (realize key dc)) firstV rest)
+
+-- ---------------------------------------------------------------------------
+-- Voice-leading internals
+-- ---------------------------------------------------------------------------
+
+-- | The best (lowest-motion) permutation pairing of current voices to
+-- | next-chord PCs.  Returns Nothing if no permutations exist (i.e.
+-- | empty next-chord PC list).
+bestPerm :: Array Int -> Array Int -> Maybe (Tuple Voicing Int)
+bestPerm current nextPcs = case permutations nextPcs of
+  [] -> Nothing
+  perms ->
+    let scored = map (scorePerm current) perms
+        sorted = Array.sortBy (compare `on` (\(Tuple _ s) -> s)) scored
+    in  Array.head sorted
+
+-- | Score one permutation: pair each current voice with the nth PC
+-- | from the perm, place that PC at the octave closest to the voice,
+-- | sum the absolute motions.
+scorePerm :: Array Int -> Array Int -> Tuple Voicing Int
+scorePerm current perm =
+  let
+    placed = zipWith nearestNote current perm
+    motion = sum (zipWith (\c p -> absInt (c - p)) current placed)
+  in
+    Tuple (Voicing (sort placed)) motion
+
+-- | Place a pitch class at the octave whose MIDI number is closest to
+-- | the target.  Checks the natural octave, one above, and one below.
+nearestNote :: Int -> Int -> Int
+nearestNote target pc =
+  let
+    -- truncating div toward zero; for positive (target - pc) this is floor
+    base = (target - pc) `div` 12
+    c0 = pc + 12 * base
+    cAbove = c0 + 12
+    cBelow = c0 - 12
+    d0 = absInt (c0 - target)
+    dA = absInt (cAbove - target)
+    dB = absInt (cBelow - target)
+  in
+    if dA < d0 && dA <= dB then cAbove
+    else if dB < d0 && dB < dA then cBelow
+    else c0
+
+-- | The bottom note's octave in MIDI convention (octave 4 = middle-C
+-- | octave).  Used as the centre when voicing-leading falls back to
+-- | closeVoicing on size mismatch.
+bottomOctave :: Voicing -> Int
+bottomOctave (Voicing xs) = case Array.head xs of
+  Just n  -> (n `div` 12) - 1
+  Nothing -> 4
+
+-- | All permutations of an array (recursive; factorial in size).
+permutations :: forall a. Array a -> Array (Array a)
+permutations xs = case Array.length xs of
+  0 -> [[]]
+  _ ->
+    Array.concatMap
+      (\i -> case xs !! i, deleteAt i xs of
+         Just x, Just rest -> map (cons x) (permutations rest)
+         _, _              -> [])
+      (allIndices (Array.length xs))
+
+absInt :: Int -> Int
+absInt n = if n < 0 then -n else n

@@ -7,9 +7,12 @@ module Test.VetulaVoicingSpec
 import Prelude
 
 import Data.Foldable (maximum, minimum)
-import Data.Maybe (fromMaybe)
+import Data.Maybe (Maybe(..), fromMaybe)
 import Effect (Effect)
 import Effect.Console (log)
+
+import Data.Array as Array
+import Data.Tuple (Tuple(..))
 
 import Tidal.Vetula
   ( Chord(..)
@@ -17,6 +20,7 @@ import Tidal.Vetula
   , Quality(..)
   , cMajorKey
   , deg
+  , mcmullenYellow
   , realize
   )
 import Tidal.Vetula.Voicing
@@ -26,12 +30,16 @@ import Tidal.Vetula.Voicing
   , cluster
   , drop2
   , drop2and4
+  , enumerateVoicings
+  , nearestNote
   , openTriad
+  , play
   , quartal
   , rootless
   , spread
   , takeChord
   , takeVoicing
+  , voiceLead
   )
 
 runVetulaVoicingTests :: Effect Unit
@@ -231,7 +239,94 @@ runVetulaVoicingTests = do
     [55, 60, 64, 71]
     iMaj7Voiced
 
+  -- ------------------------------------------------------------------
+  -- V-C: voice leading
+  -- ------------------------------------------------------------------
   log ""
+  log "  nearestNote (place a PC at the nearest octave to a target):"
+  expectInt "nearestNote 71 9 → 69 (B4→A4 just below)" 69 (nearestNote 71 9)
+  expectInt "nearestNote 60 0 → 60 (identity)"          60 (nearestNote 60 0)
+  expectInt "nearestNote 60 7 → 55 (G3 closer than G4)" 55 (nearestNote 60 7)
+  expectInt "nearestNote 64 5 → 65 (F4 closer than F3)" 65 (nearestNote 64 5)
+
+  log ""
+  log "  voiceLead:"
+  expectVoicing
+    "voiceLead Cmaj [60 64 67] → Chord [0 4 7] is identity"
+    [60, 64, 67]
+    (voiceLead (Voicing [60, 64, 67]) (Chord [0, 4, 7]))
+  expectVoicing
+    "voiceLead Cmaj7 → Am7: common tones preserved, B→A"
+    [60, 64, 67, 69]
+    (voiceLead (Voicing [60, 64, 67, 71]) (Chord [0, 4, 7, 9]))
+  expectVoicing
+    "voiceLead Cmaj → F (different roots, IV cadence)"
+    -- Cmaj voicing [60, 64, 67] (C E G) → F chord [0, 5, 9].
+    -- Best perm: 60→0 (move 0), 64→5 (nearest F: 65, move 1), 67→9 (nearest A: 69, move 2). Total 3.
+    -- Or:        60→5 (nearest F: 65? 65-60=5, 53-60=7. So 65, move 5), 64→9 (69, move 5), 67→0 (72, move 5). Total 15. Worse.
+    -- So voicing [60, 65, 69].
+    [60, 65, 69]
+    (voiceLead (Voicing [60, 64, 67]) (Chord [0, 5, 9]))
+  expectVoicing
+    "voiceLead size mismatch: 3 voices → 4 PCs → fallback closeVoicing"
+    -- bottomOctave of [60, 64, 67] = 60/12 - 1 = 5 - 1 = 4. centre = 4.
+    -- closeVoicing { centre: 4 } (Chord [0, 4, 7, 11]) = [60, 64, 67, 71].
+    [60, 64, 67, 71]
+    (voiceLead (Voicing [60, 64, 67]) (Chord [0, 4, 7, 11]))
+
+  log ""
+  log "  enumerateVoicings:"
+  let
+    candidates = enumerateVoicings (Voicing [60, 64, 67, 71]) (Chord [0, 4, 7, 9])
+    -- First entry should be the voiceLead result (lowest motion)
+    firstCandidate = Array.head candidates
+  case firstCandidate of
+    Just (Tuple v score) -> do
+      expectVoicing "head of enumerate matches voiceLead output" [60, 64, 67, 69] v
+      expectInt "head score = 2 (B→A motion)" 2 score
+    Nothing -> log "  FAIL  enumerateVoicings returned empty"
+  let scores = map (\(Tuple _ s) -> s) candidates
+  if scoresAscending scores
+    then log "  PASS  enumerate scores are sorted non-decreasing"
+    else log $ "  FAIL  enumerate scores out of order: " <> show scores
+
+  log ""
+  log "  play (key + strategy + progression):"
+  let
+    chords = [ deg I Maj7 [], deg VI Min7 [], deg IV Maj7 [], deg V Dom7 [] ]
+    voicings = play cMajorKey identity chords
+  expectInt "play returns one voicing per chord (4 chords → 4 voicings)" 4 (Array.length voicings)
+  case Array.head voicings of
+    Just (Voicing vs) -> expectInt "first voicing of I Maj7 has 4 notes" 4 (Array.length vs)
+    Nothing           -> log "  FAIL  play returned no voicings for non-empty progression"
+
+  let
+    mcVoicings = play cMajorKey identity mcmullenYellow
+  expectInt "play mcmullenYellow → 18 voicings" 18 (Array.length mcVoicings)
+
+  log ""
+
+-- ---------------------------------------------------------------------------
+-- Spec helpers (continued)
+-- ---------------------------------------------------------------------------
+
+expectInt :: String -> Int -> Int -> Effect Unit
+expectInt label expected actual =
+  if actual == expected
+    then log ("  PASS  " <> label)
+    else log ("  FAIL  " <> label
+              <> "\n         expected " <> show expected
+              <> "\n         got      " <> show actual)
+
+scoresAscending :: Array Int -> Boolean
+scoresAscending xs = case Array.uncons xs of
+  Nothing -> true
+  Just { head, tail } -> walk head tail
+  where
+    walk prev arr = case Array.uncons arr of
+      Nothing -> true
+      Just { head: next, tail: more } ->
+        if next >= prev then walk next more else false
 
 -- ---------------------------------------------------------------------------
 -- Spec helpers
