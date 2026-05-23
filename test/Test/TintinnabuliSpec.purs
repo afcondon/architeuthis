@@ -28,6 +28,7 @@ import Effect.Console (log)
 import Tidal.Pattern.Core (fastCat, queryArc)
 import Tidal.Pattern.Types (Pattern, eventValue)
 import Tidal.Pitch (PitchedNote12(..))
+import Tidal.Notation (toPattern)
 import Tidal.Pitch.Parse (degree, pitch)
 import Tidal.Scales (cMajor, dDorian)
 import Tidal.Tintinnabuli (above1, below1, cMajT, tintinnabuli)
@@ -98,7 +99,7 @@ runTintinnabuliTests = do
   -- into one cycle.
   -- --------------------------------------------------------------------
   let
-    mixedIn = fastCat [degree "1", pitch "e4", pitch "bd"]
+    mixedIn = fastCat [toPattern (degree "1"), toPattern (pitch "e4"), toPattern (pitch "bd")]
     mixedOut = tintinnabuli cMajor cMajT above1 mixedIn
   expectPitches
     "mixed (degree 1, chromatic e4, sample bd) → e4, g4, bd"

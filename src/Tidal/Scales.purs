@@ -163,6 +163,7 @@ import Data.Int (toNumber)
 import Data.Int as Int
 import Data.Maybe (Maybe(..))
 import Data.Tuple (Tuple(..))
+import Tidal.Notation (class Notation, toPattern)
 import Tidal.Pattern.Types (Pattern)
 import Tidal.Pitch (PitchedNote12(..))
 
@@ -767,8 +768,8 @@ renderDegree (Scale s) degree =
 -- | it on a pattern you want to follow live `set-scale` mutation —
 -- | the whole point of leaving Degrees unresolved is that the voice
 -- | renders them on every tick using the current scale.
-inKey :: Scale -> Pattern PitchedNote12 -> Pattern PitchedNote12
-inKey scale = map (renderPitchIn scale)
+inKey :: forall n. Notation n PitchedNote12 => Scale -> n -> Pattern PitchedNote12
+inKey scale = map (renderPitchIn scale) <<< toPattern
   where
     renderPitchIn :: Scale -> PitchedNote12 -> PitchedNote12
     renderPitchIn s = case _ of
@@ -784,8 +785,8 @@ inKey scale = map (renderPitchIn scale)
 -- | Composes with `inKey` the obvious way: `inKey s . transposeDiatonic n`
 -- | renders to the scale after stepping; `transposeDiatonic n . inKey s`
 -- | pins the scale first (so the transpose is a no-op).
-transposeDiatonic :: Int -> Pattern PitchedNote12 -> Pattern PitchedNote12
-transposeDiatonic offset = map step
+transposeDiatonic :: forall n. Notation n PitchedNote12 => Int -> n -> Pattern PitchedNote12
+transposeDiatonic offset = map step <<< toPattern
   where
     step :: PitchedNote12 -> PitchedNote12
     step = case _ of
@@ -799,8 +800,8 @@ transposeDiatonic offset = map step
 -- |
 -- | For chromatic transposition of a degree pattern, render first:
 -- | `transposeChromatic 5 (inKey cMajor (d "1 3 5"))`.
-transposeChromatic :: Int -> Pattern PitchedNote12 -> Pattern PitchedNote12
-transposeChromatic offset = map step
+transposeChromatic :: forall n. Notation n PitchedNote12 => Int -> n -> Pattern PitchedNote12
+transposeChromatic offset = map step <<< toPattern
   where
     step :: PitchedNote12 -> PitchedNote12
     step = case _ of

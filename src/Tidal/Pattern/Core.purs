@@ -91,6 +91,7 @@ import Data.Ord (comparing)
 import Data.Rational (Rational, fromInt, toNumber)
 import Math (cos, floor, pi, sin, sqrt)
 import Tidal.Core.Types (Time)
+import Tidal.Notation (class Notation, toPattern)
 import Tidal.Pattern.Types
   ( Arc(..)
   , ControlMap
@@ -282,9 +283,10 @@ shiftArc :: Time -> Arc -> Arc
 shiftArc t (Arc { start, stop }) = Arc { start: start + t, stop: stop + t }
 
 -- | Reverse a pattern within each cycle
-rev :: forall a. Pattern a -> Pattern a
-rev pat = pattern \(State st) ->
+rev :: forall n a. Notation n a => n -> Pattern a
+rev notation = pattern \(State st) ->
   let
+    pat = toPattern notation
     -- Split query into per-cycle queries
     cycleArcs = splitArcByCycles st.arc
 
@@ -540,11 +542,12 @@ zoom s e pat
 -- | Apply a function every n cycles
 -- |
 -- | `every 4 rev pat` reverses the pattern every 4th cycle
-every :: forall a. Int -> (Pattern a -> Pattern a) -> Pattern a -> Pattern a
-every n f pat
-  | n <= 0 = pat
+every :: forall notation a. Notation notation a => Int -> (Pattern a -> Pattern a) -> notation -> Pattern a
+every n f notation
+  | n <= 0 = toPattern notation
   | otherwise = pattern \(State st) ->
       let
+        pat = toPattern notation
         cycleArcs = splitArcByCycles st.arc
         processOneCycle cycleArc =
           let

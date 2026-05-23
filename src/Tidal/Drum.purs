@@ -19,10 +19,9 @@ module Tidal.Drum
 
 import Prelude
 
-import Data.Either (Either(..))
 import Data.Functor (map)
-import Tidal.Pattern.Mini (parseMiniPattern)
-import Tidal.Pattern.Types (Pattern, silence)
+import Tidal.MiniNotation (MiniNotation, miniTyped)
+import Tidal.Pattern.Types (Pattern)
 import Tidal.Pitch (PitchedNote12(..))
 
 -- | Parse a drum-pattern string using the full mini-notation
@@ -31,10 +30,8 @@ import Tidal.Pitch (PitchedNote12(..))
 -- |     drum "bd ~ sn ~"          -- four-step pattern with bd, rest, sn, rest
 -- |     drum "bd(3,8)"            -- euclidean kick
 -- |     drum "[bd sn]*2 ~ cp"     -- subdivided + repeated
-drum :: String -> Pattern String
-drum input = case parseMiniPattern input of
-  Right p -> p
-  Left _  -> silence
+drum :: String -> MiniNotation String
+drum = miniTyped
 
 -- | Coerce a DrumPart's `Pattern String` body to `Pattern PitchedNote12` by
 -- | wrapping each hit-name as the `Sample` variant.  Used at the

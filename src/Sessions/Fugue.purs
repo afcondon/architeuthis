@@ -58,7 +58,6 @@ bass1Mix = on vBass bass1 (inKey dDorian (degree "5 5 5 3 3 7 -1"))
 -- MVP-3 Tintinnabuli demo: M-voice + parallel T-voice on A-minor.
 -- ---------------------------------------------------------------------------
 
-mPart :: Pattern PitchedNote12
 mPart = degree "1 2 3 4 5 4 3 2"
 
 melodyM :: PitchedPart PitchedNote12
@@ -71,7 +70,6 @@ melodyT = on vBass bass2 (tintinnabuli aMinor aMinT above1 mPart)
 -- MVP-4 Fugue Machine demo: 4 playheads on a shared subject.
 -- ---------------------------------------------------------------------------
 
-subject :: Pattern PitchedNote12
 subject = degree "1 5 3 5 1 3 5 -1"
 
 fugue1 :: PitchedPart PitchedNote12

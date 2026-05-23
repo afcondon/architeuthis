@@ -65,6 +65,7 @@ import Data.Foldable (elem)
 import Data.Maybe (fromMaybe)
 
 import Tidal.Chords (major, minor, dim)
+import Tidal.Notation (class Notation, toPattern)
 import Tidal.Pattern.Types (Pattern)
 import Tidal.Pitch (PitchedNote12(..))
 import Tidal.Scales (Scale, renderDegree)
@@ -160,8 +161,10 @@ tintinnabuliPitch scale t pos = case _ of
 -- | The scale argument is consulted only for `Degree` events.  Pure
 -- | `Chromatic` patterns are scale-insensitive in tintinnabuli too,
 -- | so any Scale value is fine (use `cMajor` or whatever's at hand).
-tintinnabuli :: Scale -> Triad -> Position -> Pattern PitchedNote12 -> Pattern PitchedNote12
-tintinnabuli scale t pos = map (tintinnabuliPitch scale t pos)
+tintinnabuli
+  :: forall n. Notation n PitchedNote12
+  => Scale -> Triad -> Position -> n -> Pattern PitchedNote12
+tintinnabuli scale t pos = map (tintinnabuliPitch scale t pos) <<< toPattern
 
 -- | The numeric workhorse.  Walk MIDI space outward from `melody` in
 -- | the chosen direction and pick the k-th note whose pitch class is
