@@ -146,6 +146,18 @@ data RegistrationEvent
       , family :: String
       , seleneValue :: Foreign
       }
+  -- | A `SelenePattern s` — a Tidal Pattern over Selene snapshots.
+  -- | Walker passes the opaque Pattern Foreign through to a
+  -- | `selene_pattern_voice` under `selene_pattern_voice_sup`.  That
+  -- | voice queries the pattern at each cycle boundary, projects the
+  -- | active Selene to a JSON envelope via
+  -- | `Tidal.SelenePattern.patternEnvelopeAt`, and sends
+  -- | `apply-polysignal <json>` to fh2-daemon when the envelope has
+  -- | changed since the previous cycle.  Slab C step 2.
+  | RegisterSelenePattern
+      { alias :: String
+      , patternValue :: Foreign
+      }
   -- | Balistes vmod Phase 3 (2026-05-18): a BEAM-native MI Balistes voice
   -- | declared at the Session level.  Walker captures the binding's
   -- | MIDI device + channel + per-instrument notes + opaque
@@ -261,6 +273,10 @@ walkBaseline = do
     -- needed.  The walker only projects to a JSON envelope, the
     -- daemon does the real claim work at apply-time.
     seleneEvents = Array.mapMaybe pickSelene allPairs
+    -- Slab C step 2: SelenePattern bindings.  Walker dispatches on the
+    -- constructor tag; the inner Pattern (Selene s) is held as Foreign
+    -- and passed to a selene_pattern_voice that queries it per cycle.
+    selenePatternEvents = Array.mapMaybe pickSelenePattern allPairs
     -- Balistes voices.  Inner MidiDevice tuple resolves to the
     -- declared device alias (same content-keyed lookup
     -- instruments use).  Same MIDI-channel claim semantics as
@@ -278,7 +294,7 @@ walkBaseline = do
                 <> repetitorEvents <> odonusEvents)
     claimErrorEvents = Array.mapMaybe claimErrorToEvent (validateMidiClaims claims)
   pure (claimErrorEvents <> devEvents <> routerEvents
-        <> instrEvents <> kitEvents <> seleneEvents
+        <> instrEvents <> kitEvents <> seleneEvents <> selenePatternEvents
         <> balistesEvents <> repetitorEvents <> odonusEvents)
 
 registrationToClaim :: RegistrationEvent -> Maybe MidiClaim
@@ -674,6 +690,29 @@ pickSelene { name: alias, value } = do
       , family: Selene.seleneFamily polysig
       , jsonEnvelope: Selene.seleneAsJson a polysig
       }
+
+-- ---------------------------------------------------------------------------
+-- SelenePattern classifier (Slab C step 2)
+-- ---------------------------------------------------------------------------
+
+-- | Classify a `SelenePattern s` value declared at the Session level.
+-- | Dispatches on the `selenePattern` newtype tag; carries the inner
+-- | `Pattern (Selene s)` through as Foreign so the
+-- | `selene_pattern_voice` gen_server can query it on each cycle
+-- | boundary without re-walking the session.
+pickSelenePattern
+  :: { name :: String, value :: Foreign }
+  -> Maybe RegistrationEvent
+pickSelenePattern { name: alias, value } = do
+  tag <- constructorTag value
+  case tag of
+    "selenePattern" -> do
+      inner <- tupleArg 0 value
+      Just $ RegisterSelenePattern
+        { alias
+        , patternValue: inner
+        }
+    _ -> Nothing
 
 -- ---------------------------------------------------------------------------
 -- FFI primitives — minimal, knowledge-free

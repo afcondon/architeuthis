@@ -98,6 +98,9 @@ module Calypso.Prelude
   -- declared as typed Session-level bindings, classified by the
   -- walker and shipped to fh2-daemon at baseline load.
   , module Tidal.Selene
+  -- Slab C step 2: SelenePattern bindings — Tidal patterns over Selene
+  -- snapshots that rotate on cycle boundaries.
+  , module Tidal.SelenePattern
   -- Balistes vmod (BEAM-native MI Balistes clone, parameter-as-Pattern).
   , module Tidal.Balistes
   -- Repetitor vmod (ZR-inspired, BEAM-native rhythm corpus + per-row offsets).
@@ -161,6 +164,10 @@ import Tidal.Selene
   , octoEuclid
   , octoRand
   , octoPresetNote
+  )
+import Tidal.SelenePattern
+  ( SelenePattern(..)
+  , selenePattern
   )
 import Tidal.Balistes
   ( Balistes(..)

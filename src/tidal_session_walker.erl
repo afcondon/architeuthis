@@ -640,6 +640,39 @@ apply_event({registerVirtualSelene,
             bump(virtualSelenes, Acc)
     end;
 
+%% Slab C step 2 (2026-05-23): a `Pattern (Selene s)` declared at the
+%% Session level.  Spawn (or live-update) a `selene_pattern_voice`
+%% under `selene_pattern_voice_sup`.  Voice ticks per clock window
+%% and installs the active Selene on each cycle boundary; same-alias
+%% re-fire swaps the pattern in place (cycle counter preserved).
+apply_event({registerSelenePattern,
+             #{ alias        := A
+              , patternValue := PV
+              }}, Acc) ->
+    VoiceConfig = #{
+        alias         => A,
+        pattern_value => PV
+    },
+    AliasAtom = binary_to_atom(A, utf8),
+    case selene_pattern_voice_sup:lookup_voice(AliasAtom) of
+        undefined ->
+            case selene_pattern_voice_sup:start_voice(AliasAtom, VoiceConfig) of
+                {ok, _Pid} ->
+                    tidal_log:info(
+                      "selene pattern ~s started~n", [A]),
+                    bump(selenePatterns, Acc);
+                {error, Reason} ->
+                    tidal_log:err(
+                      "selene pattern ~s: start failed: ~p~n",
+                      [A, Reason]),
+                    bump(selenePatternErrors, Acc)
+            end;
+        _Pid ->
+            selene_pattern_voice:set_pattern(AliasAtom,
+                #{pattern_value => PV}),
+            bump(selenePatterns, Acc)
+    end;
+
 %% A claim-error event surfaces a Phase-1 reservation-validation
 %% finding (e.g. duplicate MIDI channel claim).  The PureScript walker
 %% pre-renders a human-readable line in `message`; we log it via

@@ -183,6 +183,8 @@ broadcast_compute_window(Window) ->
     broadcast_to(odonus_voice_sup, fun odonus_voice_sup:which_voices/0, Window),
     broadcast_to(virtual_selene_voice_sup,
                  fun virtual_selene_voice_sup:which_voices/0, Window),
+    broadcast_to(selene_pattern_voice_sup,
+                 fun selene_pattern_voice_sup:which_voices/0, Window),
     ok.
 
 broadcast_to(SupName, WhichFn, Window) ->
