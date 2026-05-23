@@ -29,7 +29,6 @@
         , polyEnvConfigFields/1
         , polyEuclidConfigFields/1
         , polyRandConfigFields/1
-        , polyPresetConfigFields/1
         , polyPresetNoteConfigFields/1
         , balistesBindingFields/1
         , repetitorBindingFields/1
@@ -209,7 +208,7 @@ vPerOctFields(_) ->
 %% Decode the inner record of a `PolyLfoConfig` constructor:
 %%
 %%     PolyLfoConfig { bank :: Bank
-%%                   , slots :: Array LfoSlot
+%%                   , slots :: Array ModSlot
 %%                   , range :: Maybe OutputRange
 %%                   }
 %%
@@ -218,7 +217,7 @@ vPerOctFields(_) ->
 %%     {polyLfoConfig, #{bank => BankValue, slots => SlotsArray,
 %%                       range => RangeValue}}
 %%
-%% Because Bank, LfoSlot, LfoWave, and OutputRange are all defined in
+%% Because Bank, ModSlot, and OutputRange are all defined in
 %% Tidal.Selene, the encoding inside the record matches what the
 %% PureScript types expect.  We pass the inner record through verbatim;
 %% the PureScript classifier reads it as the typed record directly.
@@ -232,8 +231,7 @@ polyLfoConfigFields(_) ->
 
 %% --------------------------------------------------------------------
 %% polyClockConfigFields/1, polyEnvConfigFields/1, polyEuclidConfigFields/1,
-%% polyRandConfigFields/1, polyPresetConfigFields/1,
-%% polyPresetNoteConfigFields/1 — pure.
+%% polyRandConfigFields/1, polyPresetNoteConfigFields/1 — pure.
 %%
 %% Same passthrough pattern as polyLfoConfigFields above.  The
 %% PureScript classifier dispatches by constructor tag and calls the
@@ -262,12 +260,6 @@ polyRandConfigFields({polyRandConfig,
                       #{bank := _, slots := _, range := _} = M}) ->
     {just, M};
 polyRandConfigFields(_) ->
-    {nothing}.
-
-polyPresetConfigFields({polyPresetConfig,
-                        #{bank := _, slots := _, range := _} = M}) ->
-    {just, M};
-polyPresetConfigFields(_) ->
     {nothing}.
 
 polyPresetNoteConfigFields({polyPresetNoteConfig,

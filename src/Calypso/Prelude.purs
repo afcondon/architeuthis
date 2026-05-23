@@ -131,24 +131,35 @@ import Tidal.Selene
   , fh2Main
   , fh28Cv
   , fh28Gt
-  , LfoWave(..)
   , ClockBase(..)
   , RandDirection(..)
   , RandScale(..)
   , RandKey(..)
-  , LfoSlot
+  , ModSlot
   , ClockSlot
   , EnvSlot
   , EuclidSlot
   , RandSlot
-  , PresetSlot
   , PresetNoteSlot
+  , silent
+  , fixed
+  , sinLFO
+  , sqrLFO
+  , triLFO
+  , sawLFO
+  , rndLFO
+  , nseLFO
+  , sinLFOAmp
+  , sqrLFOAmp
+  , triLFOAmp
+  , sawLFOAmp
+  , rndLFOAmp
+  , nseLFOAmp
   , octoLfo
   , octoClock
   , octoEnv
   , octoEuclid
   , octoRand
-  , octoPreset
   , octoPresetNote
   )
 import Tidal.Balistes

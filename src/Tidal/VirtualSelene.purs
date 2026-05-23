@@ -11,14 +11,23 @@
 -- | Output convention: values land in the 0..255 controller range
 -- | so vmod parameter slots (`liveIntOr 128 "lfoBank.0"`,
 -- | `balistesConfig.x`, René notes, etc.) pick them up without a
--- | scaling step on the cell-text side.  An LFO's natural -1..+1
--- | swing is mapped to 0..255 here; clock / euclid gates write
--- | 0 (off) or 127 (on).  The OutputRange field of the Selene
--- | is ignored on the virtual path — it's an FH-2 firmware concept
--- | that doesn't translate to integer-valued control-bus slots.
+-- | scaling step on the cell-text side.  Modulation's natural -1..+1
+-- | swing (after summing per-shape amplitudes and clamping) is mapped
+-- | to 0..255 here; clock / euclid gates write 0 (off) or 127 (on).
+-- | The OutputRange field of the Selene is ignored on the virtual
+-- | path — it's an FH-2 firmware concept that doesn't translate to
+-- | integer-valued control-bus slots.
 -- |
--- | Implemented families (MVP): LFO, Clock, Euclid.  Env / Rand /
--- | Preset / PresetNote are returned as empty arrays for now (the
+-- | Move A (2026-05-23) unified the LFO + preset slot model.  Each
+-- | `ModSlot` is now a single-rate multi-shape mix:
+-- |     output(t) = level + Σ_shape ( amp_shape · shape(rate·t + phase) )
+-- | A static slot (`fixed 0.4`) has rate=0 and all amps zero, so the
+-- | evaluator emits `level` directly.  A multi-shape slot
+-- | (`silent { rate = 0.5, tri = 0.8, sqr = 0.3 }`) sums the
+-- | contributions.
+-- |
+-- | Implemented families (MVP): LFO/preset, Clock, Euclid.  Env /
+-- | Rand / PresetNote are returned as empty arrays for now (the
 -- | voice logs once and moves on).  Adding a family is one new
 -- | clause in `evaluateAt` plus its slot evaluator.
 module Tidal.VirtualSelene
@@ -35,8 +44,7 @@ import Tidal.Selene
   ( Selene(..)
   , ClockSlot
   , EuclidSlot
-  , LfoSlot
-  , LfoWave(..)
+  , ModSlot
   , ClockBase(..)
   )
 
@@ -48,7 +56,7 @@ type Output = { index :: Int, value :: Number }
 -- | (cycles, not seconds).  Returns one Output per active slot.
 evaluateAt :: forall s. Selene s -> Number -> Array Output
 evaluateAt polysig pos = case polysig of
-  PolyLfoConfig    cfg -> evaluateLfo    cfg.slots pos
+  PolyLfoConfig    cfg -> evaluateMod    cfg.slots pos
   PolyClockConfig  cfg -> evaluateClock  cfg.slots pos
   PolyEuclidConfig cfg -> evaluateEuclid cfg.slots pos
   -- The remaining families are valid surface but unimplemented on
@@ -56,41 +64,73 @@ evaluateAt polysig pos = case polysig of
   -- written, vmods fall through to their `liveIntOr` defaults.
   PolyEnvConfig         _ -> []
   PolyRandConfig        _ -> []
-  PolyPresetConfig      _ -> []
   PolyPresetNoteConfig  _ -> []
 
 -- ---------------------------------------------------------------------------
--- LFO
+-- Modulation (unified LFO + preset)
 -- ---------------------------------------------------------------------------
 
 -- | Each slot's instantaneous value at `pos`, scaled to 0..255.
--- | `ratio` is cycles-per-cycle: 1.0 = one full LFO per Tidal cycle,
--- | 0.5 = half-speed, 2.0 = double-speed.  Negative or zero ratios
--- | are clamped to 1.0 to avoid divide-by-zero / static output.
-evaluateLfo :: Array LfoSlot -> Number -> Array Output
-evaluateLfo slots pos = Array.mapWithIndex sample slots
+-- | `rate` is cycles-per-cycle: 1.0 = one full cycle per Tidal cycle,
+-- | 0.5 = half-speed.  `rate ≤ 0` means "no LFO contribution" — the
+-- | slot emits a constant `level` (degenerate preset case).
+-- |
+-- | The full per-output equation is:
+-- |     raw = level + Σ_shape ( amp_shape · shape(rate·t + phase) )
+-- | where shape ∈ {sin, sqr, tri, saw, rnd, nse}.  rnd / nse are
+-- | not implemented at MVP (return 0); the others are computed
+-- | analytically at unit-phase.  `raw` is clamped to [-1, 1] then
+-- | mapped to [0, 255] for the control bus.
+evaluateMod :: Array ModSlot -> Number -> Array Output
+evaluateMod slots pos = Array.mapWithIndex sample slots
   where
   sample i slot =
     let
-      r = if slot.ratio <= 0.0 then 1.0 else slot.ratio
-      phase = fracPart (pos * r)
-      raw = lfoWaveValue slot.shape phase  -- -1..+1
-      v = (raw + 1.0) * 127.5              -- 0..255
+      raw = modSlotValue slot pos
+      v = (clamp11 raw + 1.0) * 127.5
     in
       { index: i, value: v }
 
--- | Sample a waveform at unit phase (0..1).  All shapes return
--- | values in [-1, +1] except `LfoRnd` (stepped sample-and-hold —
--- | not implemented at MVP, returns 0) and `LfoNse` (white noise —
--- | not implemented at MVP, returns 0).
-lfoWaveValue :: LfoWave -> Number -> Number
-lfoWaveValue shape phase = case shape of
-  LfoSin -> Math.sin (2.0 * Math.pi * phase)
-  LfoSqr -> if phase < 0.5 then 1.0 else -1.0
-  LfoTri -> 4.0 * absNumber (phase - 0.5) - 1.0
-  LfoSaw -> 2.0 * phase - 1.0
-  LfoRnd -> 0.0
-  LfoNse -> 0.0
+-- | Pure analytic evaluation of one slot at cycle position `pos`.
+-- | Exported in spirit — the Output indirection is for the bus
+-- | adapter only; this is the canonical "what does a ModSlot mean
+-- | at time t" function.
+modSlotValue :: ModSlot -> Number -> Number
+modSlotValue slot pos =
+  let
+    -- A static slot (rate=0) emits only its level; we skip the
+    -- shape sum entirely to avoid `0 * something(0 + phase)` noise.
+    shapeSum =
+      if slot.rate <= 0.0 then 0.0
+      else
+        let
+          ph = fracPart (pos * slot.rate + slot.phase)
+        in
+          slot.sin * sineWave     ph
+            + slot.sqr * squareWave   ph
+            + slot.tri * triangleWave ph
+            + slot.saw * sawWave      ph
+        -- rnd/nse skipped at MVP (sample-and-hold + white noise
+        -- need stateful evaluation; deferred to a per-voice
+        -- random-stream pass).
+  in
+    slot.level + shapeSum
+
+-- Unit-phase waveform samplers, all returning values in [-1, +1].
+sineWave :: Number -> Number
+sineWave phase = Math.sin (2.0 * Math.pi * phase)
+
+squareWave :: Number -> Number
+squareWave phase = if phase < 0.5 then 1.0 else -1.0
+
+triangleWave :: Number -> Number
+triangleWave phase = 4.0 * absNumber (phase - 0.5) - 1.0
+
+sawWave :: Number -> Number
+sawWave phase = 2.0 * phase - 1.0
+
+clamp11 :: Number -> Number
+clamp11 x = if x < -1.0 then -1.0 else if x > 1.0 then 1.0 else x
 
 -- ---------------------------------------------------------------------------
 -- Clock

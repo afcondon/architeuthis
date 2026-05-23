@@ -98,14 +98,14 @@ studioRepetitor = repetitorWith
 
 studioTestLfo :: Selene "studioTestLfo"
 studioTestLfo = octoLfo (fh28Cv 5)
-  [ { ratio: 1.0,  shape: LfoTri }
-  , { ratio: 0.5,  shape: LfoSaw }
-  , { ratio: 2.0,  shape: LfoSin }
-  , { ratio: 4.0,  shape: LfoSqr }
-  , { ratio: 0.25, shape: LfoTri }
-  , { ratio: 0.5,  shape: LfoSaw }
-  , { ratio: 1.0,  shape: LfoSin }
-  , { ratio: 0.5,  shape: LfoSqr }
+  [ triLFO 1.0
+  , sawLFO 0.5
+  , sinLFO 2.0
+  , sqrLFO 4.0
+  , triLFO 0.25
+  , sawLFO 0.5
+  , sinLFO 1.0
+  , sqrLFO 0.5
   ]
   (Just Bipolar5V)
 
@@ -123,11 +123,15 @@ studioTestClock = octoClock (fh28Gt 0)
   Nothing
 
 studioCalibLadder :: Selene "studioCalibLadder"
-studioCalibLadder = octoPreset (fh28Cv 2)
-  [ { value: -5.0 }, { value: -3.0 }
-  , { value: -1.0 }, { value:  0.0 }
-  , { value:  1.0 }, { value:  2.0 }
-  , { value:  3.0 }, { value:  5.0 }
+studioCalibLadder = octoLfo (fh28Cv 2)
+  [ fixed (-1.0)  -- -5V at Bipolar5V
+  , fixed (-0.6)  -- -3V
+  , fixed (-0.2)  -- -1V
+  , fixed 0.0     --  0V
+  , fixed 0.2     -- +1V
+  , fixed 0.4     -- +2V
+  , fixed 0.6     -- +3V
+  , fixed 1.0     -- +5V
   ]
   (Just Bipolar5V)
 

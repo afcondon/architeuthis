@@ -652,9 +652,6 @@ pickSelene { name: alias, value } = do
     "polyRandConfig" -> do
       f <- polyRandConfigFields value
       mkEvent alias $ Selene.octoRand f.bank f.slots f.range
-    "polyPresetConfig" -> do
-      f <- polyPresetConfigFields value
-      mkEvent alias $ Selene.octoPreset f.bank f.slots f.range
     "polyPresetNoteConfig" -> do
       f <- polyPresetNoteConfigFields value
       mkEvent alias $ Selene.octoPresetNote f.bank f.slots f.range
@@ -742,7 +739,7 @@ foreign import polyLfoConfigFields
   :: Foreign
   -> Maybe
        { bank :: Selene.Bank
-       , slots :: Array Selene.LfoSlot
+       , slots :: Array Selene.ModSlot
        , range :: Maybe Selene.OutputRange
        }
 
@@ -775,14 +772,6 @@ foreign import polyRandConfigFields
   -> Maybe
        { bank :: Selene.Bank
        , slots :: Array Selene.RandSlot
-       , range :: Maybe Selene.OutputRange
-       }
-
-foreign import polyPresetConfigFields
-  :: Foreign
-  -> Maybe
-       { bank :: Selene.Bank
-       , slots :: Array Selene.PresetSlot
        , range :: Maybe Selene.OutputRange
        }
 

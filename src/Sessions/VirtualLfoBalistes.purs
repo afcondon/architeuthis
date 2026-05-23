@@ -39,14 +39,14 @@ import Studio (iac)
 
 studioVirtualLfo :: Selene "studioVirtualLfo"
 studioVirtualLfo = octoLfo (Virtual "lfoBank")
-  [ { ratio: 0.125, shape: LfoSqr }
-  , { ratio: 1.0,   shape: LfoSaw }
-  , { ratio: 2.0,   shape: LfoSin }
-  , { ratio: 4.0,   shape: LfoSqr }
-  , { ratio: 0.25,  shape: LfoTri }
-  , { ratio: 0.5,   shape: LfoSaw }
-  , { ratio: 1.0,   shape: LfoSin }
-  , { ratio: 0.5,   shape: LfoSqr }
+  [ sqrLFO 0.125
+  , sawLFO 1.0
+  , sinLFO 2.0
+  , sqrLFO 4.0
+  , triLFO 0.25
+  , sawLFO 0.5
+  , sinLFO 1.0
+  , sqrLFO 0.5
   ]
   Nothing
 

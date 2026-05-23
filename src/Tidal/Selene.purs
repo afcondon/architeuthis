@@ -1,9 +1,9 @@
 -- | Tidal.Selene — typed polysignals as first-class Session
--- | bindings.  Slab C steps 1 & 2 (2026-05-18).
+-- | bindings.  Slab C (2026-05-23 unification: Move A).
 -- |
 -- | A polysignal is an autonomous, multi-output configuration installed
--- | on an FH-2 bank — an LFO bank, a clock-bus, an ADSR cluster, a
--- | euclidean rhythm machine, etc.  It is *not* a Part (no event
+-- | on an FH-2 bank — an LFO/preset bank, a clock-bus, an ADSR cluster,
+-- | a euclidean rhythm machine, etc.  It is *not* a Part (no event
 -- | stream) and *not* an Instrument (no pitch/CV emission per beat).
 -- | It's a third notation alongside Tidal mini-patterns: a declarative
 -- | musical specification of standing-wave control behaviour.
@@ -12,7 +12,9 @@
 -- |
 -- |     testLfo :: Selene "testLfo"
 -- |     testLfo = octoLfo fh2Main
--- |       [ { ratio: 1.0, shape: LfoTri }, …8 slots… ]
+-- |       [ triLFO 1.0, sawLFO 0.5, sinLFO 2.0, sqrLFO 4.0
+-- |       , triLFO 0.25, sawLFO 0.5, sinLFO 1.0, sqrLFO 0.5
+-- |       ]
 -- |       (Just Bipolar5V)
 -- |
 -- | The Symbol parameter is decorative — the walker derives the alias
@@ -21,28 +23,38 @@
 -- | leaves room for a future binding-name === Symbol checker.
 -- |
 -- | The walker classifies the value by constructor tag, builds the
--- | JSON envelope (same shape as Calypso's cell-text
--- | `polySignalEnvelopeJson`), and emits a `RegisterSelene` event.
--- | The Erlang side hands the envelope verbatim to fh2-daemon via
+-- | JSON envelope, and emits a `RegisterSelene` event.  The Erlang
+-- | side hands the envelope verbatim to fh2-daemon via
 -- | `fh2_daemon_call`, which puts it through `Rig.applyWithClaims` —
 -- | the unified port-claims layer from `project_port_claims_design`.
 -- |
--- | The seven families:
--- |   PolyLfoConfig         — eight LFOs (sin/sqr/tri/saw/rnd/nse × ratio)
+-- | Unified slot model (Move A, 2026-05-23).  Every modulation slot is
+-- | one `ModSlot` carrying a rate, a static `level`, and per-shape
+-- | amplitudes (sin/sqr/tri/saw/rnd/nse).  A "preset" (static voltage)
+-- | is degenerate: `rate = 0`, all amps zero, `level` carries the
+-- | static offset.  The user-facing `silent`/`fixed`/`sine`/`square`/
+-- | `triangle`/`sawtooth`/`random`/`noise` constructors are the
+-- | ergonomic surface; multi-shape mixes are written via record
+-- | update on `silent`, e.g.
+-- |
+-- |     silent { rate = 0.5, tri = 0.8, sqr = 0.3 }
+-- |
+-- | which lowers to an FH-2 LFO at 0.5 Hz with tri-amp 0.8 and
+-- | sqr-amp 0.3 (Σ_shape over the firmware's shape mixer).
+-- |
+-- | The six families:
+-- |   PolyLfoConfig         — eight modulation slots (per-shape amp
+-- |                           mix at one rate; presets are degenerate)
 -- |   PolyClockConfig       — eight clock-pulse trains (base × multiplier
 -- |                           × pulseWidth × phase)
 -- |   PolyEnvConfig         — eight ADSR envelopes (attack/decay/sustain/
 -- |                           release plus shape and depth)
 -- |   PolyEuclidConfig      — eight euclidean rhythms (beats/steps/rate)
 -- |   PolyRandConfig        — eight random-walk CV outputs
--- |   PolyPresetConfig      — eight fixed voltages (literal volts per slot)
 -- |   PolyPresetNoteConfig  — eight fixed pitches (MIDI note number per
--- |                           slot, converted to V/oct by the daemon)
--- |
--- | The last two are the "simplest of all" — they put a known reference
--- | voltage (or pitch) on each claimed CV output and leave it there.
--- | Useful for calibration, drone bedrock, or as a static counterweight
--- | to other polysignals.
+-- |                           slot, converted to V/oct by the daemon).
+-- |                           Kept distinct from PolyLfoConfig because
+-- |                           V/oct is pitch-scaled, not range-scaled.
 module Tidal.Selene
   ( Selene(..)
   , OutputRange(..)
@@ -52,30 +64,40 @@ module Tidal.Selene
   , fh28Gt
   , fh28Cv
   , seleneBank
-  , LfoWave(..)
   , ClockBase(..)
   , RandDirection(..)
   , RandScale(..)
   , RandKey(..)
-  , LfoSlot
+  , ModSlot
   , ClockSlot
   , EnvSlot
   , EuclidSlot
   , RandSlot
-  , PresetSlot
   , PresetNoteSlot
+  , silent
+  , fixed
+  , sinLFO
+  , sqrLFO
+  , triLFO
+  , sawLFO
+  , rndLFO
+  , nseLFO
+  , sinLFOAmp
+  , sqrLFOAmp
+  , triLFOAmp
+  , sawLFOAmp
+  , rndLFOAmp
+  , nseLFOAmp
   , octoLfo
   , octoClock
   , octoEnv
   , octoEuclid
   , octoRand
-  , octoPreset
   , octoPresetNote
   , seleneAsJson
   , seleneFamily
   , bankToWire
   , rangeToWire
-  , lfoWaveToWire
   , clockBaseToWire
   , randDirectionToWire
   , randScaleToWire
@@ -164,36 +186,109 @@ fh2BankToWire = case _ of
   FH28Gt n -> "gt" <> show n
 
 -- ---------------------------------------------------------------------------
--- LFO waveform + slot
+-- Modulation slot — unified LFO + preset value
 -- ---------------------------------------------------------------------------
 
-data LfoWave
-  = LfoSin
-  | LfoSqr
-  | LfoTri
-  | LfoSaw
-  | LfoRnd
-  | LfoNse
-
-derive instance eqLfoWave :: Eq LfoWave
-
-lfoWaveToWire :: LfoWave -> String
-lfoWaveToWire = case _ of
-  LfoSin -> "sin"
-  LfoSqr -> "sqr"
-  LfoTri -> "tri"
-  LfoSaw -> "saw"
-  LfoRnd -> "rnd"
-  LfoNse -> "nse"
-
--- | A single LFO output slot.  Wire-format field name is `shape`
--- | (the FH-2 firmware term, kept here for symmetry with the daemon's
--- | slot parser — see `FH2/PolyBank.purs` `assertKnownKeys` for the
--- | authoritative set).
-type LfoSlot =
-  { ratio :: Number
-  , shape :: LfoWave
+-- | A single modulation output slot.  Follows the FH-2 firmware's
+-- | per-output equation:
+-- |
+-- |     output(t) = level + Σ_shape ( amp_shape · shape(rate, phase, t) )
+-- |
+-- | where `shape ∈ {sin, sqr, tri, saw, rnd, nse}`.  Saw is signed-
+-- | amplitude (negative `saw` flips to falling).  Setting `rate = 0`
+-- | with all amps zero gives a degenerate "preset" — a static
+-- | `level` on the output, the canonical static-voltage slot.
+-- |
+-- | The `level` field is a normalised value in `[-1, 1]` (or `[0, 1]`
+-- | on unipolar ranges) that the realiser scales to volts via the
+-- | bank's `outputRange`.  Per-shape amps are likewise normalised.
+-- | The user never types a voltage at this layer.
+type ModSlot =
+  { rate :: Number
+  , phase :: Number
+  , level :: Number
+  , sin :: Number
+  , sqr :: Number
+  , tri :: Number
+  , saw :: Number
+  , rnd :: Number
+  , nse :: Number
   }
+
+-- ---------------------------------------------------------------------------
+-- ModSlot convenience constructors
+-- ---------------------------------------------------------------------------
+
+-- | A slot that emits nothing — useful as a placeholder in a bank
+-- | snapshot where most slots are inactive, or as the base for
+-- | record-update construction:  `silent { rate = 0.5, tri = 0.8 }`.
+silent :: ModSlot
+silent =
+  { rate: 0.0
+  , phase: 0.0
+  , level: 0.0
+  , sin: 0.0
+  , sqr: 0.0
+  , tri: 0.0
+  , saw: 0.0
+  , rnd: 0.0
+  , nse: 0.0
+  }
+
+-- | A static-value slot: the named `level` (normalised to the bank's
+-- | outputRange) on the output, no LFO contribution.  Replaces the
+-- | old PolyPreset family — `fixed 1.0` on a Bipolar5V bank is `+5V`.
+fixed :: Number -> ModSlot
+fixed l = silent { level = l }
+
+-- | Shape-specific LFO slot constructors at full amplitude.
+-- |
+-- | Suffix `LFO` distinguishes these from the canonical Tidal
+-- | pattern combinators `Tidal.Pattern.Core.sine` / `square` (which
+-- | produce `Pattern Number`, used in cell text as e.g.
+-- | `# pan sine`).  The Selene constructors live at the Session
+-- | layer; the Pattern combinators live in cells; keeping the
+-- | names disjoint avoids a shadow that would silently break cell
+-- | text on the canonical Tidal vocabulary.
+sinLFO :: Number -> ModSlot
+sinLFO r = silent { rate = r, sin = 1.0 }
+
+sqrLFO :: Number -> ModSlot
+sqrLFO r = silent { rate = r, sqr = 1.0 }
+
+triLFO :: Number -> ModSlot
+triLFO r = silent { rate = r, tri = 1.0 }
+
+sawLFO :: Number -> ModSlot
+sawLFO r = silent { rate = r, saw = 1.0 }
+
+rndLFO :: Number -> ModSlot
+rndLFO r = silent { rate = r, rnd = 1.0 }
+
+nseLFO :: Number -> ModSlot
+nseLFO r = silent { rate = r, nse = 1.0 }
+
+-- | Shape-specific LFO slot constructors with explicit amplitude.
+-- | For multi-shape mixes, use record update on `silent` instead:
+-- |
+-- |     silent { rate = 0.5, tri = 0.8, sqr = 0.3 }
+sinLFOAmp :: Number -> Number -> ModSlot
+sinLFOAmp r a = silent { rate = r, sin = a }
+
+sqrLFOAmp :: Number -> Number -> ModSlot
+sqrLFOAmp r a = silent { rate = r, sqr = a }
+
+triLFOAmp :: Number -> Number -> ModSlot
+triLFOAmp r a = silent { rate = r, tri = a }
+
+sawLFOAmp :: Number -> Number -> ModSlot
+sawLFOAmp r a = silent { rate = r, saw = a }
+
+rndLFOAmp :: Number -> Number -> ModSlot
+rndLFOAmp r a = silent { rate = r, rnd = a }
+
+nseLFOAmp :: Number -> Number -> ModSlot
+nseLFOAmp r a = silent { rate = r, nse = a }
 
 -- ---------------------------------------------------------------------------
 -- Clock-pulse base duration + slot
@@ -347,22 +442,19 @@ type RandSlot =
   }
 
 -- ---------------------------------------------------------------------------
--- Preset slots — fixed voltages on the bank's outputs
+-- Preset-note slot — fixed pitches on the bank's outputs
 -- ---------------------------------------------------------------------------
-
--- | A fixed voltage on a single CV output.  The daemon interprets
--- | `value` in volts, maps to the FH-2's 14-bit directLevel based on
--- | the envelope's `outputRange` (clamped to that range).  Use this
--- | for drone bedrock, calibration references, or a static
--- | counterweight to other polysignals on the same bank.
-type PresetSlot =
-  { value :: Number  -- volts
-  }
 
 -- | A fixed MIDI pitch on a single CV output (V/oct).  The daemon
 -- | converts `note` to voltage via the conventional 1V/octave mapping
 -- | with note 12 (C0) = 0V (so note 60 = 4V, fits unipolar 0-10V or
 -- | bipolar ±5V comfortably).
+-- |
+-- | Kept distinct from `ModSlot` because pitch is V/oct-scaled (a
+-- | fixed semitone constant per volt) rather than range-scaled (a
+-- | normalised level mapped to the bank's outputRange).  Mixing the
+-- | two scales in one slot kind would conceal a real interpretation
+-- | difference at the realiser boundary.
 type PresetNoteSlot =
   { note :: Int  -- MIDI 0..127
   }
@@ -374,7 +466,7 @@ type PresetNoteSlot =
 data Selene (s :: Symbol)
   = PolyLfoConfig
       { bank :: Bank
-      , slots :: Array LfoSlot
+      , slots :: Array ModSlot
       , range :: Maybe OutputRange
       }
   | PolyClockConfig
@@ -397,11 +489,6 @@ data Selene (s :: Symbol)
       , slots :: Array RandSlot
       , range :: Maybe OutputRange
       }
-  | PolyPresetConfig
-      { bank :: Bank
-      , slots :: Array PresetSlot
-      , range :: Maybe OutputRange
-      }
   | PolyPresetNoteConfig
       { bank :: Bank
       , slots :: Array PresetNoteSlot
@@ -414,7 +501,7 @@ data Selene (s :: Symbol)
 
 octoLfo
   :: forall s
-   . Bank -> Array LfoSlot -> Maybe OutputRange -> Selene s
+   . Bank -> Array ModSlot -> Maybe OutputRange -> Selene s
 octoLfo bank slots range = PolyLfoConfig { bank, slots, range }
 
 octoClock
@@ -437,11 +524,6 @@ octoRand
    . Bank -> Array RandSlot -> Maybe OutputRange -> Selene s
 octoRand bank slots range = PolyRandConfig { bank, slots, range }
 
-octoPreset
-  :: forall s
-   . Bank -> Array PresetSlot -> Maybe OutputRange -> Selene s
-octoPreset bank slots range = PolyPresetConfig { bank, slots, range }
-
 octoPresetNote
   :: forall s
    . Bank -> Array PresetNoteSlot -> Maybe OutputRange -> Selene s
@@ -461,7 +543,6 @@ seleneBank = case _ of
   PolyEnvConfig         { bank } -> bank
   PolyEuclidConfig      { bank } -> bank
   PolyRandConfig        { bank } -> bank
-  PolyPresetConfig      { bank } -> bank
   PolyPresetNoteConfig  { bank } -> bank
 
 -- | The family name for a typed Selene value — same string the
@@ -473,7 +554,6 @@ seleneFamily = case _ of
   PolyEnvConfig _         -> "polyenv"
   PolyEuclidConfig _      -> "polyeuclid"
   PolyRandConfig _        -> "polyrand"
-  PolyPresetConfig _      -> "polypreset"
   PolyPresetNoteConfig _  -> "polypresetnote"
 
 -- | Project a Selene to the JSON envelope the daemon expects.
@@ -483,7 +563,7 @@ seleneAsJson :: forall s. String -> Selene s -> String
 seleneAsJson alias = case _ of
   PolyLfoConfig cfg ->
     envelope "polylfo" cfg.bank alias cfg.range
-      (map lfoSlotJson cfg.slots)
+      (map modSlotJson cfg.slots)
   PolyClockConfig cfg ->
     envelope "polyclock" cfg.bank alias cfg.range
       (map clockSlotJson cfg.slots)
@@ -496,9 +576,6 @@ seleneAsJson alias = case _ of
   PolyRandConfig cfg ->
     envelope "polyrand" cfg.bank alias cfg.range
       (map randSlotJson cfg.slots)
-  PolyPresetConfig cfg ->
-    envelope "polypreset" cfg.bank alias cfg.range
-      (map presetSlotJson cfg.slots)
   PolyPresetNoteConfig cfg ->
     envelope "polypresetnote" cfg.bank alias cfg.range
       (map presetNoteSlotJson cfg.slots)
@@ -519,11 +596,21 @@ envelope family bank alias range slotJsons =
 
 -- Per-family slot serialisers
 
-lfoSlotJson :: LfoSlot -> String
-lfoSlotJson s =
-  "{\"ratio\":" <> show s.ratio
-    <> ",\"shape\":\"" <> lfoWaveToWire s.shape
-    <> "\"}"
+-- | Unified modulation slot — emits rate / phase / level plus the
+-- | six per-shape amplitudes (sin/sqr/tri/saw/rnd/nse).  The daemon
+-- | sums per-shape contributions at the realiser layer.
+modSlotJson :: ModSlot -> String
+modSlotJson s =
+  "{\"rate\":" <> show s.rate
+    <> ",\"phase\":" <> show s.phase
+    <> ",\"level\":" <> show s.level
+    <> ",\"sin\":" <> show s.sin
+    <> ",\"sqr\":" <> show s.sqr
+    <> ",\"tri\":" <> show s.tri
+    <> ",\"saw\":" <> show s.saw
+    <> ",\"rnd\":" <> show s.rnd
+    <> ",\"nse\":" <> show s.nse
+    <> "}"
 
 clockSlotJson :: ClockSlot -> String
 clockSlotJson s =
@@ -566,10 +653,6 @@ randSlotJson s =
     <> "\",\"gateLength\":" <> show s.gateLength
     <> rangeOnSlot s.range
     <> "}"
-
-presetSlotJson :: PresetSlot -> String
-presetSlotJson s =
-  "{\"value\":" <> show s.value <> "}"
 
 presetNoteSlotJson :: PresetNoteSlot -> String
 presetNoteSlotJson s =
