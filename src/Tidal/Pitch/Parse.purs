@@ -33,15 +33,14 @@ module Tidal.Pitch.Parse
 import Prelude
 
 import Data.Array as Array
-import Data.Either (Either(..))
+import Data.Functor (map)
 import Data.Int as Int
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Number as Number
 import Data.String.CodeUnits as SCU
 import Tidal.Dispatch.Helpers (noteNameMidi)
-import Tidal.Pattern.Mini (parseMiniPattern)
-import Tidal.Pattern.Types (Pattern, silence)
+import Tidal.MiniNotation (MiniNotation, miniTyped)
 import Tidal.Pitch (PitchedNote12(..))
 
 -- | Parse mini-notation into a `Pattern PitchedNote12` with strict
@@ -69,10 +68,8 @@ import Tidal.Pitch (PitchedNote12(..))
 -- | pitch "<c4 e4>"      -- alternation
 -- | pitch "c4(3,8)"      -- Euclidean Chromatics
 -- | ```
-pitch :: String -> Pattern PitchedNote12
-pitch src = case parseMiniPattern src of
-  Right p -> map pitchTok p
-  Left _  -> silence
+pitch :: String -> MiniNotation PitchedNote12
+pitch = map pitchTok <<< miniTyped
 
 -- | Parse mini-notation as scale degrees.  Each integer token becomes
 -- | a `Degree`; non-integer tokens silence.
@@ -81,10 +78,8 @@ pitch src = case parseMiniPattern src of
 -- | them at emit time using the active scale.  Wire-level
 -- | `set-scale c-mixolydian` re-renders every running degree pattern
 -- | on the next tick.
-degree :: String -> Pattern PitchedNote12
-degree src = case parseMiniPattern src of
-  Right p -> map degreeTok p
-  Left _  -> silence
+degree :: String -> MiniNotation PitchedNote12
+degree = map degreeTok <<< miniTyped
 
 -- ---------------------------------------------------------------------------
 -- Token → PitchedNote12 classifiers

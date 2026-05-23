@@ -81,6 +81,7 @@ import Prelude
 
 import Data.Rational (Rational, fromInt, (%))
 
+import Tidal.Notation (class Notation, toPattern)
 import Tidal.Pattern.Core (fast, rev)
 import Tidal.Pattern.Types (Pattern)
 import Tidal.Pitch (PitchedNote12)
@@ -149,8 +150,9 @@ defaultVoice =
 -- | wrapping the source in no-op functors — useful when the
 -- | `Voice` is `defaultVoice` itself (voice 1 of a fugue: the
 -- | unprocessed subject).
-fugueVoice :: Voice -> Pattern PitchedNote12 -> Pattern PitchedNote12
-fugueVoice v src =
+fugueVoice :: forall n. Notation n PitchedNote12 => Voice -> n -> Pattern PitchedNote12
+fugueVoice v notation =
+  let src = toPattern notation in
   let
     withSpeed =
       if v.speed == normalSpeed then src else fast v.speed src

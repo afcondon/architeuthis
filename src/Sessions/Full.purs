@@ -151,7 +151,6 @@ qd1B = on vDrums qd1 (every 8 rev (drum "bd ~ bd bd bd ~ ~ bd"))
 qd2A :: DrumPart
 qd2A = on vDrums qd2 (drum "~ ~ sn ~ ~ ~ sn ~")
 
-subject :: Pattern PitchedNote12
 subject = degree "1 5 3 5 1 3 5 -1"
 
 fugue1 :: PitchedPart PitchedNote12

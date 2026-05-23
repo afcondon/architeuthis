@@ -418,15 +418,16 @@ newtype DrumPart = DrumPart
 -- | — a typo like `on vBas bass1 ...` is a name-resolution error at
 -- | compile time.  Declare new voices in `Tidal.Voices`.
 class On dest body part | dest -> body part where
-  on :: forall s. IsSymbol s => VoiceName s -> dest -> Pattern body -> part
+  on :: forall s n. IsSymbol s => Notation n body
+     => VoiceName s -> dest -> n -> part
 
 instance onInstrument :: On (Instrument note) note (PitchedPart note) where
   on vn destination body =
-    PitchedPart { mvoice: voiceNameString vn, destination, body }
+    PitchedPart { mvoice: voiceNameString vn, destination, body: toPattern body }
 
 instance onDrumKit :: On DrumKit DrumHitRef DrumPart where
   on vn destination body =
-    DrumPart { mvoice: voiceNameString vn, destination, body }
+    DrumPart { mvoice: voiceNameString vn, destination, body: toPattern body }
 
 -- ---------------------------------------------------------------------------
 -- The `>>` operator's instances — instances live here (where the
