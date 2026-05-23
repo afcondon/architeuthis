@@ -1,24 +1,24 @@
-  -- | Vetula smoke session — McMullen Yellow on bass1 (long durations).
   module Calypso.Generated.Session where
 
   import Calypso.Prelude
   import Studio (iac)
-  import Tidal.Notation (toPattern)
   import Tidal.Vetula (cMajorKey, mcmullenYellow)
   import Tidal.Vetula.Voicing (drop2)
-  import Tidal.Vetula.Pattern (vetula)
+  import Tidal.Vetula.Pattern (VetulaPart, vetula, vetulaHeld)
 
-  -- Long-held variant of bass1: ~1.8s sustain so chords ring out.
-  sustained :: Instrument PitchedNote12
-  sustained = midiWith iac 1 { defNote: 60, defVel: 100, defDurMs: 1800 }
+  ringy :: Instrument PitchedNote12
+  ringy = midiChannelWith iac 5 { defNote: 60, defVel: 90, defDurMs: 12000 }
 
-  chord1 :: PitchedPart PitchedNote12
-  chord1 = on "chord1" sustained (toPattern (vetula cMajorKey mcmullenYellow drop2))
+  prog :: VetulaPart
+  prog = vetula cMajorKey mcmullenYellow drop2
+
+  held1 :: PitchedPart PitchedNote12
+  held1 = on vHeld1 ringy (vetulaHeld prog)
 
   session :: Session
   session = Session
     { devices:     [iac]
-    , instruments: [sustained]
+    , instruments: [ringy]
     , drumKits:    []
-    , parts:       eraseAll [chord1]
+    , parts:       eraseAll [held1]
     }

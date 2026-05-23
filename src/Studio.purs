@@ -51,21 +51,21 @@ cvRouter = CvRouter "127.0.0.1" 57120
 -- ---------------------------------------------------------------------------
 
 bass1 :: Instrument PitchedNote12
-bass1 = midi iac 1
+bass1 = midiChannel iac 1
 
 -- | Second IAC bass instrument — companion to `bass1`.  Used in
 -- | tintinnabuli-style two-voice demos where M-voice and T-voice need
 -- | separate destinations.
 bass2 :: Instrument PitchedNote12
-bass2 = midi iac 2
+bass2 = midiChannel iac 2
 
 -- | Third + fourth IAC bass instruments — for 4-voice fugue / canon
 -- | textures where each playhead lands on its own MIDI channel.
 bass3 :: Instrument PitchedNote12
-bass3 = midi iac 3
+bass3 = midiChannel iac 3
 
 bass4 :: Instrument PitchedNote12
-bass4 = midi iac 4
+bass4 = midiChannel iac 4
 
 -- ---------------------------------------------------------------------------
 -- V/oct instruments — routed through cv-router to modular VCOs.

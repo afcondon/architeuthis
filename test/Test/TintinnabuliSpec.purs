@@ -28,7 +28,7 @@ import Effect.Console (log)
 import Tidal.Pattern.Core (fastCat, queryArc)
 import Tidal.Pattern.Types (Pattern, eventValue)
 import Tidal.Pitch (PitchedNote12(..))
-import Tidal.Pitch.Parse (d, mini)
+import Tidal.Pitch.Parse (degree, pitch)
 import Tidal.Scales (cMajor, dDorian)
 import Tidal.Tintinnabuli (above1, below1, cMajT, tintinnabuli)
 
@@ -43,7 +43,7 @@ runTintinnabuliTests = do
   -- values pass straight through to the nearest-triad rule.
   -- --------------------------------------------------------------------
   let
-    chromaticIn = mini "c4 e4 g4"       -- Chromatic 60, 64, 67
+    chromaticIn = pitch "c4 e4 g4"       -- Chromatic 60, 64, 67
     chromaticOut = tintinnabuli cMajor cMajT above1 chromaticIn
   expectPitches
     "chromatic c4-e4-g4 + cMajT above1 → e4-g4-c5"
@@ -58,7 +58,7 @@ runTintinnabuliTests = do
   --   degree 5 → 67 (G4), above1 strict above 67 = 72 (C5)
   -- --------------------------------------------------------------------
   let
-    degreesIn = d "1 3 5"
+    degreesIn = degree "1 3 5"
     cMajorOut = tintinnabuli cMajor cMajT above1 degreesIn
   expectPitches
     "degrees 1-3-5 in cMajor + cMajT above1 → e4-g4-c5"
@@ -98,7 +98,7 @@ runTintinnabuliTests = do
   -- into one cycle.
   -- --------------------------------------------------------------------
   let
-    mixedIn = fastCat [d "1", mini "e4", mini "bd"]
+    mixedIn = fastCat [degree "1", pitch "e4", pitch "bd"]
     mixedOut = tintinnabuli cMajor cMajT above1 mixedIn
   expectPitches
     "mixed (degree 1, chromatic e4, sample bd) → e4, g4, bd"

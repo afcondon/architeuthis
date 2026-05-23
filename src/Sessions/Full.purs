@@ -143,28 +143,28 @@ studioCMajorScale = octoPresetNote (fh28Cv 1)
 -- ---------------------------------------------------------------------------
 
 qd1A :: DrumPart
-qd1A = on "drums" qd1 (drum "bd bd ~ ~ bd ~ bd ~")
+qd1A = on vDrums qd1 (drum "bd bd ~ ~ bd ~ bd ~")
 
 qd1B :: DrumPart
-qd1B = on "drums" qd1 (every 8 rev (drum "bd ~ bd bd bd ~ ~ bd"))
+qd1B = on vDrums qd1 (every 8 rev (drum "bd ~ bd bd bd ~ ~ bd"))
 
 qd2A :: DrumPart
-qd2A = on "drums" qd2 (drum "~ ~ sn ~ ~ ~ sn ~")
+qd2A = on vDrums qd2 (drum "~ ~ sn ~ ~ ~ sn ~")
 
 subject :: Pattern PitchedNote12
-subject = d "1 5 3 5 1 3 5 -1"
+subject = degree "1 5 3 5 1 3 5 -1"
 
 fugue1 :: PitchedPart PitchedNote12
-fugue1 = on "fugue" bass1 (fugueVoice defaultVoice subject)
+fugue1 = on vFugue bass1 (fugueVoice defaultVoice subject)
 
 fugue2 :: PitchedPart PitchedNote12
-fugue2 = on "fugue" bass2 (fugueVoice (defaultVoice { transpose = 7 }) subject)
+fugue2 = on vFugue bass2 (fugueVoice (defaultVoice { transpose = 7 }) subject)
 
 fugue3 :: PitchedPart PitchedNote12
-fugue3 = on "fugue" bass3 (fugueVoice (defaultVoice { transpose = 7, speed = doubleSpeed }) subject)
+fugue3 = on vFugue bass3 (fugueVoice (defaultVoice { transpose = 7, speed = doubleSpeed }) subject)
 
 fugue4 :: PitchedPart PitchedNote12
-fugue4 = on "fugue" bass4 (fugueVoice (defaultVoice { transpose = -3, retrograde = true, speed = halfSpeed }) subject)
+fugue4 = on vFugue bass4 (fugueVoice (defaultVoice { transpose = -3, retrograde = true, speed = halfSpeed }) subject)
 
 -- ---------------------------------------------------------------------------
 -- The session value

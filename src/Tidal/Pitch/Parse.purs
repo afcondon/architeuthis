@@ -1,39 +1,33 @@
 -- | PitchedNote12-typed parsers — the user-facing entry points for cell and
 -- | cue bodies.
 -- |
--- | Three parsers, three semantic intents, all producing
--- | `Pattern PitchedNote12`:
+-- | Two parsers (`pitch`, `degree`) produce `Pattern PitchedNote12`.  The
+-- | drum-pattern parser lives in `Tidal.Drum` and produces a separate
+-- | `Pattern String`.
 -- |
--- |   * `mini` — Tidal's mini-notation.  Per-token shape decides the
--- |     `PitchedNote12` variant: note-shaped (`c4`, `fs3`) → `Chromatic`;
--- |     integer-shaped (`60`) → `Chromatic`; anything else (`bd`,
--- |     `sn`) → `Sample`.  Same back-compat surface as the legacy
--- |     `mini :: String -> Pattern String` it replaces, but the
--- |     downstream substrate now sees typed pitches.
+-- |   * `pitch` — Tidal mini-notation parsed strictly as chromatic
+-- |     pitch.  Tokens that parse as a note name (`c4`, `fs3`, `bb2`) or
+-- |     numeric value (`60`, `60.5`) resolve to `Chromatic`; anything
+-- |     else silences (the parser produces a `Sample` value that the
+-- |     dispatcher does not render on pitched destinations).  Use this
+-- |     when the body is a melodic line, not a drum part.
 -- |
--- |   * `n` — chromatic notes only.  Tokens that don't resolve to a
--- |     note fall through as `Sample` (preserves the token text for
--- |     downstream diagnostic surfacing).  Use `n "c4 e4 g4"` when
--- |     you mean absolute pitches.
+-- |   * `degree` — scale degrees.  Each integer token becomes a
+-- |     `Degree`; non-integer tokens silence.  Degrees stay unresolved
+-- |     through the substrate; the voice renders them at emit time
+-- |     using the active scale.  Wire-level `set-scale c-mixolydian`
+-- |     re-renders every running degree pattern on the next tick.
 -- |
--- |   * `d` — scale degrees.  Each token parsed as an `Int`;
--- |     unparseable tokens fall through as `Sample`.  Use
--- |     `d "1 3 5 7"` when you want pitches resolved at emit time
--- |     against the active scale.
--- |
--- | The parser itself produces `Pattern String` (Tidal's mini-notation
--- | doesn't know about pitches).  Each entry point fmaps a
--- | token-classification step over the result; that's where the
--- | `String → PitchedNote12` decision lives.  Failures from the parser become
--- | `silence` — a typo in a cell goes quiet rather than killing the
--- | rig.
+-- | The parser itself produces `Pattern String` (mini-notation doesn't
+-- | know about pitches).  Each entry point fmaps a token-classification
+-- | step over the result; that's where the `String → PitchedNote12`
+-- | decision lives.  Failures from the parser become `silence` — a typo
+-- | in a cell goes quiet rather than killing the rig.
 module Tidal.Pitch.Parse
-  ( mini
-  , n
-  , d
-  , miniToken
-  , noteToken
-  , degreeToken
+  ( pitch
+  , degree
+  , pitchTok
+  , degreeTok
   ) where
 
 import Prelude
@@ -50,85 +44,71 @@ import Tidal.Pattern.Mini (parseMiniPattern)
 import Tidal.Pattern.Types (Pattern, silence)
 import Tidal.Pitch (PitchedNote12(..))
 
--- | Parse mini-notation into a `Pattern PitchedNote12`.  Token-shape decides
--- | the `PitchedNote12` variant per event:
+-- | Parse mini-notation into a `Pattern PitchedNote12` with strict
+-- | chromatic semantics: each token must resolve to a `Chromatic` value
+-- | (note name or MIDI integer), otherwise it silences.
 -- |
 -- |   * Note name (`c4`, `fs3`, `bb2`) → `Chromatic <midi>`
 -- |   * Integer (`60`)                 → `Chromatic 60`
 -- |   * Decimal numeric (`60.5`)       → `Chromatic 60` (floored)
--- |   * Anything else (`bd`, `sn`)     → `Sample <tok>`
+-- |   * Anything else                  → silenced
+-- |
+-- | A typo like `e44` produces no audible event; the strict contract
+-- | means a misspelling fails loud-by-silence rather than misrouting as
+-- | a Sample.  To mix pitched and sample tokens in one body, compose
+-- | two parsers (e.g. `fastCat [pitch "c4 e4", drum "bd"]`) rather than
+-- | relying on auto-classification.
 -- |
 -- | Examples:
 -- |
 -- | ```
--- | mini "bd sn cp"     -- three Sample events per cycle
--- | mini "c4 e4 g4"     -- three Chromatic events per cycle
--- | mini "bd*4"         -- four Sample kicks per cycle
--- | mini "[c4 e4] g4*2" -- grouped sequencing of Chromatics
--- | mini "<bd sn>"      -- alternation
--- | mini "c4(3,8)"      -- Euclidean Chromatics
+-- | pitch "c4 e4 g4"     -- three Chromatic events per cycle
+-- | pitch "c4 60 e4"     -- mixing note-names and MIDI numbers is fine
+-- | pitch "c4*4"         -- four chromatic c4s per cycle
+-- | pitch "[c4 e4] g4*2" -- grouped sequencing of Chromatics
+-- | pitch "<c4 e4>"      -- alternation
+-- | pitch "c4(3,8)"      -- Euclidean Chromatics
 -- | ```
-mini :: String -> Pattern PitchedNote12
-mini src = case parseMiniPattern src of
-  Right p -> map miniToken p
-  Left _  -> silence
-
--- | Parse mini-notation as chromatic notes.  Note-shaped tokens
--- | resolve to `Chromatic` via the `noteNameMidi` table; integer
--- | tokens are taken as literal MIDI numbers; everything else falls
--- | through as `Sample` (preserving the source token, which surfaces
--- | through to the dispatcher's binding-default lookup — useful for
--- | mixing drum tokens into otherwise-pitched patterns).
--- |
--- | The mnemonic: `n` = "notes". Mirrors Tidal's existing `n`-as-note
--- | operator, but produces typed pitches.
-n :: String -> Pattern PitchedNote12
-n src = case parseMiniPattern src of
-  Right p -> map noteToken p
+pitch :: String -> Pattern PitchedNote12
+pitch src = case parseMiniPattern src of
+  Right p -> map pitchTok p
   Left _  -> silence
 
 -- | Parse mini-notation as scale degrees.  Each integer token becomes
--- | a `Degree`; non-integer tokens fall through as `Sample` (which
--- | typically silences in degree contexts, since binding defaults
--- | won't match).
+-- | a `Degree`; non-integer tokens silence.
 -- |
 -- | Degrees stay unresolved through the substrate; the voice renders
 -- | them at emit time using the active scale.  Wire-level
 -- | `set-scale c-mixolydian` re-renders every running degree pattern
 -- | on the next tick.
--- |
--- | The mnemonic: `d` = "degrees". `dc` (Nashville chord notation)
--- | is a planned sibling; not in this MVP.
-d :: String -> Pattern PitchedNote12
-d src = case parseMiniPattern src of
-  Right p -> map degreeToken p
+degree :: String -> Pattern PitchedNote12
+degree src = case parseMiniPattern src of
+  Right p -> map degreeTok p
   Left _  -> silence
 
 -- ---------------------------------------------------------------------------
 -- Token → PitchedNote12 classifiers
 -- ---------------------------------------------------------------------------
 
--- | mini's per-token rule.  See module header.
-miniToken :: String -> PitchedNote12
-miniToken tok = case noteFromName tok of
-  Just midi -> Chromatic midi
+-- | `pitch`'s per-token rule.  Non-chromatic tokens fall through to
+-- | `Sample`, which the dispatcher silences on pitched destinations.
+-- | (Conceptually "silence"; encoded as Sample because PitchedNote12
+-- | doesn't currently have a dedicated silence variant — adding one is
+-- | a substrate change for another day.)
+-- |
+-- | Named with the `Tok` suffix (not `Token`) to avoid colliding with
+-- | `Tidal.Pitch.pitchToken :: PitchedNote12 -> String` (the inverse:
+-- | render a pitch as a token string).
+pitchTok :: String -> PitchedNote12
+pitchTok tok = case noteFromName tok of
+  Just m  -> Chromatic m
   Nothing -> case Number.fromString tok of
     Just num -> Chromatic (Int.floor num)
     Nothing -> Sample tok
 
--- | n's per-token rule.  See module header.
-noteToken :: String -> PitchedNote12
-noteToken tok = case noteFromName tok of
-  Just midi -> Chromatic midi
-  Nothing -> case Int.fromString tok of
-    Just i -> Chromatic i
-    Nothing -> case Number.fromString tok of
-      Just num -> Chromatic (Int.floor num)
-      Nothing -> Sample tok
-
--- | d's per-token rule.  See module header.
-degreeToken :: String -> PitchedNote12
-degreeToken tok = case Int.fromString tok of
+-- | `degree`'s per-token rule.
+degreeTok :: String -> PitchedNote12
+degreeTok tok = case Int.fromString tok of
   Just i  -> Degree i
   Nothing -> Sample tok
 

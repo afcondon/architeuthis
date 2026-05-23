@@ -14,6 +14,7 @@ module Tidal.Pattern.Core
   , rotL
   , rotR
   , rev
+  , repeatEvery
     -- * Pattern structure
   , cat
   , fastCat
@@ -215,6 +216,55 @@ rotL t pat = pattern \(State st) ->
 -- | Rotate a pattern right (later) in time
 rotR :: forall a. Time -> Pattern a -> Pattern a
 rotR t = rotL (negate t)
+
+-- | Repeat a pattern every n cycles.  Events that `pat` produces in
+-- | the cycle range `[0, n)` are replayed at every subsequent n-cycle
+-- | offset, indefinitely.
+-- |
+-- | Use when you've built a Pattern by direct event construction
+-- | (i.e. handing `pattern \st -> events` events with absolute cycle
+-- | positions) and need it to loop.  Patterns built from `cat`,
+-- | `fastCat`, `pure` etc. already loop automatically via mod-cycle
+-- | indexing — this combinator exists for the *non-cat* construction
+-- | path that would otherwise go silent past cycle n.
+-- |
+-- | Trap this closes: if you write a Pattern that places events at
+-- | cycles 0, 3, 7, 12 of an 18-cycle progression and forget to wrap
+-- | it, playback will produce events for the first 18 cycles and
+-- | then silence forever (no crash, no warning — just silence).
+-- |
+-- | n <= 0 yields silence.
+repeatEvery :: forall a. Int -> Pattern a -> Pattern a
+repeatEvery n pat
+  | n <= 0 = silence
+  | otherwise = pattern \(State st) ->
+      let
+        Arc q = st.arc
+        nR = fromInt n
+        -- Iteration range: which integer offsets k can produce events
+        -- in the query arc.  An iteration k maps inner [0, n) to
+        -- output [k*n, (k+1)*n); for it to overlap qArc we need
+        -- k*n < q.stop AND (k+1)*n > q.start.
+        qStartInt = Int.floor (toNumber q.start)
+        qStopInt = Int.floor (toNumber q.stop) + 1
+        kMin = (qStartInt `div` n) - 1
+        kMax = (qStopInt `div` n) + 1
+        eventsForIter k =
+          let
+            kShift = fromInt k * nR
+            innerStart = max (fromInt 0) (q.start - kShift)
+            innerStop  = min nR (q.stop - kShift)
+          in
+            if innerStart >= innerStop
+              then []
+              else
+                let
+                  innerArc = Arc { start: innerStart, stop: innerStop }
+                  innerEvents = query pat (State st { arc = innerArc })
+                in
+                  map (shiftEventTime kShift) innerEvents
+      in
+        Array.concatMap eventsForIter (Array.range kMin kMax)
 
 -- | Shift event times
 shiftEventTime :: forall a. Time -> Event a -> Event a

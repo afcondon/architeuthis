@@ -96,7 +96,7 @@ type OdonusConfig =
   -- | does NOT step (no X-advance, no Y-advance, no emit).  Default
   -- | `pure true` preserves "advance every tick" behaviour.  Drive
   -- | this with a Tidal pattern to get irregular clocking — e.g.
-  -- | `mini "1 0 0 1 0 1 0 0"` gives a 3-against-8 euclidean tempo.
+  -- | `pitch "1 0 0 1 0 1 0 0"` gives a 3-against-8 euclidean tempo.
   -- | The same gate-pattern shape will eventually apply to Balistes /
   -- | Repetitor / Steppy-style siblings.
   , advance  :: Pattern Boolean

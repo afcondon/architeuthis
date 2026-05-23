@@ -16,6 +16,10 @@
 -- |   path unchanged: drum events flow through the existing
 -- |   Pattern PitchedNote12 dispatcher via Sample-coerce at the conductor
 -- |   boundary.  Per-hit MIDI bindings + per-event vel/dur are PR 2b.
+-- | - 2026-05-23: Smart constructor `midi` → `midiChannel` (and
+-- |   `midiWith` → `midiChannelWith`) so `bass1 = midiChannel iac 1`
+-- |   reads as "a MIDI channel on this device", and the name `midi`
+-- |   is freed for potential future use.
 -- |
 -- | Plan: docs/dsl-naming-refactor-plan.md.
 module Calypso.Prelude
@@ -41,8 +45,8 @@ module Calypso.Prelude
   , CvRouter(..)
   -- Instruments — pitched routing destinations
   , Instrument(..)
-  , midi
-  , midiWith
+  , midiChannel
+  , midiChannelWith
   , vPerOct
   -- Drum kits — sample-keyed destinations with per-hit defaults
   , DrumKit(..)
@@ -58,9 +62,13 @@ module Calypso.Prelude
   , DrumPart(..)
   , class On
   , on
+  -- Voice names — Symbol-kinded, declared once in `Tidal.Voices`.
+  -- The `on` function takes these (not String) so typos become
+  -- compile errors.
+  , module Tidal.Voices
   -- The `>>` operator — notation routed to a destination.  Sugar
-  -- over `on`: `(mini "..." >> bass1Inst) "bass1"` is equivalent
-  -- to `on "bass1" bass1Inst (mini "...")`.  Reads naturally
+  -- over `on`: `(pitch "..." >> bass1Inst) "bass"` is equivalent
+  -- to `on vBass bass1Inst (pitch "...")`.  Reads naturally
   -- left-to-right; see `docs/north-star.md` §3.
   , module Tidal.Routed
   -- The `Notation` typeclass — any source-side value that yields a
@@ -70,7 +78,7 @@ module Calypso.Prelude
   , module Tidal.Notation
   -- MiniNotation as a first-class type — `miniTyped` preserves the
   -- parsed tree (round-trip to source via `miniSource`, compose via
-  -- `<>`) where `Pitch.Parse.mini` resolves immediately to Pattern.
+  -- `<>`) where `Pitch.Parse.pitch` resolves immediately to Pattern.
   , module Tidal.MiniNotation
   -- Session bag
   , Session(..)
@@ -113,6 +121,8 @@ import Tidal.Notation
 import Tidal.Routed
 import Tidal.MidiDevice (MidiDevice(..))
 import Tidal.Pitch (PitchedNote12)
+import Tidal.Voices (VoiceName(..), voiceNameString, vBass, vDrums, vFugue, vHeld1, vUpper)
+import Data.Symbol (class IsSymbol)
 import Tidal.Selene
   ( Selene(..)
   , OutputRange(..)
@@ -233,17 +243,18 @@ data Instrument note
 
 -- | The plain-MIDI instrument smart constructor.  Fills in system
 -- | defaults (note 60, vel 100, dur 50ms) so the user-facing
--- | declaration reads as pure routing:
+-- | declaration reads as pure routing — "a MIDI channel on this
+-- | device":
 -- |
 -- | ```
--- | bass1 = midi iac 1
+-- | bass1 = midiChannel iac 1
 -- | ```
 -- |
--- | Use `midiWith` when you need a specific default note (e.g. a
--- | mono synth that wants a particular triggered pitch when the
+-- | Use `midiChannelWith` when you need a specific default note (e.g.
+-- | a mono synth that wants a particular triggered pitch when the
 -- | pattern doesn't override).
-midi :: forall note. MidiDevice -> Int -> Instrument note
-midi device channel = MidiInstrument device channel 60 100 50
+midiChannel :: forall note. MidiDevice -> Int -> Instrument note
+midiChannel device channel = MidiInstrument device channel 60 100 50
 
 -- | The full-control MIDI instrument constructor for cases where
 -- | the system defaults aren't right.  Per-event vel/dur arrives in
@@ -251,15 +262,15 @@ midi device channel = MidiInstrument device channel 60 100 50
 -- | will be retired.
 -- |
 -- | ```
--- | sub1 = midiWith iac 5 { defNote: 24, defVel: 110, defDurMs: 200 }
+-- | sub1 = midiChannelWith iac 5 { defNote: 24, defVel: 110, defDurMs: 200 }
 -- | ```
-midiWith
+midiChannelWith
   :: forall note
    . MidiDevice
   -> Int
   -> { defNote :: Int, defVel :: Int, defDurMs :: Int }
   -> Instrument note
-midiWith device channel { defNote, defVel, defDurMs } =
+midiChannelWith device channel { defNote, defVel, defDurMs } =
   MidiInstrument device channel defNote defVel defDurMs
 
 -- | V/oct instrument — a pitched destination expressed as one gate
@@ -389,7 +400,7 @@ newtype PitchedPart note = PitchedPart
 -- |
 -- | ```
 -- | qd1A :: DrumPart
--- | qd1A = on "drums" qd1 (drum "bd bd ~ ~ bd ~ sn ~")
+-- | qd1A = on vDrums qd1 (drum "bd bd ~ ~ bd ~ sn ~")
 -- | ```
 newtype DrumPart = DrumPart
   { mvoice      :: String
@@ -398,20 +409,24 @@ newtype DrumPart = DrumPart
   }
 
 -- | The polymorphic `on` constructor — typeclass-dispatched on the
--- | destination type so `on "bass" bass1 (mini "...")` builds a
--- | `PitchedPart` and `on "drums" qd1 (drum "...")` builds a
+-- | destination type so `on vBass bass1 (mini "...")` builds a
+-- | `PitchedPart` and `on vDrums qd1 (drum "...")` builds a
 -- | `DrumPart`.  Functional dependency on dest → body, part keeps
 -- | inference clean.
+-- |
+-- | Voice names are `VoiceName s` (Symbol-kinded) rather than `String`
+-- | — a typo like `on vBas bass1 ...` is a name-resolution error at
+-- | compile time.  Declare new voices in `Tidal.Voices`.
 class On dest body part | dest -> body part where
-  on :: String -> dest -> Pattern body -> part
+  on :: forall s. IsSymbol s => VoiceName s -> dest -> Pattern body -> part
 
 instance onInstrument :: On (Instrument note) note (PitchedPart note) where
-  on mvoice destination body =
-    PitchedPart { mvoice, destination, body }
+  on vn destination body =
+    PitchedPart { mvoice: voiceNameString vn, destination, body }
 
 instance onDrumKit :: On DrumKit DrumHitRef DrumPart where
-  on mvoice destination body =
-    DrumPart { mvoice, destination, body }
+  on vn destination body =
+    DrumPart { mvoice: voiceNameString vn, destination, body }
 
 -- ---------------------------------------------------------------------------
 -- The `>>` operator's instances — instances live here (where the

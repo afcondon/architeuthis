@@ -1,17 +1,16 @@
 -- | Tidal.Drum — the drum-pattern parser.
 -- |
--- | Delegates to `Tidal.Pitch.Parse.mini` for the actual parsing
--- | (subdivisions `[bd sn]`, repeats `bd*4`, euclidean `bd(3,8)`,
--- | rests `~`, all of mini-notation's surface) and then extracts each
--- | event's `Sample` name as the resulting `Pattern String`.  Tokens
--- | that mini happens to parse as pitched (`c4`, `e5`) drop out as
--- | empty-name placeholders — drum patterns are conventionally
--- | sample-keyed, so writing `c4` in a drum body is a user error and
--- | the dropped event is the closest sensible behaviour.
+-- | Parses mini-notation directly (subdivisions `[bd sn]`, repeats
+-- | `bd*4`, euclidean `bd(3,8)`, rests `~`, alternation `<bd sn>`) and
+-- | treats every token as a drum-hit name.  Unlike `Tidal.Pitch.Parse.pitch`,
+-- | `drum` does no token classification — every event is a sample-name
+-- | string, even tokens that look pitched (`c4` in a drum body becomes a
+-- | drum hit named "c4", which the dispatcher silences if the kit has
+-- | no such hit).
 -- |
 -- | PR 2a runtime path: each `Pattern String` event is coerced back
 -- | to `Sample s` at the conductor boundary (Conductor.purs) so the
--- | existing dispatcher emit path handles it.  PR 2b will switch to
+-- | existing dispatcher emit path handles it.  PR 2b switched to
 -- | per-hit-MIDI-binding dispatch using these names.
 module Tidal.Drum
   ( drum
@@ -20,23 +19,22 @@ module Tidal.Drum
 
 import Prelude
 
+import Data.Either (Either(..))
 import Data.Functor (map)
-import Tidal.Pattern.Types (Pattern)
+import Tidal.Pattern.Mini (parseMiniPattern)
+import Tidal.Pattern.Types (Pattern, silence)
 import Tidal.Pitch (PitchedNote12(..))
-import Tidal.Pitch.Parse (mini)
 
 -- | Parse a drum-pattern string using the full mini-notation
--- | grammar, then project each event's sample-name out.
+-- | grammar.  Every non-rest token becomes the drum-hit name.
 -- |
 -- |     drum "bd ~ sn ~"          -- four-step pattern with bd, rest, sn, rest
 -- |     drum "bd(3,8)"            -- euclidean kick
 -- |     drum "[bd sn]*2 ~ cp"     -- subdivided + repeated
 drum :: String -> Pattern String
-drum input = map nameOf (mini input)
-  where
-  nameOf :: PitchedNote12 -> String
-  nameOf (Sample s) = s
-  nameOf _          = ""
+drum input = case parseMiniPattern input of
+  Right p -> p
+  Left _  -> silence
 
 -- | Coerce a DrumPart's `Pattern String` body to `Pattern PitchedNote12` by
 -- | wrapping each hit-name as the `Sample` variant.  Used at the

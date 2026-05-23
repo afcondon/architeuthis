@@ -1,53 +1,48 @@
--- | Sessions.Vetula — end-to-end smoke session for V-D, validated
--- | through Ableton on 2026-05-22.
+-- | Sessions.Vetula — expressivity experiments on the V-D substrate.
 -- |
--- | The McMullen Yellow column in C major, drop-2 voicing strategy,
--- | routed to a long-sustain IAC ch 1 Instrument so each chord rings
--- | through its cycle slot instead of being a 50ms stab.
+-- | Currently running **Experiment 1: bass-out** — split the McMullen
+-- | Yellow progression into a bass stream and an upper-voices stream,
+-- | routed to separate MIDI channels.  Voice-leading happens once on
+-- | the full voicing; the Selector picks subsets *after* voice-leading
+-- | so the two streams stay consistent.
 -- |
--- | Two Vetula-specific conventions surfaced during the smoke test:
+-- | Conventions surfaced during the V-D smoke test still apply:
 -- |
--- |   - **Use `on "name" instr body`, not `(notation >> instr) "name"`.**
--- |     Calypso's cell extractor was built around the `on` shape; it
--- |     recognises the `>>` form's name but can't pull a body out of
--- |     it, leaving cells unfireable.  Until Calypso learns the
--- |     `>>` shape, route via `on` + `toPattern`.
--- |   - **Hold-duration is an Instrument property** (defDurMs field of
--- |     `midiWith`).  The Pattern's whole-arc length is *not* honoured
--- |     by the emit path — every event gets the same MIDI Note-Off
--- |     timer regardless of how long the Pattern says it lasts.
--- |     `Tidal.Combinators noteLength` (task #88) would let us pass
--- |     this per-event via `# legato 0.9`; for now, `midiWith` with a
--- |     long defDurMs is the workaround.
--- |
--- | To activate: copy this file's content over
--- | `src/Calypso/Generated/Session.purs` (with module rewritten to
--- | `Calypso.Generated.Session`), then fire-typeful in Calypso, then
--- | arm chord1 from the Voice Cells pane.
+-- |   - Use `on vName instr body`, not `(notation >> instr) "name"`.
+-- |     Calypso's cell extractor was built around the `on` shape; the
+-- |     `>>` form isn't yet recognised.  Voice names are declared in
+-- |     `Tidal.Voices` and reach here via the Calypso.Prelude re-export.
+-- |   - Hold-duration is an Instrument property (defDurMs).  Pattern's
+-- |     whole-arc length is not honoured by emit — use `midiWith` with
+-- |     a long defDurMs as a workaround.  Task #88 (`noteLength` /
+-- |     `legato`) would fix this properly.
 module Sessions.Vetula where
 
 import Calypso.Prelude
 import Studio (iac)
-import Tidal.Notation (toPattern)
 import Tidal.Vetula (cMajorKey, mcmullenYellow)
-import Tidal.Vetula.Voicing (drop2)
-import Tidal.Vetula.Pattern (vetula)
+import Tidal.Vetula.Voicing (Selector(..), drop2)
+import Tidal.Vetula.Pattern (VetulaPart, vetula, vetulaSplit)
 
--- | Long-sustain variant of bass1: ~1.8s defDurMs so each chord
--- | holds through its cycle slot at the default cps.
-sustained :: Instrument PitchedNote12
-sustained = midiWith iac 1 { defNote: 60, defVel: 100, defDurMs: 1800 }
+bassChan :: Instrument PitchedNote12
+bassChan = midiChannelWith iac 1 { defNote: 36, defVel: 100, defDurMs: 1800 }
 
--- | 18 chords, voice-led from a drop-2 close voicing centred on
--- | octave 4.  One chord per cycle (slowCat).
-chord1 :: PitchedPart PitchedNote12
-chord1 = on "chord1" sustained
-  (toPattern (vetula cMajorKey mcmullenYellow drop2))
+upperChan :: Instrument PitchedNote12
+upperChan = midiChannelWith iac 2 { defNote: 60, defVel: 100, defDurMs: 1800 }
+
+prog :: VetulaPart
+prog = vetula cMajorKey mcmullenYellow drop2
+
+bass :: PitchedPart PitchedNote12
+bass = on vBass bassChan (vetulaSplit (TakeLow 1) prog)
+
+upper :: PitchedPart PitchedNote12
+upper = on vUpper upperChan (vetulaSplit (DropS (TakeLow 1)) prog)
 
 session :: Session
 session = Session
   { devices:     [iac]
-  , instruments: [sustained]
+  , instruments: [bassChan, upperChan]
   , drumKits:    []
-  , parts:       eraseAll [chord1]
+  , parts:       eraseAll [bass, upper]
   }

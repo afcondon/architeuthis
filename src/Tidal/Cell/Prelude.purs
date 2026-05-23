@@ -42,7 +42,7 @@ import Tidal.DejaVu
 import Tidal.LiveControl
 import Tidal.Random
 import Tidal.Pitch (PitchedNote12(..))
-import Tidal.Pitch.Parse (mini, n, d)
+import Tidal.Pitch.Parse (pitch, degree)
 import Tidal.Scales
   ( Scale(..)
   , inKey

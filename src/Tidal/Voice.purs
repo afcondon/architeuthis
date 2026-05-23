@@ -65,7 +65,7 @@ import Tidal.Parse.Parser (parse)
 import Tidal.Pattern.Core (queryArcWith)
 import Tidal.Pattern.Types (Arc(..), ControlMap, Event(..), Pattern, Value(..))
 import Tidal.Pitch (PitchedNote12(..), pitchToken)
-import Tidal.Pitch.Parse (miniToken)
+import Tidal.Pitch.Parse (pitchTok)
 import Tidal.Scales (Scale, renderDegree)
 
 -- ---------------------------------------------------------------------------
@@ -182,11 +182,11 @@ installFromSpec patStr paramSpecs st@(State s) = case s.kind of
     Right ast ->
       let
         -- Parser produces Pattern String; lift to Pattern PitchedNote12 using
-        -- mini-classifier (per-token Note vs Sample shape).  Same
-        -- semantics as `Tidal.Pitch.Parse.mini`, fused inline so we
-        -- avoid re-parsing.
+        -- the pitch-classifier (per-token Chromatic vs Sample shape).
+        -- Same semantics as `Tidal.Pitch.Parse.pitch`, fused inline so
+        -- we avoid re-parsing.
         stringPat = tpatToPattern ast :: Pattern String
-        pitchPat = map miniToken stringPat
+        pitchPat = map pitchTok stringPat
         paramsMap = Map.fromFoldable
           $ Array.mapMaybe
               (\ps -> case parse ps.pat of
@@ -195,12 +195,13 @@ installFromSpec patStr paramSpecs st@(State s) = case s.kind of
               paramSpecs
       in Right (setPatternWithParams pitchPat paramsMap st)
 
--- | Lift a `Pattern String` produced by the bare mini parser into a
--- | `Pattern PitchedNote12` using the per-token mini classifier.  Used at the
--- | Erlang boundary by verbs that parse their pattern body separately
--- | (e.g. `fh2-trigger`, `kit`) and then hand it to `set_voice_pat`.
+-- | Lift a `Pattern String` produced by the bare mini-notation parser
+-- | into a `Pattern PitchedNote12` using the per-token pitch classifier.
+-- | Used at the Erlang boundary by verbs that parse their pattern body
+-- | separately (e.g. `fh2-trigger`, `kit`) and then hand it to
+-- | `set_voice_pat`.
 liftStringToPitch :: Pattern String -> Pattern PitchedNote12
-liftStringToPitch = map miniToken
+liftStringToPitch = map pitchTok
 
 -- | Clear the pattern of a voice regardless of kind. Used by
 -- | `unbind` and by Tidal-compat `hush_all`.

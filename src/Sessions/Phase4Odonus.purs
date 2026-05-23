@@ -29,7 +29,7 @@ phase4Odonus = odonusWith
   { device:  iac
   , channel: 5               -- ch5 to avoid bass1..bass4 IAC claims; Live MIDI track set to all-channels or ch5
   , vel:     100
-  , durMs:   50              -- short like Phase 3's mini "c2"
+  , durMs:   50              -- short like Phase 3's pitch "c2"
   , stepsPerCycle: 16
   , notes:   phase4Notes
   , skip:    replicate16 false
