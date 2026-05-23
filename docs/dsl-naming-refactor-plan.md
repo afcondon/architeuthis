@@ -968,46 +968,28 @@ PureScript and Erlang may need adjustment for the existentialised
 
 ---
 
-# Slab C — Polysignals, parser cluster, voice registry
+# Slab C — Selene as notation + algebra
 
-**Scope:** D5 + naming the parser cluster (`mini`/`d`/`n`/`drum`) + bringing
-back compile-time mvoice safety via a voice registry.
+**Scope:** Polysignals-as-notation, promoted to its own slab and renamed
+to **Selene** (per `project_vocabulary_rename_2026_05_22`). Now carries
+the spec-level Semigroup algebra absorbed from
+`music/atlantis-site-planning/polysignal-algebra-2026-05-23.md`.
 
-**Status:** Outlined here; not yet detailed. Depends on the port-claims
-work in `fh2-config` converging (see `project_port_claims_design` memory).
+**Status:** Full plan in `purerl-tidal/docs/slab-c-plan.md` (synthesised
+2026-05-23). See that doc for the three structural moves, realiser
+ceiling, port-claims integration, and the six internal steps C.1–C.6.
 
-## Polysignals as alternate notation (Andrew's framing, 2026-05-17)
+**Depends on:** port-claims design in fh2-config converging
+(`project_port_claims_design`); Slabs A and B of this naming refactor
+landed.
 
-The shape we discovered during the slate review: **polysignals are not
-Instruments and not Parts; they're a different *vocabulary* for expressing
-musical/control time-structure.** A polysignal config says "a saw LFO at
-0.5 Hz on FH-2 bank C output 3" — that's a *declarative* musical
-specification, parallel to the Tidal pattern's *event-stream* specification
-of "at t=0 send note, at t=0.25 send note, …".
+# Slab D — Parser cluster + voice registry
 
-This reframe suggests the right architectural slot:
+**Scope:** Naming the parser cluster (`mini`/`d`/`n`/`drum`) + bringing
+back compile-time mvoice safety via a voice registry. Carved out of the
+old Slab C bundle; independent of the Selene work in Slab C.
 
-- Polysignals are first-class members of the Session alongside Parts.
-- Their on-disk representation is a `PolySignal` ADT (or sum of family
-  ADTs: `PolyLfo`, `PolyClock`, `PolyEnv`, `PolyEuclid`, `PolyRand`).
-- Their wire-out path is fh2-config's daemon-write protocol, not the
-  MIDI/OSC emit path that Parts use.
-- They issue port claims at install time; the port-claims layer
-  (designed in fh2-config) refuses overlaps.
-- Calypso could surface them as a separate cell-kind in the UI, with the
-  polysignal block syntax (continuation marker `<>`, per memory
-  `reference_polysignal_continuation_marker`) as their first-class
-  notation.
-
-This makes "Tidal mini-notation" and "polysignal block" two siblings in
-a family of musical-specification notations the live-coding system
-understands, not one privileged form and one anomalous appendage. The
-polyfacetic-REPL framing from earlier (`project_polyfacetic_repl_vision`)
-finally has a concrete second vocabulary alongside Tidal patterns.
-
-When we pick Slab C up: think of the polysignal type and its Session-slot
-as the *second proper notation*, with Tidal patterns as the first. That
-framing should guide naming and API shape.
+**Status:** Outlined here. Smaller than Slab C; can land in any order.
 
 ## Parser cluster naming
 
@@ -1080,9 +1062,10 @@ choice for when we get there.
 4. **Slab B** — Parameterize note type + Emitable typeclass.
    Existential-AnyPart now crosses a boundary that doesn't peek into
    it (thanks to PR 1.5), so the wire-format risk disappears.
-5. **Slab C** — when fh2-config's port-claims design lands.
-   Polysignals as alternate notation + parser cluster + voice
-   registry.
+5. **Slab C** — Selene as notation + algebra. Depends on fh2-config
+   port-claims landing. Detailed plan in `slab-c-plan.md`.
+6. **Slab D** — Parser cluster naming + voice registry. Independent
+   of Slab C; can land any order.
 
 The PureScript/Erlang boundary principle established at the top of
 this doc is the load-bearing architectural move; PR 1.5 is its first

@@ -14,7 +14,7 @@
 #   make clean        - clean PureScript output
 #   make distclean    - clean everything including deps
 
-.PHONY: all deps ps erl test run start clean distclean help
+.PHONY: all deps ps erl erl-quick test run start clean distclean help
 
 # Default target
 all: erl
@@ -27,7 +27,7 @@ help:
 	@echo "  make erl       - compile Erlang to beam (includes ps)"
 	@echo "  make test      - run the test suite"
 	@echo "  make run       - build and start the server"
-	@echo "  make start     - start the server (no rebuild)"
+	@echo "  make start     - start the server (incremental rebuild + run)"
 	@echo "  make clean     - clean PureScript output"
 	@echo "  make distclean - clean everything"
 
@@ -44,55 +44,51 @@ ps:
 	@echo "==> Building PureScript (purs-backend-erl)..."
 	spago build
 
-# Erlang compilation (compiles .erl to .beam in ebin/)
-erl: ps
+# Erlang compilation (compiles .erl to .beam in ebin/).  Depends on
+# `ps` (spago) so we first regenerate output-erl/, then run erl-quick
+# to compile every changed module.
+erl: ps erl-quick
+	@echo "==> Build complete. BEAM files in ebin/"
+
+# Just the erlc step, no spago.  For the DeepStar restart hot path:
+# refreshes any .beam whose corresponding output-erl/.erl is newer.
+# erlc skips files whose .beam is already up-to-date, so this is
+# sub-second when nothing's changed.  Assumes `spago build` (or
+# `make ps`) has already populated output-erl/ — if you edited .purs
+# without running spago, that's a different (louder) failure.
+erl-quick:
 	@echo "==> Compiling Erlang to BEAM..."
 	@mkdir -p ebin
 	@find output-erl -name "*.erl" -exec erlc -disable-feature maybe_expr -o ebin {} \; 2>&1 | grep -v "Warning:" || true
-	@# Standalone Erlang utility modules (no PureScript counterpart, not foreign).
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_log.erl
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_anchor_log.erl
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_link_anchor.erl
-	@# OTP application + top-level supervisor.
 	@erlc -disable-feature maybe_expr -o ebin src/purerl_tidal_app.erl
 	@erlc -disable-feature maybe_expr -o ebin src/purerl_tidal_sup.erl
 	@cp src/purerl_tidal.app.src ebin/purerl_tidal.app
-	@# Voice gen_server + supervisor (per-voice supervision tree).
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_voice.erl
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_voice_sup.erl
-	@# Clock (gen_statem) and Dispatcher (gen_server).
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_clock.erl
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_dispatcher.erl
-	@# State publisher (gen_server) — replaces MIDIScheduler.publishState.
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_state_pub.erl
-	@# Live control bus (knob → ETS → State.controls).
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_control_bus.erl
-	@# Live active-scale bus (set-scale verb → ETS → Window.activeScale).
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_scale_bus.erl
-	@# Per-yarns-cell voice allocator state (yarns macro verb).
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_yarns_state.erl
-	@# Phase 4 typeful-cues Session walker (reload-baseline path).
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_session_walker.erl
-	@# Section conductor (MVP-2 play-piece path).
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_conductor.erl
-	@# Balistes virtual module (BEAM-native MI Balistes clone).
 	@erlc -disable-feature maybe_expr -o ebin src/balistes_tables.erl
 	@erlc -disable-feature maybe_expr -o ebin src/balistes_engine.erl
 	@erlc -disable-feature maybe_expr -o ebin src/balistes_voice_sup.erl
 	@erlc -disable-feature maybe_expr -o ebin src/balistes_voice.erl
-	@# Repetitor virtual module (ZR-inspired, BEAM-native).
 	@erlc -disable-feature maybe_expr -o ebin src/repetitor_library_zr_african.erl
 	@erlc -disable-feature maybe_expr -o ebin src/repetitor_engine.erl
 	@erlc -disable-feature maybe_expr -o ebin src/repetitor_voice_sup.erl
 	@erlc -disable-feature maybe_expr -o ebin src/repetitor_voice.erl
-	@# René machine (Make-Noise René-inspired Cartesian sequencer).
 	@erlc -disable-feature maybe_expr -o ebin src/odonus_engine.erl
 	@erlc -disable-feature maybe_expr -o ebin src/odonus_voice_sup.erl
 	@erlc -disable-feature maybe_expr -o ebin src/odonus_voice.erl
-	@# Virtual polysignal (BEAM-native polysignal targeting Virtual <prefix>).
 	@erlc -disable-feature maybe_expr -o ebin src/virtual_selene_voice_sup.erl
 	@erlc -disable-feature maybe_expr -o ebin src/virtual_selene_voice.erl
-	@echo "==> Build complete. BEAM files in ebin/"
 
 # Run tests
 test: erl
@@ -116,8 +112,12 @@ run: erl
 	ERL_LIBS="_build/default/lib" erl -pa ebin -noshell \
 		-eval 'F = main@ps:main(), F()'
 
-# Start the server (no rebuild)
-start:
+# Start the server.  Depends on `erl` so the BEAMs in ebin/ can't lag
+# behind output-erl/.  An incremental erlc pass is sub-second when
+# nothing's changed; the cost of skipping it is hours of "why is this
+# function undef" debugging (see feedback_purerl_tidal_make_not_spago
+# in agent memory).
+start: erl
 	@echo "==> Starting purerl-tidal server on port 3012..."
 	@echo "    WebSocket: ws://localhost:3012/ws"
 	@echo "    Press Ctrl+C to stop"
