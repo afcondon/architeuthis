@@ -351,13 +351,19 @@ that pair's outputs by name.
 
 ## 6. Mini-notation as a first-class type
 
-Today: `mini "bd sn" :: Pattern String`.  Once parsed, the source is
-gone.
+**Status (2026-05-23):** Lifted at the leaf level.  `pitch`, `degree`,
+`drum` return `MiniNotation a`; consumers (`on`, `tintinnabuli`,
+`fugueVoice`, `inKey`, `transposeDiatonic`, `transposeChromatic`, `rev`,
+`every`) accept any `Notation n a` via the typeclass.  See "What
+actually landed" below.
 
-After: `mini "bd sn" :: MiniNotation Sample`, with
+Today (pre-lift): `mini "bd sn" :: Pattern String`.  Once parsed, the
+source is gone.
+
+After (leaf-level): `pitch "c4 e4" :: MiniNotation PitchedNote12`, with
 
 ```purescript
-newtype MiniNotation a = MiniNotation TPat
+newtype MiniNotation a = MiniNotation (TPat a)
   -- TPat is the post-parse tree from Tidal.Parse.Parser
 
 instance Notation (MiniNotation a) a where
@@ -370,17 +376,69 @@ instance Semigroup (MiniNotation a) where
   append (MiniNotation a) (MiniNotation b) = MiniNotation (catTPat [a, b])
 ```
 
-What this buys us:
+### What actually landed
 
-- **Round-trip to source.**  Cells can persist the literal source the
-  user typed, not the resolved Pattern.  Pretty-print, edit, re-parse.
-- **Source-level composition.**  `mini "bd sn" <> mini "hh cp"`
-  composes at the tree level, equivalent to `mini "bd sn hh cp"`.
-- **Substrate uniformity.**  `MiniNotation a` is a `Notation` like any
-  other.  The substrate doesn't special-case it.
-- **UI affordance.**  An editor (Calypso, VS Code) can render the
-  source AND query the resolved Pattern for visualisation without
-  re-parsing — both are in the value.
+- ✅ **Round-trip to source at the leaf.**  `pitch "c4 e4"` is a typed
+  `MiniNotation` value carrying the parsed TPat tree; `miniSource`
+  pretty-prints it back to mini-notation source.  Pretty-print, edit,
+  re-parse all work for the leaf-level value.
+- ✅ **Source-level composition at the leaf.**  `pitch "c4 e4" <>
+  pitch "g4"` composes at the tree level via the `Semigroup
+  MiniNotation` instance, equivalent to `pitch "c4 e4 g4"`.
+- ✅ **Substrate uniformity.**  `MiniNotation a` is a `Notation` like
+  any other; the substrate (`on`, `tintinnabuli`, `inKey`,
+  `fugueVoice`, …) doesn't special-case it.  The trivial
+  `Notation Pattern a` instance means existing Pattern-typed call sites
+  continue to work.
+- ⚠️  **UI affordance at the leaf only.**  An editor can mutate the
+  parsed TPat at the leaf and re-serialise to source.  The editor
+  already holds the *outer* PureScript text directly, so it owns that
+  half of the round-trip.
+
+### What didn't lift (and why)
+
+Some Pattern combinators couldn't be generalised to `Notation` without
+breaking common idioms:
+
+- `fast`, `slow` — the test idiom `fast 2 (pure "x")` becomes
+  ambiguous because `pure x` is `Applicative f => f a`; the compiler
+  can't decide which `Notation` instance to pick.
+- `cat`, `fastCat`, `slowCat`, `stack` — same issue with
+  `fastCat (map pure [...])` and `cat [pure "bd", pure "sn"]`, used
+  in production cells and tests.
+
+The dividing rule that emerged: **a combinator can be lifted iff it's
+not commonly called with `pure x` as its pattern argument.**  Single-
+pattern transforms (`rev`, `every`, `iter`, `chunk`, …) and parser
+consumers (`on`, `tintinnabuli`, `inKey`, `fugueVoice`) qualify.  Time
+and structure builders (`fast`/`slow`/`cat`/`stack`) don't.
+
+This means **MiniNotation values are leaf-only**.  Once a
+non-liftable combinator operates on them, the value resolves to
+`Pattern` and the source is lost.  E.g. `fast 2 (cat [pitch "c4",
+drum "bd"])` returns `Pattern PitchedNote12` — no full-expression
+round-trip.
+
+That's an acceptable walk-back: the editor already keeps the outer
+PureScript text, so the *full expression* doesn't need to round-trip
+through value-space.  Round-tripping the *leaf strings* (the bit
+inside quote marks) is what enables visual editors of mini-notation.
+
+### Forward direction
+
+A deeper lift could reach the full-expression round-trip by giving
+`MiniNotation` its own TPat-native versions of `rev`, `every`, `cat`,
+`fast`, etc. — operations that work on the AST tree, with
+`toPattern` deferred until the substrate query.  That would require:
+
+- New TPat constructors for combinators that don't have one
+  (`TPat_Rev`, `TPat_Every`, …) or a TPat-with-functions encoding
+  that gives up some round-trippability anyway.
+- Reimplementing all of `Tidal.Pattern.Core` at the TPat level.
+
+Defer until a concrete consumer (Calypso visual editor that mutates
+the AST?) makes the cost worth it.  The leaf-level lift is a real
+shipped capability; the deeper lift is an aspirational follow-up.
 
 The same shape applies to other notation values that have meaningful
 "source" (a Vetula record, an Odonus declaration): the `Show` instance
