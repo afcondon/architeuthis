@@ -131,9 +131,13 @@ import Tidal.Selene
   , OutputRange(..)
   , Bank(..)
   , Fh2Bank(..)
+  , Es9Bank(..)
   , fh2Main
   , fh28Cv
   , fh28Gt
+  , es9Main
+  , es98Cv
+  , es98Gt
   , ClockBase(..)
   , RandDirection(..)
   , RandScale(..)
@@ -145,6 +149,7 @@ import Tidal.Selene
   , RandSlot
   , PresetNoteSlot
   , silent
+  , __
   , fixed
   , sinLFO
   , sqrLFO

@@ -60,10 +60,15 @@ module Tidal.Selene
   , OutputRange(..)
   , Bank(..)
   , Fh2Bank(..)
+  , Es9Bank(..)
   , fh2Main
   , fh28Gt
   , fh28Cv
+  , es9Main
+  , es98Cv
+  , es98Gt
   , seleneBank
+  , seleneDeviceWire
   , ClockBase(..)
   , RandDirection(..)
   , RandScale(..)
@@ -75,6 +80,7 @@ module Tidal.Selene
   , RandSlot
   , PresetNoteSlot
   , silent
+  , __
   , fixed
   , sinLFO
   , sqrLFO
@@ -149,6 +155,7 @@ rangeToWire = case _ of
 -- |   `virtual_selene_voice_sup` instead of fh2-daemon.
 data Bank
   = FH2 Fh2Bank
+  | ES9 Es9Bank
   | Virtual String
 
 derive instance eqBank :: Eq Bank
@@ -160,6 +167,18 @@ data Fh2Bank
   | FH28Gt Int       -- FHX-8GT expander, indices 0..7
 
 derive instance eqFh2Bank :: Eq Fh2Bank
+
+-- | The ES-9's own front-panel jacks plus its Silent Way expanders.
+-- | Mirrors `Fh2Bank` deliberately — same constructor shape, different
+-- | device target.  The walker emits a `device` discriminator on the
+-- | registration event so the Erlang side dispatches to cv-router's
+-- | `~/.es9/control.sock` instead of fh2-daemon.
+data Es9Bank
+  = ES9Main          -- ES-9's own eight panel jacks (cv-router buses 8..15)
+  | ES98Cv Int       -- ESX-8CV expander via Silent Way (C.4h pending)
+  | ES98Gt Int       -- ESX-8GT expander via Silent Way (C.4h pending)
+
+derive instance eqEs9Bank :: Eq Es9Bank
 
 -- | Smart helpers — cell text reads `octoLfo fh2Main ...` and
 -- | `octoLfo (fh28Cv 2) ...` without the `FH2 (...)` wrapping
@@ -174,9 +193,19 @@ fh28Cv n = FH2 (FH28Cv n)
 fh28Gt :: Int -> Bank
 fh28Gt n = FH2 (FH28Gt n)
 
+es9Main :: Bank
+es9Main = ES9 ES9Main
+
+es98Cv :: Int -> Bank
+es98Cv n = ES9 (ES98Cv n)
+
+es98Gt :: Int -> Bank
+es98Gt n = ES9 (ES98Gt n)
+
 bankToWire :: Bank -> String
 bankToWire = case _ of
   FH2 fb         -> fh2BankToWire fb
+  ES9 eb         -> es9BankToWire eb
   Virtual prefix -> "virtual:" <> prefix
 
 fh2BankToWire :: Fh2Bank -> String
@@ -184,6 +213,26 @@ fh2BankToWire = case _ of
   FH2Main  -> "main"
   FH28Cv n -> "cv" <> show n
   FH28Gt n -> "gt" <> show n
+
+-- | Wire tokens deliberately mirror FH-2's — the daemon listening on
+-- | the ES-9 control socket reads them in its own coordinate system,
+-- | so "main" means ES-9 main panel here and FH-2 main panel for
+-- | fh2-daemon.  Routing decides which socket; tokens within a
+-- | device's namespace are unambiguous.
+es9BankToWire :: Es9Bank -> String
+es9BankToWire = case _ of
+  ES9Main  -> "main"
+  ES98Cv n -> "cv" <> show n
+  ES98Gt n -> "gt" <> show n
+
+-- | Routing tag used by the walker to pick a daemon socket.  Mirrors
+-- | the outer `Bank` constructor; `Virtual` banks have no device tag
+-- | (they're handled BEAM-side and don't flow through this codepath).
+seleneDeviceWire :: forall s. Selene s -> String
+seleneDeviceWire s = case seleneBank s of
+  FH2 _     -> "fh2"
+  ES9 _     -> "es9"
+  Virtual _ -> "fh2"   -- unreachable: virtual banks go via RegisterVirtualSelene
 
 -- ---------------------------------------------------------------------------
 -- Modulation slot — unified LFO + preset value
@@ -234,6 +283,17 @@ silent =
   , rnd: 0.0
   , nse: 0.0
   }
+
+-- | Visual alias for `silent`.  A flat line for a flat line — reads as
+-- | the same horizontal-mark rest notation Tidal users would write as
+-- | `~`, but legal PureScript (so the unchanged source-is-AST contract
+-- | holds: no parser stage).  Use in slot grids where the eye should
+-- | skip rests and land on active slots:
+-- |
+-- |     [ sinLFO 0.5, __, __, __
+-- |     , __,         __, __, __ ]
+__ :: ModSlot
+__ = silent
 
 -- | A static-value slot: the named `level` (normalised to the bank's
 -- | outputRange) on the output, no LFO contribution.  Replaces the

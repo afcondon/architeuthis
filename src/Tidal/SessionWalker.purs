@@ -129,6 +129,11 @@ data RegistrationEvent
   | RegisterSelene
       { alias :: String
       , family :: String
+      -- | Routing tag — "fh2" sends to fh2-daemon, "es9" sends to
+      -- | cv-router's control socket.  Walker derives this from the
+      -- | bank's outer ADT constructor; daemons read identical JSON
+      -- | envelopes within their own coordinate spaces.
+      , device :: String
       , jsonEnvelope :: String
       }
   -- | A polysignal targeting a `Virtual <busPrefix>` bank — runs
@@ -688,6 +693,7 @@ pickSelene { name: alias, value } = do
     _ -> Just $ RegisterSelene
       { alias: a
       , family: Selene.seleneFamily polysig
+      , device: Selene.seleneDeviceWire polysig
       , jsonEnvelope: Selene.seleneAsJson a polysig
       }
 

@@ -583,24 +583,31 @@ apply_event({registerOdonus,
 apply_event({registerSelene,
              #{ alias        := A
               , family       := F
+              , device       := D
               , jsonEnvelope := J
               }}, Acc) ->
     Cmd = iolist_to_binary([<<"apply-polysignal ">>, J]),
-    case fh2_daemon_call(Cmd) of
+    Result = case D of
+        <<"fh2">> -> fh2_daemon_call(Cmd);
+        <<"es9">> -> es9_daemon_call(Cmd);
+        Other ->
+            {error, {unknown_device, Other}}
+    end,
+    case Result of
         {ok, <<"OK", _/binary>> = Reply} ->
             tidal_log:debug(
-                "session_walker: selene ~s (~s) -> ~s~n",
-                [A, F, Reply]),
+                "session_walker: selene ~s (~s/~s) -> ~s~n",
+                [A, F, D, Reply]),
             bump(selenes, Acc);
         {ok, ErrReply} ->
             tidal_log:err(
-                "session_walker: selene ~s (~s) refused: ~s~n",
-                [A, F, ErrReply]),
+                "session_walker: selene ~s (~s/~s) refused: ~s~n",
+                [A, F, D, ErrReply]),
             bump(seleneErrors, Acc);
         {error, Reason} ->
             tidal_log:err(
-                "session_walker: selene ~s (~s) daemon error: ~p~n",
-                [A, F, Reason]),
+                "session_walker: selene ~s (~s/~s) daemon error: ~p~n",
+                [A, F, D, Reason]),
             bump(seleneErrors, Acc)
     end;
 
@@ -750,4 +757,46 @@ fh2_daemon_socket_path() ->
     case os:getenv("HOME") of
         false -> "/tmp/fh2-control.sock";
         Home -> Home ++ "/.fh2/control.sock"
+    end.
+
+%% ====================================================================
+%% es9-daemon (cv-router control socket) client — same wire shape as
+%% fh2_daemon_call, different socket path.  Mirrored deliberately so
+%% task #71's extraction to `tidal_fh2` can land as `tidal_device`
+%% with both daemons sharing the transport.
+%% ====================================================================
+
+es9_daemon_call(Command) ->
+    SockPath = es9_daemon_socket_path(),
+    Opts = [{active, false}, binary, {packet, line}],
+    case gen_tcp:connect({local, SockPath}, 0, Opts, 1000) of
+        {ok, Sock} ->
+            try
+                ok = gen_tcp:send(Sock, [Command, $\n]),
+                case gen_tcp:recv(Sock, 0, 5000) of
+                    {ok, Reply} ->
+                        Trimmed = case Reply of
+                            <<>> -> Reply;
+                            _ ->
+                                case binary:last(Reply) of
+                                    $\n -> binary:part(Reply, 0,
+                                                       byte_size(Reply) - 1);
+                                    _ -> Reply
+                                end
+                        end,
+                        {ok, Trimmed};
+                    {error, RecvReason} ->
+                        {error, RecvReason}
+                end
+            after
+                gen_tcp:close(Sock)
+            end;
+        {error, ConnReason} ->
+            {error, ConnReason}
+    end.
+
+es9_daemon_socket_path() ->
+    case os:getenv("HOME") of
+        false -> "/tmp/es9-control.sock";
+        Home -> Home ++ "/.es9/control.sock"
     end.
