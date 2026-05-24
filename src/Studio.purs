@@ -35,8 +35,8 @@ iac = MidiDevice "IAC Driver Tidal" 30
 -- CV/Gate routers
 -- ---------------------------------------------------------------------------
 
--- | The local cv-router instance — drives ES-9 buses via CoreAudio.
--- | Host:port matches the default cv-router boot config.  Today
+-- | The local es9-daemon instance — drives ES-9 buses via CoreAudio.
+-- | Host:port matches the default es9-daemon boot config.  Today
 -- | informational only (the runtime routes all OSC through a
 -- | singleton client on these coordinates); PR 2c.2 wires up the
 -- | per-alias OSCClient map for multi-router setups (shared jams,
@@ -68,7 +68,7 @@ bass4 :: Instrument PitchedNote12
 bass4 = midiChannel iac 4
 
 -- ---------------------------------------------------------------------------
--- V/oct instruments — routed through cv-router to modular VCOs.
+-- V/oct instruments — routed through es9-daemon to modular VCOs.
 -- Each is one gate channel (the trigger) + one CV bus (V/oct CV).
 -- Compound bindings of the form `gate G + cv V voct` are installed
 -- automatically by the session walker; per-event emit fires both the
@@ -118,13 +118,13 @@ qd2 = midiDrumKit fh2qd 15
   ]
 
 -- ---------------------------------------------------------------------------
--- Gate drum kits — drum dispatch via cv-router gate triggers instead of
--- MIDI.  Each hit maps a token to a cv-router gate channel + pulse
+-- Gate drum kits — drum dispatch via es9-daemon gate triggers instead of
+-- MIDI.  Each hit maps a token to a es9-daemon gate channel + pulse
 -- duration.  Walker installs a single `GateDrumKit` PrimAction per
 -- kit; per-event dispatch fires the matching gate.
 -- ---------------------------------------------------------------------------
 
--- | A four-voice gate drum kit on cv-router gate channels 0..3 → ES-9
+-- | A four-voice gate drum kit on es9-daemon gate channels 0..3 → ES-9
 -- | panel jacks 1..4.  Useful smoke-test target for the GateDrumKit
 -- | dispatch path; can drive any modular trigger destination (Plonk,
 -- | Maths cycle, an envelope, an ESX-8GT bit on the same panel).

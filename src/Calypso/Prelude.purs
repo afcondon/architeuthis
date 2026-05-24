@@ -39,7 +39,7 @@ module Calypso.Prelude
   , appendParts, (<+>)
   -- Devices
   , module Tidal.MidiDevice
-  -- CV/Gate routers (cv-router OSC endpoints — named for forward-
+  -- CV/Gate routers (es9-daemon OSC endpoints — named for forward-
   -- compat with multi-router setups; today routed through the
   -- singleton OSC client)
   , CvRouter(..)
@@ -235,8 +235,8 @@ negate x = PRing.sub PSemiring.zero x
 -- CV/Gate routers
 -- ---------------------------------------------------------------------------
 
--- | A named cv-router OSC endpoint — `CvRouter <host> <port>`.  The
--- | Studio module declares one per cv-router instance the rig talks
+-- | A named es9-daemon OSC endpoint — `CvRouter <host> <port>`.  The
+-- | Studio module declares one per es9-daemon instance the rig talks
 -- | to.  Today the runtime routes everything through a singleton OSC
 -- | client opened against the default host:port (127.0.0.1:57120);
 -- | the named-router abstraction is forward-compat for PR 2c.2's
@@ -257,7 +257,7 @@ data CvRouter = CvRouter String Int
 -- |   * `MidiInstrument` — note/vel/dur defaults preserved from PR 1
 -- |     for the dispatcher's spec parser.  Per-event vel/dur (PR 2b's
 -- |     deferred residual) will retire the trailing defaults.
--- |   * `VPerOctInstrument` — V/oct CV + gate-trigger via cv-router.
+-- |   * `VPerOctInstrument` — V/oct CV + gate-trigger via es9-daemon.
 -- |     Walks to a compound `gate G + cv V voct` binding at register
 -- |     time, reusing the existing Gate + CV NoteNameVoct PrimActions.
 data Instrument note
@@ -298,9 +298,9 @@ midiChannelWith device channel { defNote, defVel, defDurMs } =
 
 -- | V/oct instrument — a pitched destination expressed as one gate
 -- | channel (the trigger) + one CV bus (the V/oct CV).  Both are
--- | cv-router-side numbers: gate channel 0..7 (cv-router gate
+-- | es9-daemon-side numbers: gate channel 0..7 (es9-daemon gate
 -- | semantics — physical jack 1..8 via the GATE_BASE offset), voct
--- | bus 0..15 (direct bus index in cv-router's 16-bus space).
+-- | bus 0..15 (direct bus index in es9-daemon's 16-bus space).
 -- |
 -- | ```
 -- | plaits :: Instrument PitchedNote12
@@ -356,7 +356,7 @@ type DrumHitRef = String
 -- |     kit on device + channel; each hit declares MIDI note + vel +
 -- |     duration.  Dispatch goes via the MIDI bridge.
 -- |   * `GateDrumKit cvRouter [gateHit "bd" 0 30, …]` — CV gate drum
--- |     kit through cv-router; each hit declares a gate channel
+-- |     kit through es9-daemon; each hit declares a gate channel
 -- |     (0..7) + duration in ms.  Dispatch fires `sendGateTrigAfter`
 -- |     for each event.  Useful for modular drum-trigger setups
 -- |     (Maths-as-drum, Plonk, ESX-8GT panel).
@@ -364,7 +364,7 @@ data DrumKit
   = MidiDrumKit MidiDevice Int (Array DrumHit)
   | GateDrumKit CvRouter (Array GateHit)
 
--- | A single gate-drum hit: a named token bound to a cv-router gate
+-- | A single gate-drum hit: a named token bound to a es9-daemon gate
 -- | channel + duration.  At dispatch, each event's token resolves to
 -- | one of these via the kit's hits map.
 -- |

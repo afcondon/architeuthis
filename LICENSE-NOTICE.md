@@ -25,10 +25,10 @@ several repos by license-compatibility constraints:
 
 - `purerl-tidal` (this repo) — GPLv3, TidalCycles derivative
 - `link-spike` — GPLv2-or-later, Ableton Link derivative
-- `cv-router` — MIT, no derivative dependencies; talks OSC to anyone
+- `es9-daemon` — MIT, no derivative dependencies; talks OSC to anyone
 - `es9-config` — MIT, vendored midi.js (also MIT, Expert Sleepers)
 
-The license firewall is the network protocol boundary: cv-router receives
+The license firewall is the network protocol boundary: es9-daemon receives
 OSC messages from purerl-tidal but is not statically linked, so its license
 is unaffected by either GPL.
 

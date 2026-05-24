@@ -2,18 +2,18 @@
 
 > **Superseded.** The SuperCollider layer documented here has been replaced
 > by a sibling Rust CV router living in its own repo at
-> `~/work/afc-work/cv-router/` (Marginalia project 185). It speaks the same
+> `~/work/afc-work/es9-daemon/` (Marginalia project 185). It speaks the same
 > OSC protocol on :57120 and opens CoreAudio on the ES-9 directly via `cpal`,
 > with no SuperCollider startup ceremony.
 >
 > The sibling repos in the post-2026-04-25 constellation:
 >
-> - `cv-router` (MIT, sibling repo) — Rust audio router for ES-9
-> - `link-spike` (GPLv2+, sibling repo) — Ableton Link client; sends OSC to cv-router
+> - `es9-daemon` (MIT, sibling repo) — Rust audio router for ES-9
+> - `link-spike` (GPLv2+, sibling repo) — Ableton Link client; sends OSC to es9-daemon
 > - `es9-config` (MIT, sibling repo) — typed PureScript model + DSL for ES-9 config
 >
 > This file is kept as a reference for the SuperCollider path during the
-> migration period; the canonical CV/Gate runtime is now `cv-router`.
+> migration period; the canonical CV/Gate runtime is now `es9-daemon`.
 
 This document captures all the nitty-gritty details for getting CV/Gate output from Tidal patterns to a modular synth via the Expert Sleepers ES-9.
 

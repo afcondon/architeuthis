@@ -2,7 +2,7 @@
 -- | to lists of `PrimAction` that fire on each pattern event.
 -- |
 -- | This is the dispatch-layer primitive that lets pattern source code stay
--- | musical (`kick "bd*4"`, `plaits "c4 e4 g4"`) while the cv-router
+-- | musical (`kick "bd*4"`, `plaits "c4 e4 g4"`) while the es9-daemon
 -- | geometry (gate channels, CV buses, ESX slots, future MIDI) lives in a
 -- | separately-managed registry.
 -- |
@@ -85,9 +85,9 @@ derive instance eqCVMapping :: Eq CVMapping
 -- | adding a constructor here and a dispatcher branch — no change to the
 -- | binding registry shape, no churn for existing actions.
 data PrimAction
-  = Gate     { channel :: Int, latencyMs :: Int }     -- → cv-router /tidal/gate (legacy, GATE_BASE+ch)
-  | CV       Int CVMapping                            -- bus 0..15 → cv-router /cv (sustained)
-  | CVTrig   { bus :: Int, latencyMs :: Int }         -- bus 0..15 → cv-router /cv/trig (pulse)
+  = Gate     { channel :: Int, latencyMs :: Int }     -- → es9-daemon /tidal/gate (legacy, GATE_BASE+ch)
+  | CV       Int CVMapping                            -- bus 0..15 → es9-daemon /cv (sustained)
+  | CVTrig   { bus :: Int, latencyMs :: Int }         -- bus 0..15 → es9-daemon /cv/trig (pulse)
   | ESX      { slot :: Int, latencyMs :: Int }        -- ESX-8CV slot 0..7 → /esx
   | ES5Gate  { bit :: Int,   latencyMs :: Int }       -- ES-5 panel gate 0..7 → /esx5gate
   -- MIDI primitives — device-aware. The `device` field is an alias
@@ -131,9 +131,9 @@ data PrimAction
       }
   -- ^ Gate drum kit (PR 2c) — one binding per kit, with a hits map
   --   keyed by hit-name token.  Each event's token resolves to a
-  --   cv-router gate channel + duration ms; dispatch fires a gate
+  --   es9-daemon gate channel + duration ms; dispatch fires a gate
   --   pulse through `sendGateTrigAfter` on the matching channel.
-  --   Parallel to `MidiDrumKit` but routed via cv-router OSC rather
+  --   Parallel to `MidiDrumKit` but routed via es9-daemon OSC rather
   --   than MIDI.  Today the `router` field is informational only
   --   (singleton OSCClient); PR 2c.2 will hook it up to multi-router
   --   dispatch.
@@ -241,7 +241,7 @@ type BindingRegistry = Map String Binding
 -- `defaultSampleCVMap` behaviour as user-visible bindings.
 -- ---------------------------------------------------------------------------
 
--- | Drum aliases mapped to gate channels 0..7 (matching cv-router's bus
+-- | Drum aliases mapped to gate channels 0..7 (matching es9-daemon's bus
 -- | layout where panel jacks 1..8 = gate ch 0..7). Mirrors the GM-drum
 -- | aliases in `MIDIScheduler.defaultSampleGateMap`.
 drumBindings :: Array (Tuple String Binding)
@@ -381,7 +381,7 @@ parseAction s =
     -- gate-drum-kit <router-alias> [<hit>:<gateCh>:<dur>,...]
     -- Hits encoding: comma-separated 3-tuples (no spaces).  Two-arg
     -- form ⇒ empty kit.  Reserved for the session walker.  Routes
-    -- through cv-router gate triggers.
+    -- through es9-daemon gate triggers.
     ["gate-drum-kit", router] ->
       parseGateDrumKit router ""
     ["gate-drum-kit", router, hitsStr] ->
@@ -562,7 +562,7 @@ derive instance eqContDest :: Eq ContDest
 -- |
 -- |   `cv-cont <bus>`
 -- |     Each tick samples the pattern and emits the raw value as a
--- |     CV update on the given bus (cv-router OSC). No scaling — the
+-- |     CV update on the given bus (es9-daemon OSC). No scaling — the
 -- |     user controls the range via `range` in the expression.
 -- |
 -- | Returns `Nothing` for any other shape, letting the caller fall

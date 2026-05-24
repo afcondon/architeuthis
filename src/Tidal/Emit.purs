@@ -88,7 +88,7 @@ class ToMidiNote note where
   toMidiNote :: note -> Maybe { note :: Int, vel :: Int }
 
 -- | A note that can emit on a `VPerOctInstrument` (1V/oct CV through
--- | cv-router).  Returns the digital ±1.0 value (cv-router's scale,
+-- | es9-daemon).  Returns the digital ±1.0 value (es9-daemon's scale,
 -- | which maps to ES-9's ±10V).
 class ToVPerOctVolts note where
   toVPerOctVolts :: note -> Maybe Number
@@ -130,7 +130,7 @@ instance toMidiNotePitchedNote12 :: ToMidiNote PitchedNote12 where
     Chromatic n -> Just { note: n, vel: 100 }
     _           -> Nothing
 
--- | `Chromatic n` → 1V/oct on cv-router's ±10V→±1.0 scale (matching
+-- | `Chromatic n` → 1V/oct on es9-daemon's ±10V→±1.0 scale (matching
 -- | `Tidal.Dispatch.Helpers.voctValue`).  `Sample` / `Degree` return
 -- | `Nothing` — sample names don't have a CV value; degrees need
 -- | resolution.

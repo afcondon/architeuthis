@@ -144,7 +144,7 @@ data SinkType
       { router :: String
       , hits :: Int
       -- ^ PR 2c parallel to SinkMidiDrumKit: gate-drum-kit routed
-      --   through cv-router instead of MIDI.  Hit-count only at the
+      --   through es9-daemon instead of MIDI.  Hit-count only at the
       --   sink layer; full hits map lives in GateDrumKit PrimAction.
       }
   | SinkGate

@@ -199,7 +199,7 @@ fh2_daemon_call(Command) ->
     daemon_call(filename:join(os:getenv("HOME", "/tmp"), ".fh2/control.sock"),
                 Command).
 
-%% Sibling of fh2_daemon_call targeting cv-router's ES-9 control
+%% Sibling of fh2_daemon_call targeting es9-daemon's ES-9 control
 %% socket.  Same wire shape (apply-polysignal <json> + OK/ERR reply).
 %% Will collapse into one shared transport when task #71 lands.
 es9_daemon_call(Command) ->

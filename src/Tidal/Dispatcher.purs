@@ -4,7 +4,7 @@
 -- | The dispatcher is a gen_server (`tidal_dispatcher.erl`) holding:
 -- |
 -- |   * `bridgeClient` — the link-spike MIDI socket (UDP 127.0.0.1:57122).
--- |   * `oscClient` — the cv-router OSC socket (Maybe; only opened when
+-- |   * `oscClient` — the es9-daemon OSC socket (Maybe; only opened when
 -- |     gate output is configured).
 -- |   * `bindings` — per-voice-name PrimAction lists, set by the WS
 -- |     handler when a `bind` verb is processed.
@@ -369,9 +369,9 @@ dispatchPrimAction (State s) name token wallUs delayMs _delayInt params = case _
                 velocity hit.durationMs adjustedUnixUs
 
   GateDrumKit g ->
-    -- PR 2c: gate-drum-kit (cv-router gate dispatch, parallel to
+    -- PR 2c: gate-drum-kit (es9-daemon gate dispatch, parallel to
     -- MidiDrumKit).  Token = hit name; look up in hits map → fire
-    -- cv-router gate trigger on the matching channel for the hit's
+    -- es9-daemon gate trigger on the matching channel for the hit's
     -- declared duration.  Unknown tokens silently skip; rests skip
     -- via outer `when`.  Router alias informational (PR 2c.2 will
     -- route per-alias).

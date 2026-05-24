@@ -1,5 +1,5 @@
 -- | Sessions.Es9DrumKit — polyclock + polyeuclid + polylfo on the ES-9
--- | rig, end-to-end through purerl-tidal → cv-router.
+-- | rig, end-to-end through purerl-tidal → es9-daemon.
 -- |
 -- | Validates C.4i (Selene polyclock / polyeuclid families on ES-9):
 -- |

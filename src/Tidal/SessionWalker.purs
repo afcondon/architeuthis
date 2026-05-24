@@ -58,7 +58,7 @@ data RegistrationEvent
       , name :: String
       , latencyMs :: Int
       }
-  -- | PR 2c: a named cv-router endpoint declared in Studio.  Today
+  -- | PR 2c: a named es9-daemon endpoint declared in Studio.  Today
   -- | informational only (the runtime routes all OSC through a
   -- | singleton client opened against the default host:port);
   -- | PR 2c.2 will hook this up to per-alias OSCClients.
@@ -79,7 +79,7 @@ data RegistrationEvent
       -- alias/1` ETS table without structurally inspecting it.
       , instrumentValue :: Foreign
       }
-  -- | PR 2c: a V/oct instrument routed through cv-router.  Walks to
+  -- | PR 2c: a V/oct instrument routed through es9-daemon.  Walks to
   -- | a compound `gate <gateChannel> + cv <voctBus> voct` binding
   -- | spec that the dispatcher already understands via existing
   -- | Gate + CV NoteNameVoct PrimActions.
@@ -106,8 +106,8 @@ data RegistrationEvent
       -- `lookup_channel_alias(DrumKitValue)` for arm dispatch.
       , drumKitValue :: Foreign
       }
-  -- | PR 2c: a gate-emitting drum kit routed through cv-router.
-  -- | Parallel to MidiDrumKit but each hit is a cv-router gate
+  -- | PR 2c: a gate-emitting drum kit routed through es9-daemon.
+  -- | Parallel to MidiDrumKit but each hit is a es9-daemon gate
   -- | channel + duration; dispatcher fires `/cv/trig`-style gate
   -- | pulses per event via the existing GateDrumKit PrimAction
   -- | (added in PR 2c).
@@ -131,7 +131,7 @@ data RegistrationEvent
       { alias :: String
       , family :: String
       -- | Routing tag — "fh2" sends to fh2-daemon, "es9" sends to
-      -- | cv-router's control socket.  Walker derives this from the
+      -- | es9-daemon's control socket.  Walker derives this from the
       -- | bank's outer ADT constructor; daemons read identical JSON
       -- | envelopes within their own coordinate spaces.
       , device :: String
@@ -259,9 +259,9 @@ walkBaseline = do
   studioPairs <- enumerateExports "studio@ps"
   sessionPairs <- enumerateExports "calypso_generated_session@ps"
   let allPairs = studioPairs <> sessionPairs
-  -- First pass: device + cv-router events + content-keyed alias maps.
+  -- First pass: device + es9-daemon events + content-keyed alias maps.
   -- We need the alias maps to resolve each instrument's / drum-kit's
-  -- inner device / cv-router tuple back to the alias the user gave
+  -- inner device / es9-daemon tuple back to the alias the user gave
   -- their MidiDevice / CvRouter declaration.
   let
     devices = Array.mapMaybe pickDevice allPairs

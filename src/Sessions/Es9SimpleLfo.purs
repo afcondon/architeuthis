@@ -1,11 +1,11 @@
 -- | Sessions.Es9SimpleLfo — first end-to-end ES-9 Selene demo.
 -- |
 -- | Single 0.5 Hz sine LFO on ES-9 panel jack 1 (bank slot 0), driven
--- | by cv-router's audio callback at 48 kHz from a typed Session-level
+-- | by es9-daemon's audio callback at 48 kHz from a typed Session-level
 -- | `Selene` binding.  Same Selene type, same `octoLfo` smart
 -- | constructor, same walker — the only difference from a FH-2 demo
 -- | is the `es9Main` bank token, which routes the JSON envelope to
--- | cv-router's control socket instead of fh2-daemon's.
+-- | es9-daemon's control socket instead of fh2-daemon's.
 -- |
 -- | To activate: copy this file's content over
 -- | `src/Calypso/Generated/Session.purs` (rewriting the module

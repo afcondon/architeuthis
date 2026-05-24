@@ -136,7 +136,7 @@ event_to_line({registerMidiDevice,
 event_to_line({registerCvRouter,
                #{alias := A, host := H, port := P}}) ->
     {true,
-     iolist_to_binary([<<"cv-router\t">>, A, <<"\t">>, H, <<"\t">>,
+     iolist_to_binary([<<"es9-daemon\t">>, A, <<"\t">>, H, <<"\t">>,
                        integer_to_binary(P)])};
 event_to_line({registerMidiInstrument,
                #{alias := A, deviceAlias := D, channel := Ch,
@@ -238,12 +238,12 @@ apply_event({registerMidiDevice,
     NewAcc = Acc#{device_latencies => Lats#{A => float(L)}},
     bump(devices, NewAcc);
 
-%% A cv-router event (PR 2c) records the named cv-router endpoint in
+%% A es9-daemon event (PR 2c) records the named es9-daemon endpoint in
 %% the Studio snapshot.  In the single-router runtime (PR 2c) the
 %% dispatcher doesn't actually act on this — all OSC goes through the
 %% singleton OSCClient opened against the default host:port at boot.
 %% PR 2c.2 will hook this up to a per-alias OSCClient map so multiple
-%% cv-routers can be addressed independently (shared jams across
+%% es9-daemons can be addressed independently (shared jams across
 %% machines / multi-ES-9).  Until then, declaring a non-default
 %% host:port is silently equivalent to the default.
 apply_event({registerCvRouter,
@@ -360,9 +360,9 @@ apply_event({registerMidiDrumKit,
 %% A gate-drum-kit event (PR 2c) registers ONE binding per kit, of
 %% the new `GateDrumKit` PrimAction kind: per-event dispatch looks
 %% up the event's token in the binding's hits map and fires a
-%% cv-router gate trigger on the matching channel for the hit's
+%% es9-daemon gate trigger on the matching channel for the hit's
 %% declared duration.  Parallel to registerMidiDrumKit but routed
-%% through cv-router instead of MIDI.
+%% through es9-daemon instead of MIDI.
 %%
 %% Spec encoding: `gate-drum-kit <router-alias>` (empty kit) or
 %% `gate-drum-kit <router-alias> <name>:<ch>:<dur>,…` (populated).
@@ -762,7 +762,7 @@ fh2_daemon_socket_path() ->
     end.
 
 %% ====================================================================
-%% es9-daemon (cv-router control socket) client — same wire shape as
+%% es9-daemon (es9-daemon control socket) client — same wire shape as
 %% fh2_daemon_call, different socket path.  Mirrored deliberately so
 %% task #71's extraction to `tidal_fh2` can land as `tidal_device`
 %% with both daemons sharing the transport.

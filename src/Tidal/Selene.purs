@@ -171,10 +171,10 @@ derive instance eqFh2Bank :: Eq Fh2Bank
 -- | The ES-9's own front-panel jacks plus its Silent Way expanders.
 -- | Mirrors `Fh2Bank` deliberately — same constructor shape, different
 -- | device target.  The walker emits a `device` discriminator on the
--- | registration event so the Erlang side dispatches to cv-router's
+-- | registration event so the Erlang side dispatches to es9-daemon's
 -- | `~/.es9/control.sock` instead of fh2-daemon.
 data Es9Bank
-  = ES9Main          -- ES-9's own eight panel jacks (cv-router buses 8..15)
+  = ES9Main          -- ES-9's own eight panel jacks (es9-daemon buses 8..15)
   | ES98Cv Int       -- ESX-8CV expander via Silent Way (C.4h pending)
   | ES98Gt Int       -- ESX-8GT expander via Silent Way (C.4h pending)
 

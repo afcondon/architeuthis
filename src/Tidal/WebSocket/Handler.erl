@@ -1707,7 +1707,7 @@ parse_root_device_verb(Type, Rest) ->
         _ -> none
     end.
 
-%% es9: alias only — cv-router talks to the ES-9 directly via
+%% es9: alias only — es9-daemon talks to the ES-9 directly via
 %% CoreAudio, not MIDI, so no midi-device backing.  Form:
 %% `es9 <alias> "<port-name>"`.
 parse_es9_verb(Rest) ->
@@ -1871,11 +1871,11 @@ parse_binding_midi_cc_verb(Verb, Rest) ->
 
 %% `gate <name> <dev> <bus> [latency N]` — alias-type-dependent dispatch.
 %%   es5 alias  → bind <name> es5gate <bus>
-%%   es9 alias  → bind <name> cv      <bus>   (cv-router /cv path; gate-style)
+%%   es9 alias  → bind <name> cv      <bus>   (es9-daemon /cv path; gate-style)
 %%   fh2 alias  → bind <name> midi-note <dev> <ch> 60 100 50  where <ch> is
 %%                resolved from the `fh2-config <dev>:gate|envelope voice=<bus> ch=<ch>`
 %%                that the user must have fired earlier.
-%%   esx_8gt    → not yet supported (cv-router has no chained-expander gate addressing)
+%%   esx_8gt    → not yet supported (es9-daemon has no chained-expander gate addressing)
 parse_binding_gate_verb(Rest) ->
     Tokens = ws_tokens(Rest),
     {Lead, Lat} = peel_latency_suffix(Tokens),
@@ -1888,7 +1888,7 @@ parse_binding_gate_verb(Rest) ->
                     {bind, Name, ActionSpec};
                 {{ok, es9, _Parent, _Detail}, {ok, Bus}} ->
                     %% es9 alias on the gate verb fires a *trigger* on
-                    %% the cv-router direct bus.  cv-trig holds the bus
+                    %% the es9-daemon direct bus.  cv-trig holds the bus
                     %% high for gateDuration ms then auto-clears (vs
                     %% the legacy `cv` action which sets a sustained
                     %% value that never decays).
@@ -1915,7 +1915,7 @@ parse_binding_gate_verb(Rest) ->
                     end;
                 {{ok, esx_8gt, _Parent, _Detail}, _} ->
                     {routing_error, <<"gate">>,
-                     <<"esx-8gt chained gate addressing isn't in cv-router yet; "
+                     <<"esx-8gt chained gate addressing isn't in es9-daemon yet; "
                        "for ES-5's own panel gates use the es5 alias directly">>};
                 {{ok, OtherType, _, _}, _} ->
                     TypeBin = atom_to_binary(OtherType, utf8),
@@ -1976,7 +1976,7 @@ parse_binding_cv_verb(Rest) ->
 
 %% Map a new-grammar cv mode word to the legacy `cv` action's accepted
 %% modes.  voct + literal pass through; sample-map collapses to literal
-%% (the cv-router doesn't have a sample-map encoder; pattern values are
+%% (the es9-daemon doesn't have a sample-map encoder; pattern values are
 %% already in 0..1 ish range and end up the same shape on the wire).
 legacy_cv_mode(<<"voct">>)        -> <<"voct">>;
 legacy_cv_mode(<<"literal">>)     -> <<"literal">>;
@@ -1984,14 +1984,14 @@ legacy_cv_mode(<<"sample-map">>) -> <<"literal">>;
 legacy_cv_mode(_)                 -> <<"literal">>.
 
 %% `cv-cont <name> <dev> <bus> [latency N]` — declare a continuous-CV
-%% binding on a cv-router direct bus.  Lowers to `bind <name> cv-cont
+%% binding on a es9-daemon direct bus.  Lowers to `bind <name> cv-cont
 %% <bus>` which the dispatcher's `parseContBinding` recognises and
 %% installs in the continuousBindings map.  Useful for host-driven
 %% LFOs / slow modulators where each event sets a sustained value
 %% (no auto-decay deadline, unlike the discrete `cv` action's
 %% sample-accurate per-tick re-emit).
 %%
-%% Today `cv-cont` only supports the es9 alias (cv-router direct
+%% Today `cv-cont` only supports the es9 alias (es9-daemon direct
 %% buses).  ESX-8CV continuous would need a `ContESX` ContDest variant
 %% which doesn't exist yet.
 parse_binding_cv_cont_verb(Rest) ->

@@ -85,7 +85,7 @@ sendGateTrig(Client, Channel, DurationMs) ->
 
 %% Sample-accurate scheduled gate trigger.
 %% Maps gate channel (0-7) to direct bus (8-15) for panel jacks 1-8.
-%% Value 0.5 matches cv-router's SAFETY_SCALE (gate high ~5V).
+%% Value 0.5 matches es9-daemon's SAFETY_SCALE (gate high ~5V).
 %% Format: /cv/trig/at <bus> <value> <duration_ms> <delay_ms>
 sendGateTrigAt(Client, Channel, DurationMs, DelayMs) ->
     fun() ->
@@ -101,9 +101,9 @@ sendGateTrigAt(Client, Channel, DurationMs, DelayMs) ->
 %% DelayMs then opens a fresh UDP socket, sends /tidal/gate/trig, closes.
 %% The socket is short-lived per-send rather than reusing the Client's
 %% long-lived socket, because the long-lived socket has been observed to
-%% silently die when cv-router restarts (no error, just stops delivering).
+%% silently die when es9-daemon restarts (no error, just stops delivering).
 %% gen_udp:open(0) is microseconds, so the per-send overhead is negligible
-%% and we get robust recovery across cv-router restarts for free.
+%% and we get robust recovery across es9-daemon restarts for free.
 sendGateTrigAfter(Client, Channel, DurationMs, DelayMs) ->
     fun() ->
         {_StoredSocket, Host, Port} = Client,
@@ -123,7 +123,7 @@ sendGateTrigAfter(Client, Channel, DurationMs, DelayMs) ->
     end.
 
 %% BEAM-side delayed CV update. Same robustness model as sendGateTrigAfter
-%% — fresh socket per send so cv-router restarts don't silently break us.
+%% — fresh socket per send so es9-daemon restarts don't silently break us.
 sendCVAfter(Client, Bus, Value, DelayMs) ->
     fun() ->
         {_StoredSocket, Host, Port} = Client,
@@ -144,9 +144,9 @@ sendCVAfter(Client, Bus, Value, DelayMs) ->
 
 %% BEAM-side delayed CV trigger. Direct-bus counterpart to
 %% sendGateTrigAfter — emits `/cv/trig <bus> 1.0 <duration_ms>` to
-%% cv-router after `DelayMs`.  cv-router responds by setting the bus
+%% es9-daemon after `DelayMs`.  es9-daemon responds by setting the bus
 %% high for the duration and auto-clearing via its deadline machinery.
-%% Use this for percussive gates on absolute cv-router buses (panel
+%% Use this for percussive gates on absolute es9-daemon buses (panel
 %% jacks 1-8 are buses 8-15 per the cpal channel mapping).
 sendCVTrigAfter(Client, Bus, DurationMs, DelayMs) ->
     fun() ->
@@ -169,7 +169,7 @@ sendCVTrigAfter(Client, Bus, DurationMs, DelayMs) ->
     end.
 
 %% BEAM-side delayed ESX-8CV update. Same robustness model as sendCVAfter.
-%% /esx <slot> <value> reaches the Silent Way encoder in cv-router.
+%% /esx <slot> <value> reaches the Silent Way encoder in es9-daemon.
 sendESXAfter(Client, Slot, Value, DelayMs) ->
     fun() ->
         {_StoredSocket, Host, Port} = Client,
@@ -188,7 +188,7 @@ sendESXAfter(Client, Slot, Value, DelayMs) ->
         unit
     end.
 
-%% BEAM-side delayed ES-5 gate trigger. cv-router's /esx5gate sets one bit
+%% BEAM-side delayed ES-5 gate trigger. es9-daemon's /esx5gate sets one bit
 %% in the byte that gets packed into the high byte of the ES-5 L ADAT lane;
 %% the byte's 8 bits map directly to ES-5 panel gates 1..8. To trig-style
 %% the gate, send <bit> 1 then <bit> 0 after gateDuration.
@@ -207,7 +207,7 @@ sendES5GateTrigAfter(Client, Bit, DurationMs, DelayMs) ->
     end.
 
 %% Helper for the *Trig style: open fresh socket per send. Same robustness
-%% model as the existing sendGateTrigAfter/sendCVAfter — survives cv-router
+%% model as the existing sendGateTrigAfter/sendCVAfter — survives es9-daemon
 %% restarts because we never reuse a long-lived socket.
 send_one_osc(Host, Port, Addr, Args) ->
     case gen_udp:open(0, [binary]) of
