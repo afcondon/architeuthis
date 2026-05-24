@@ -41,6 +41,7 @@
     name           :: atom(),
     alias          :: binary(),    %% binding name; sent as JSON `alias`
     pattern_value  :: term(),      %% opaque Pattern (Selene s) — Foreign
+    device         :: binary(),    %% "fh2" | "es9" — routing for daemon call
     last_cycle     :: integer() | undefined,
     prev_envelope  :: binary() | undefined
 }).
@@ -85,12 +86,13 @@ init({Name, Config}) ->
         name          = Name,
         alias         = ensure_binary(maps:get(alias, Config)),
         pattern_value = maps:get(pattern_value, Config),
+        device        = ensure_binary(maps:get(device, Config, <<"fh2">>)),
         last_cycle    = undefined,
         prev_envelope = undefined
     },
     tidal_log:info(
-      "selene_pattern_voice ~p started: alias=~s~n",
-      [Name, State#st.alias]),
+      "selene_pattern_voice ~p started: alias=~s device=~s~n",
+      [Name, State#st.alias, State#st.device]),
     {ok, State}.
 
 handle_call(get_state, _From, State) ->
@@ -149,7 +151,7 @@ maybe_install_for_cycle(CycleFloor, CurrentCycle, State) ->
                     %% Identical envelope — skip the SysEx round-trip.
                     NewState;
                 false ->
-                    apply_envelope(State#st.alias, EnvBin),
+                    apply_envelope(State#st.alias, EnvBin, State#st.device),
                     NewState#st{prev_envelope = EnvBin}
             end
     end.
@@ -166,9 +168,14 @@ query_pattern(Alias, PatternForeign, CyclePos) ->
 %% into tidal_session_walker (which would create a circular dep);
 %% extract to src/tidal_fh2.erl when the third caller emerges
 %% (memory: task #71).
-apply_envelope(Alias, EnvBin) ->
+apply_envelope(Alias, EnvBin, Device) ->
     Cmd = <<"apply-polysignal ", EnvBin/binary>>,
-    case fh2_daemon_call(Cmd) of
+    Result = case Device of
+        <<"fh2">> -> fh2_daemon_call(Cmd);
+        <<"es9">> -> es9_daemon_call(Cmd);
+        Other    -> {error, {unknown_device, Other}}
+    end,
+    case Result of
         {ok, <<"OK", _/binary>> = Reply} ->
             tidal_log:debug(
               "selene_pattern_voice: ~s -> ~s~n",
@@ -189,7 +196,17 @@ apply_envelope(Alias, EnvBin) ->
 %% #71 — kept inline here to avoid a new dependency until that
 %% extraction lands.
 fh2_daemon_call(Command) ->
-    Path = filename:join(os:getenv("HOME", "/tmp"), ".fh2/control.sock"),
+    daemon_call(filename:join(os:getenv("HOME", "/tmp"), ".fh2/control.sock"),
+                Command).
+
+%% Sibling of fh2_daemon_call targeting cv-router's ES-9 control
+%% socket.  Same wire shape (apply-polysignal <json> + OK/ERR reply).
+%% Will collapse into one shared transport when task #71 lands.
+es9_daemon_call(Command) ->
+    daemon_call(filename:join(os:getenv("HOME", "/tmp"), ".es9/control.sock"),
+                Command).
+
+daemon_call(Path, Command) ->
     case gen_tcp:connect({local, Path}, 0,
                          [local, binary, {active, false},
                           {packet, 0}], 500) of

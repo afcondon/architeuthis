@@ -655,10 +655,12 @@ apply_event({registerVirtualSelene,
 apply_event({registerSelenePattern,
              #{ alias        := A
               , patternValue := PV
+              , device       := D
               }}, Acc) ->
     VoiceConfig = #{
         alias         => A,
-        pattern_value => PV
+        pattern_value => PV,
+        device        => D
     },
     AliasAtom = binary_to_atom(A, utf8),
     case selene_pattern_voice_sup:lookup_voice(AliasAtom) of

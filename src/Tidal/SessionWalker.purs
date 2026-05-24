@@ -42,6 +42,7 @@ import Tidal.PortClaim (ClaimError, OwnerKind(..))
 import Foreign (unsafeToForeign)
 import Tidal.Selene as Selene
 import Tidal.Selene (Bank(..))
+import Tidal.SelenePattern as SelenePattern
 
 -- ---------------------------------------------------------------------------
 -- The boundary ADT
@@ -162,6 +163,10 @@ data RegistrationEvent
   | RegisterSelenePattern
       { alias :: String
       , patternValue :: Foreign
+      -- | Routing tag — same shape as `RegisterSelene.device`.  Walker
+      -- | samples the pattern at cycle 0 to extract this; voice carries
+      -- | it through its config and uses it on every install.
+      , device :: String
       }
   -- | Balistes vmod Phase 3 (2026-05-18): a BEAM-native MI Balistes voice
   -- | declared at the Session level.  Walker captures the binding's
@@ -714,9 +719,16 @@ pickSelenePattern { name: alias, value } = do
   case tag of
     "selenePattern" -> do
       inner <- tupleArg 0 value
+      -- Sample at cycle 0 to determine routing.  A pattern with a rest
+      -- at cycle 0 falls back to "fh2" — the bug then surfaces as a
+      -- wrong-daemon ERR rather than a silent dispatch failure.
+      let device = case SelenePattern.patternDeviceAt alias inner 0.0 of
+            Just d  -> d
+            Nothing -> "fh2"
       Just $ RegisterSelenePattern
         { alias
         , patternValue: inner
+        , device
         }
     _ -> Nothing
 

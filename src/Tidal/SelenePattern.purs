@@ -54,6 +54,7 @@ module Tidal.SelenePattern
   ( SelenePattern(..)
   , selenePattern
   , patternEnvelopeAt
+  , patternDeviceAt
   ) where
 
 import Prelude
@@ -67,7 +68,7 @@ import Unsafe.Coerce (unsafeCoerce)
 
 import Tidal.Pattern.Core (queryArc)
 import Tidal.Pattern.Types (Pattern, eventValue)
-import Tidal.Selene (Selene, seleneAsJson)
+import Tidal.Selene (Selene, seleneAsJson, seleneDeviceWire)
 
 -- | A Pattern of Selene values, wrapped at the Session layer so the
 -- | walker can pick it up by constructor tag.  The Symbol parameter
@@ -113,3 +114,28 @@ patternEnvelopeAt alias patternForeign cyclePos =
     case Array.head events of
       Nothing -> Nothing
       Just ev -> Just (seleneAsJson alias (eventValue ev))
+
+-- | Sibling of `patternEnvelopeAt` that returns the routing device
+-- | for the Selene active at `cyclePos`.  Called from the walker at
+-- | registration time (cycle 0) to determine which daemon socket the
+-- | voice should target — selene_pattern_voice carries this device
+-- | atom through its config and uses it on every install.
+-- |
+-- | If the pattern is silent at the queried cycle (e.g. `cat` with
+-- | rests at the start), returns Nothing — caller falls back to a
+-- | safe default (the walker uses "fh2" so the bug surfaces as a
+-- | wrong-daemon error rather than a silent skip).
+patternDeviceAt :: String -> Foreign -> Number -> Maybe String
+patternDeviceAt _alias patternForeign cyclePos =
+  let
+    p :: Pattern (Selene "anon")
+    p = unsafeCoerce patternForeign
+
+    cycleFloor = Int.floor cyclePos
+    lo = fromInt cycleFloor
+    hi = fromInt (cycleFloor + 1)
+    events = queryArc p lo hi
+  in
+    case Array.head events of
+      Nothing -> Nothing
+      Just ev -> Just (seleneDeviceWire (eventValue ev))
