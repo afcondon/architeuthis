@@ -73,7 +73,12 @@ import Tidal.Selene (Selene, seleneAsJson)
 -- | walker can pick it up by constructor tag.  The Symbol parameter
 -- | is decorative — the walker derives the alias from the binding
 -- | name (the same convention as plain `Selene s`).
-newtype SelenePattern (s :: Symbol) = SelenePattern (Pattern (Selene s))
+-- | NB: `data`, not `newtype` — purs-backend-erl elides newtype
+-- | wrappers at runtime, which would strip the `{selenePattern, …}`
+-- | tag the walker dispatches on.  Keeping the constructor as a real
+-- | data tag costs one tuple-wrap per binding and makes the value
+-- | discoverable by `pickSelenePattern`.
+data SelenePattern (s :: Symbol) = SelenePattern (Pattern (Selene s))
 
 -- | Smart constructor.  Reads cleaner than `SelenePattern (cat …)`
 -- | at the binding site.
