@@ -934,7 +934,7 @@ handle_pattern_message(Text, State) ->
             BaselineAtom = 'calypso_generated_session@ps',
             %% Also reload Studio (the rig declaration) so newly
             %% added devices / channels are picked up by the walker
-            %% on the same ▶ run that mentions them.  Without this,
+            %% on the same > run that mentions them.  Without this,
             %% adding a channel to Studio.purs requires a manual
             %% purerl-tidal restart even though the .beam is on disk —
             %% Erlang doesn't auto-reload, so a stale in-memory Studio
@@ -1192,7 +1192,7 @@ handle_pattern_message(Text, State) ->
                                              <<"ERR play-armed: no binding for '",
                                                MvoiceName/binary,
                                                "'.  Fire the composition first "
-                                               "(▶ run) so the Session walker "
+                                               "(> run) so the Session walker "
                                                "can register channels.">>},
                                     {reply, Reply, State}
                             end
@@ -2736,7 +2736,7 @@ resolve_cue_body(CueName) ->
                 false ->
                     {error,
                      <<"Session module not loaded.  Fire the composition "
-                       "first (▶ run) to build + load Calypso.Generated."
+                       "first (> run) to build + load Calypso.Generated."
                        "Session.">>};
                 _ ->
                     {error,

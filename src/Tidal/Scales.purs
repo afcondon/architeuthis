@@ -33,6 +33,11 @@ module Tidal.Scales
   ( -- * Typed Scale carrier
     Scale(..)
   , mkScale
+  , mkScaleP
+    -- * Distribution modes (Natural / Equal — cf. Instruō Dail)
+  , Distribution(..)
+  , quantiseToScale
+  , applyDistribution
     -- * Named scale constants
   , cMajor
   , cMinor
@@ -65,6 +70,9 @@ module Tidal.Scales
   , aMixolydian
   , aDorian
   , aHarmonicMinor
+    -- * Multi-octave scales (Dail-style)
+  , cPhrygianDomLT
+  , cMajorTriad3oct
   , bMinor
   , bDorian
   , bLocrian
@@ -73,6 +81,7 @@ module Tidal.Scales
   , renderDegree
     -- * Operators
   , inKey
+  , quantiseInKey
   , transposeDiatonic
   , transposeChromatic
   , octave
@@ -159,6 +168,7 @@ module Tidal.Scales
 import Prelude
 
 import Data.Array as Array
+import Data.Foldable (foldl)
 import Data.Int (toNumber)
 import Data.Int as Int
 import Data.Maybe (Maybe(..))
@@ -559,20 +569,36 @@ chromatic = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0]
 -- Typed Scale carrier
 -------------------------------------------------------------------------------
 
--- | A Scale binds a root note to an interval pattern.
+-- | A Scale binds a root note to a sequence of semitone offsets, plus
+-- | a `period` over which the offset pattern repeats.
 -- |
 -- |   * `root`       — MIDI note of degree 1 (e.g. 60 for middle C).
--- |   * `intervals`  — semitone offsets from the root, in degree order
--- |                    (degree 1 → `intervals[0]`, degree 2 →
--- |                    `intervals[1]`, …).  Always starts with 0.
+-- |   * `intervals`  — ascending semitone offsets from the root, in
+-- |                    degree order (degree 1 → `intervals[0]`,
+-- |                    degree 2 → `intervals[1]`, …).  Always starts
+-- |                    with 0.  May span more than one octave for
+-- |                    multi-octave non-repeating scales.
+-- |   * `period`     — semitones until the pattern repeats.  12 for
+-- |                    traditional octave-repeating scales; 24 for a
+-- |                    Dail-style 2-octave non-repeating scale (e.g.
+-- |                    Phrygian Dominant with Chromatic Leading
+-- |                    Tones); 36 for a 3-octave arpeggio; etc.
 -- |   * `name`       — wire-side identifier (`"c-mixolydian"`) used
 -- |                    by `lookupScaleByName`.
 -- |
--- | Octave wrap is implicit: degree (n + 1) where n = length intervals
--- | starts the next octave.  Negative degrees wrap downwards.
+-- | Degree extension is implicit: degree (n + 1) where n = length
+-- | intervals starts the next period at root + period.  Negative
+-- | degrees wrap downwards by period.
+-- |
+-- | The period generalisation is named for Instruō Dail, whose
+-- | bipolar quantiser engine first surfaced multi-octave non-repeating
+-- | scales as a first-class musical idiom (firmware presets like
+-- | "Phrygian Dominant with Chromatic Leading Tones" only make sense
+-- | when the period is larger than one octave).
 newtype Scale = Scale
   { root :: Int
   , intervals :: Array Int
+  , period :: Int
   , name :: String
   }
 
@@ -581,12 +607,28 @@ derive instance eqScale :: Eq Scale
 instance showScale :: Show Scale where
   show (Scale s) = "Scale " <> s.name
 
--- | Smart constructor.  Intervals are taken straight from one of the
--- | tables above (`major`, `mixolydian`, …) via `numberToInt`.
+-- | Smart constructor for traditional octave-repeating scales.
+-- | Intervals are taken straight from one of the tables above
+-- | (`major`, `mixolydian`, …) and `period` defaults to 12.  Use
+-- | `mkScaleP` to set an explicit non-octave period.
 mkScale :: String -> Int -> Array Number -> Scale
-mkScale name root ivs = Scale
+mkScale name root ivs = mkScaleP name root ivs 12
+
+-- | Smart constructor with explicit `period`.  Use for multi-octave
+-- | non-repeating scales (Dail-style):
+-- |
+-- |     phrygianDomLT = mkScaleP "phrygian-dom-leading-tones" 60
+-- |       [0.0,1.0,4.0,5.0,7.0,8.0,10.0, 12.0,13.0,14.0,15.0,16.0,17.0,18.0,19.0,20.0,21.0,22.0] 24
+-- |
+-- | The intervals array can list any ascending set of offsets, and
+-- | `period` says how far up the pattern repeats.  For a chord-as-scale
+-- | (held-chord-becomes-quantiser-mask), pick a period equal to the
+-- | full span of the chord plus one.
+mkScaleP :: String -> Int -> Array Number -> Int -> Scale
+mkScaleP name root ivs period = Scale
   { root
   , intervals: map (Int.round) ivs
+  , period
   , name
   }
 
@@ -688,6 +730,40 @@ aDorian = mkScale "a-dorian" 69 dorian
 aHarmonicMinor :: Scale
 aHarmonicMinor = mkScale "a-harmonic-minor" 69 harmonicMinor
 
+-------------------------------------------------------------------------------
+-- Multi-octave scales (Instruō Dail-style)
+--
+-- These have `period > 12`: the interval pattern repeats over more than
+-- one octave, with different content per octave-within-period.  Degree
+-- (n + 1) where n = length intervals lands at root + period, not
+-- root + 12.  Reach for these when you want a melodic line that
+-- doesn't tile every 12 semitones — Phrygian-with-leading-tones-only-
+-- in-the-upper-octave is the canonical example.
+-------------------------------------------------------------------------------
+
+-- | Phrygian Dominant in the lower octave, chromatic in the upper —
+-- | one of Dail's preset minor scales.  Period 24.  C-rooted.
+-- | Degrees 1..7 walk the Phrygian Dom (C C# E F G G# A#); degrees
+-- | 8..19 walk semitones from the octave-C upward.
+cPhrygianDomLT :: Scale
+cPhrygianDomLT = mkScaleP "c-phrygian-dom-leading-tones" 60
+  [ 0.0, 1.0, 4.0, 5.0, 7.0, 8.0, 10.0           -- Phrygian Dom in octave 1
+  , 12.0, 13.0, 14.0, 15.0, 16.0, 17.0           -- Chromatic leading tones in octave 2
+  , 18.0, 19.0, 20.0, 21.0, 22.0, 23.0
+  ] 24
+
+-- | A three-octave major triad held as a quantiser mask.  Period 36.
+-- | Useful for "snap melody to chord tones across the full range" —
+-- | a chord-as-scale, the Dail held-chord-as-mask use case.  Degree
+-- | walking gives a sparse arpeggio; Natural Distribution snaps any
+-- | continuous CV to the nearest of (C, E, G).
+cMajorTriad3oct :: Scale
+cMajorTriad3oct = mkScaleP "c-major-triad-3oct" 60
+  [ 0.0, 4.0, 7.0
+  , 12.0, 16.0, 19.0
+  , 24.0, 28.0, 31.0
+  ] 36
+
 bMinor :: Scale
 bMinor = mkScale "b-minor" 71 minor
 
@@ -725,34 +801,42 @@ namedScales =
   ]
 
 -- | Resolve a (1-based) scale degree to an absolute MIDI note.
+-- | Implements **Equal Distribution** semantics (cf. `Distribution`):
+-- | each degree is an index into the scale's intervals array, so a
+-- | linear ramp through degree-space steps through the scale's notes
+-- | one-by-one regardless of their actual pitch spacing.
 -- |
 -- |   * Degree 1 = root
 -- |   * Degree 2 = root + intervals[1]
--- |   * Degree (n + 1) where n = length intervals = root + 12  (octave up)
--- |   * Degree 0 = octave down, degree 1 of the next octave below
--- |   * Negative degrees wrap downwards through octaves
+-- |   * Degree (n + 1) where n = length intervals = root + period
+-- |   * Degree 0 = one period down, degree 1 of the period below
+-- |   * Negative degrees wrap downwards through periods
 -- |
--- | Examples in C major (intervals = [0,2,4,5,7,9,11]):
+-- | Examples in C major (intervals = [0,2,4,5,7,9,11], period = 12):
 -- |   `renderDegree cMajor 1` = 60 (C4)
 -- |   `renderDegree cMajor 3` = 64 (E4)
 -- |   `renderDegree cMajor 8` = 72 (C5)
--- |   `renderDegree cMajor 0` = 59 (B3 — degree 7 of the octave below)
+-- |   `renderDegree cMajor 0` = 59 (B3 — degree 7 of the period below)
+-- |
+-- | For multi-octave non-repeating scales (period > 12), degree
+-- | (n + 1) lands at root + period (i.e. one full pattern up), not
+-- | one octave up.
 renderDegree :: Scale -> Int -> Int
 renderDegree (Scale s) degree =
   let
     n = Array.length s.intervals
     idx0 = degree - 1
-    -- floored division & modulo so negatives wrap into octaves below
-    octave =
+    -- floored division & modulo so negatives wrap into periods below
+    period =
       if idx0 >= 0
         then idx0 / n
         else -((-idx0 - 1) / n + 1)
-    step = idx0 - octave * n
+    step = idx0 - period * n
     offset = case Array.index s.intervals step of
       Just iv -> iv
       Nothing -> 0  -- impossible given the step modulo
   in
-    s.root + offset + 12 * octave
+    s.root + offset + s.period * period
 
 -------------------------------------------------------------------------------
 -- Operators on Pattern PitchedNote12
@@ -775,6 +859,25 @@ inKey scale = map (renderPitchIn scale) <<< toPattern
     renderPitchIn s = case _ of
       Degree d    -> Chromatic (renderDegree s d)
       Chromatic n -> Chromatic n
+      Sample x    -> Sample x
+
+-- | **Natural Distribution** counterpart of `inKey`.  Snaps every
+-- | `Chromatic` event to the nearest active note in `scale` via
+-- | `quantiseToScale`.  `Degree` events render through `renderDegree`
+-- | (Equal — same as `inKey`); since a Degree-resolved note is in-
+-- | scale by construction, the snap is a no-op for those.
+-- |
+-- | Use this when you have a chromatic source (raw MIDI values from
+-- | a sequencer, an LFO mapped to pitch, etc.) and want it constrained
+-- | to a scale.  `mini "c4 c#4 d4 d#4 e4 f4"` quantised against
+-- | `cMajor` collapses the half-steps onto the diatonic neighbours.
+quantiseInKey :: forall n. Notation n PitchedNote12 => Scale -> n -> Pattern PitchedNote12
+quantiseInKey scale = map (renderPitchIn scale) <<< toPattern
+  where
+    renderPitchIn :: Scale -> PitchedNote12 -> PitchedNote12
+    renderPitchIn s = case _ of
+      Degree d    -> Chromatic (renderDegree s d)
+      Chromatic n -> Chromatic (quantiseToScale s n)
       Sample x    -> Sample x
 
 -- | Transpose by `n` scale degrees.  Operates only on `Degree`
@@ -808,8 +911,103 @@ transposeChromatic offset = map step <<< toPattern
       Chromatic n -> Chromatic (n + offset)
       other       -> other
 
--- | Shift a scale's root by `n` octaves.  `octave (-2) cMajor` is C2-
--- | rooted C major; `octave 1 aMinor` is A5-rooted A minor.  Useful
+-- | Shift a scale's root by `n` periods.  `octave (-2) cMajor` is C2-
+-- | rooted C major; `octave 1 aMinor` is A5-rooted A minor.  For
+-- | traditional scales (period = 12) this is octave-shift; for multi-
+-- | octave non-repeating scales it shifts by the full period.  Useful
 -- | for bass / lead voicings of the same mode.
 octave :: Int -> Scale -> Scale
-octave n (Scale s) = Scale (s { root = s.root + 12 * n })
+octave n (Scale s) = Scale (s { root = s.root + s.period * n })
+
+-------------------------------------------------------------------------------
+-- Distribution modes (Natural / Equal) — cf. Instruō Dail
+-------------------------------------------------------------------------------
+
+-- | How a continuous or integer value maps onto a Scale's active
+-- | pitches.  The two modes are taken straight from Instruō Dail's
+-- | quantiser engine:
+-- |
+-- |   * `Natural` — the value is a position in *pitch-space* (MIDI
+-- |     semitones); quantise by snapping to the nearest active note in
+-- |     the scale.  CV threshold to move from one note to the next is
+-- |     the real semitone distance between them.  A linear ramp
+-- |     through a sparse scale spends more time on widely-spaced
+-- |     intervals — the V/oct-shaped melodic line.
+-- |
+-- |   * `Equal` — the value is a position in the *index-space* (degree
+-- |     index, 1-based); look up `intervals[value-1]` directly.  Each
+-- |     active note gets an equal share of the input range, regardless
+-- |     of pitch distance.  A linear ramp through degrees steps through
+-- |     the scale's notes one-by-one — the evenly-spaced-through-scale
+-- |     melodic line.
+-- |
+-- | These map directly onto the existing carrier: `Degree d` resolves
+-- | Equal (via `renderDegree`); `Chromatic n` is raw MIDI, with optional
+-- | Natural quantisation via `quantiseToScale`.  `applyDistribution`
+-- | unifies the two so callers can switch modes at runtime.
+data Distribution = Natural | Equal
+
+derive instance eqDistribution :: Eq Distribution
+derive instance ordDistribution :: Ord Distribution
+
+instance showDistribution :: Show Distribution where
+  show Natural = "Natural"
+  show Equal   = "Equal"
+
+-- | Snap a MIDI value to the nearest active note in the scale
+-- | (**Natural Distribution**).  The value is interpreted as an
+-- | absolute MIDI semitone; the scale's `intervals + period` define
+-- | the set of valid notes, and the nearest one (by absolute semitone
+-- | distance) is returned.
+-- |
+-- | Examples in C major (intervals = [0,2,4,5,7,9,11], period = 12):
+-- |   `quantiseToScale cMajor 60` = 60  (C4, already in scale)
+-- |   `quantiseToScale cMajor 61` = 60  (C#4 → C4)
+-- |   `quantiseToScale cMajor 63` = 64  (D#4 → E4)
+-- |   `quantiseToScale cMajor 72` = 72  (C5 — next period's degree 1)
+-- |
+-- | In a Dail-style multi-octave scale where the period is 24 and the
+-- | intervals span more than one octave, this still does the right
+-- | thing — the nearest active note may be in the same period or the
+-- | adjacent one.  Empty `intervals` leaves the value unchanged.
+quantiseToScale :: Scale -> Int -> Int
+quantiseToScale (Scale s) midi =
+  let
+    dist   = midi - s.root
+    bucket =
+      if dist >= 0
+        then dist / s.period
+        else -((-dist - 1) / s.period + 1)
+    -- Consider candidates from the bucket the value falls in, plus
+    -- one period above and below — handles values near period
+    -- boundaries cleanly without special-casing the wrap.
+    buckets = [bucket - 1, bucket, bucket + 1]
+    candidates :: Array Int
+    candidates = do
+      b <- buckets
+      i <- s.intervals
+      pure (s.root + i + b * s.period)
+    pickCloser :: { v :: Int, d :: Int } -> Int -> { v :: Int, d :: Int }
+    pickCloser best c =
+      let d = if c > midi then c - midi else midi - c
+      in if d < best.d then { v: c, d } else best
+  in
+    -- Initial d = 999999 is comfortably larger than any plausible
+    -- MIDI distance; falls back to `midi` unchanged if the scale's
+    -- intervals array is empty.
+    (foldl pickCloser { v: midi, d: 999999 } candidates).v
+
+-- | Unify the two distribution modes behind a single signature.  The
+-- | Int input is interpreted differently per mode:
+-- |
+-- |   * `applyDistribution Natural s n` — `n` is a MIDI semitone;
+-- |     snap to nearest scale note.  (= `quantiseToScale s n`)
+-- |   * `applyDistribution Equal   s d` — `d` is a 1-based degree
+-- |     index; look up in scale.  (= `renderDegree s d`)
+-- |
+-- | Used by callers (e.g. a sequencer vmod) that carry a single
+-- | `Array Int` of values and a runtime `Distribution` choice — the
+-- | same data flips between two musical idioms.
+applyDistribution :: Distribution -> Scale -> Int -> Int
+applyDistribution Natural = quantiseToScale
+applyDistribution Equal   = renderDegree

@@ -45,7 +45,12 @@ import Tidal.Pitch (PitchedNote12(..))
 import Tidal.Pitch.Parse (pitch, degree)
 import Tidal.Scales
   ( Scale(..)
+  , mkScale, mkScaleP
+  , Distribution(..)
+  , quantiseToScale, applyDistribution
+  , renderDegree
   , inKey
+  , quantiseInKey
   , transposeDiatonic
   , transposeChromatic
   , octave
@@ -56,6 +61,7 @@ import Tidal.Scales
   , fMajor, fLydian, fMixolydian
   , gMajor, gMixolydian, gMinor, gDorian
   , aMajor, aMinor, aMixolydian, aDorian, aHarmonicMinor
+  , cPhrygianDomLT, cMajorTriad3oct
   , bMinor, bDorian, bLocrian
   )
 import Tidal.Tintinnabuli

@@ -67,7 +67,7 @@ status() ->
 
 init([]) ->
     %% Own the Instrument → bind-name ETS map.  The session walker writes
-    %% to it on each ▶ run, but it has to be owned by a long-lived
+    %% to it on each > run, but it has to be owned by a long-lived
     %% process (not a short-lived cowboy WS handler), or it dies along
     %% with the WS connection that triggered the walk.  The conductor
     %% is supervised + permanent, so the table lives for the
@@ -84,7 +84,7 @@ handle_call({play_piece, Name}, _From, State) ->
                 false ->
                     {reply,
                      {error, <<"Session module not loaded.  Fire the "
-                               "composition first (▶ run).">>},
+                               "composition first (> run).">>},
                      State};
                 _ ->
                     {reply,
@@ -184,7 +184,7 @@ fire_arm(#{destination := WrappedDest, body := Body, mvoice := Mvoice}) ->
         nothing ->
             tidal_log:debug(
                 "conductor: no channel alias for destination ~p "
-                "(mvoice '~s') — re-fire the composition (▶ run) "
+                "(mvoice '~s') — re-fire the composition (> run) "
                 "so the Session walker registers it~n",
                 [Dest, Mvoice]),
             ok
