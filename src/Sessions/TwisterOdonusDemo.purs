@@ -47,6 +47,7 @@ twisterOdonus = odonusWith
   , vel:     100
   , durMs:   200
   , stepsPerCycle: 16
+  , heads:   1
   , notes:   defaultNotes
   , skip:    replicate16 false
   , gate:    replicate16 true
@@ -70,6 +71,10 @@ twisterOdonus = odonusWith
       , mod2:         liveIntArrayOr  (replicate16 0)     "odonus.mod2."
       , mod3:         liveIntArrayOr  (replicate16 0)     "odonus.mod3."
       , mod4:         liveIntArrayOr  (replicate16 0)     "odonus.mod4."
+      , transp:       [ pure 0 ]
+      , speed:        [ pure 1.0 ]
+      , direction:    [ pure 0 ]
+      , mute:         [ pure false ]
       , scale:        cChromatic
       , distribution: Natural
       , advance:      pure true

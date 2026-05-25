@@ -516,21 +516,24 @@ apply_event({registerRepetitor,
 %% notes + modal arrays + autonomous traversal.  The four arrays
 %% arrive as PureScript Array (Erlang `array` module) — convert to
 %% lists at this boundary before feeding the engine.
-apply_event({registerOdonus,
-             #{ alias         := A
-              , deviceAlias   := D
-              , deviceName    := PortName
-              , channel       := Ch
-              , vel           := V
-              , durMs         := Dur
-              , stepsPerCycle := Sp
-              , notes         := NotesArr
-              , skip          := SkipArr
-              , gate          := GateArr
-              , glide         := GlideArr
-              , navMode       := NavBin
-              , config        := Cfg
-              }}, Acc) ->
+apply_event({registerOdonus, OdonusMap}, Acc) when is_map(OdonusMap) ->
+    A    = maps:get(alias, OdonusMap),
+    D    = maps:get(deviceAlias, OdonusMap),
+    PortName = maps:get(deviceName, OdonusMap),
+    Ch   = maps:get(channel, OdonusMap),
+    V    = maps:get(vel, OdonusMap),
+    Dur  = maps:get(durMs, OdonusMap),
+    Sp   = maps:get(stepsPerCycle, OdonusMap),
+    Heads = case maps:get(heads, OdonusMap, 1) of
+                H when is_integer(H), H >= 1 -> H;
+                _ -> 1
+            end,
+    NotesArr = maps:get(notes, OdonusMap),
+    SkipArr  = maps:get(skip, OdonusMap),
+    GateArr  = maps:get(gate, OdonusMap),
+    GlideArr = maps:get(glide, OdonusMap),
+    NavBin   = maps:get(navMode, OdonusMap),
+    Cfg      = maps:get(config, OdonusMap),
     NavAtom = binary_to_atom(NavBin, utf8),
     Notes = try array:to_list(NotesArr) catch _:_ -> [] end,
     Skip  = try array:to_list(SkipArr)  catch _:_ -> [] end,
@@ -543,6 +546,7 @@ apply_event({registerOdonus,
         vel              => V,
         dur_ms           => Dur,
         steps_per_cycle  => Sp,
+        heads            => Heads,
         notes            => Notes,
         skip             => Skip,
         gate             => Gate,

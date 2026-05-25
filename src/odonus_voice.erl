@@ -309,21 +309,32 @@ emit_step(S, Controls, CurrentCycle, CycleDurMs, NowUs, TRecv, State) ->
             Engine0  = refresh_from_snapshot(State#st.engine, Snap),
             TRefreshDone = erlang:monotonic_time(microsecond),
             Engine1 = case StepYNow of
-                true  -> odonus_engine:step_y(Engine0);
+                true  -> odonus_engine:step_y_all(Engine0);
                 false -> Engine0
             end,
-            Engine2 = odonus_engine:step_x(Engine1),
+            %% Slab 6.2 — advance every playhead by its phase-accumulator
+            %% (snap.speed[K]) in the direction (snap.direction[K]).
+            %% Returns updated engine state with new cursors / pend_step
+            %% remainders.
+            SpeedList = snap_array_as_list(Snap, speed),
+            DirList   = snap_array_as_list(Snap, direction),
+            Engine2 = odonus_engine:advance_all(Engine1, SpeedList, DirList),
             %% Step duration in microseconds — width of the per-step
             %% wall-time window.  Used to space ratchet sub-emits
             %% evenly across the step.
             StepDurUs = round((CycleDurMs * 1000) / State#st.steps_per_cycle),
-            case odonus_engine:current_event(Engine2) of
-                {emit, Note, Idx} ->
-                    maybe_emit_with_ratchet(Note, Idx, WallUs, StepDurUs,
-                                            Snap, State);
-                {silent_step, _Idx} ->
-                    ok
-            end,
+            %% Per-playhead emit: for each cursor, look up the cell's
+            %% note + gate + vel from the snapshot, apply transp[K],
+            %% then route through maybe_emit_with_ratchet (probability +
+            %% ratchet fan-out reuse the per-cell snapshot arrays).
+            %% Muted playheads (snap.mute[K] = true) still had their
+            %% cursors advanced by advance_all/3 above — the emit just
+            %% gets skipped, so re-enabling resumes in step.
+            Cursors = odonus_engine:current_cursors(Engine2),
+            TranspList = snap_array_as_list(Snap, transp),
+            MuteList   = snap_array_as_list(Snap, mute),
+            emit_all_playheads(Cursors, TranspList, MuteList,
+                               WallUs, StepDurUs, Snap, State),
             TEmitDone = erlang:monotonic_time(microsecond),
             %% Per-step diagnostic sample.  Tuple shape (microseconds):
             %% { NowUs       — when tidal_clock fired the broadcast
@@ -377,6 +388,66 @@ emit_note(Note, Vel, WallUs, DurMs, State) ->
     Thunk(),
     ok.
 
+%% Iterate playheads and emit per-cursor.  Slab 6.2.  Each playhead K
+%% has its own cursor; the cell's note + gate come from the snapshot
+%% at that cursor's position, the per-playhead transp is added to the
+%% note before MIDI emit.  Gate-off cells produce silent steps (no
+%% MIDI emit, but advance bookkeeping in advance_all already happened).
+emit_all_playheads([], _T, _M, _WallUs, _StepDurUs, _Snap, _State) -> ok;
+emit_all_playheads(Cursors, Transps, Mutes, WallUs, StepDurUs, Snap, State) ->
+    %% Zip cursor list with playhead-index 0..N-1 so we can index per-
+    %% playhead arrays.
+    Indexed = lists:zip(lists:seq(0, length(Cursors) - 1), Cursors),
+    lists:foreach(
+      fun({K, Cursor}) ->
+              emit_one_playhead(K, Cursor, Transps, Mutes,
+                                WallUs, StepDurUs, Snap, State)
+      end, Indexed).
+
+emit_one_playhead(K, Cursor, Transps, Mutes, WallUs, StepDurUs, Snap, State) ->
+    Muted = lists_nth_or(K + 1, Mutes, false),
+    case Muted of
+        true -> ok;   % per-playhead silent (cursor already advanced)
+        false ->
+            Gate = snap_bool_at(Snap, gate, Cursor, true),
+            case Gate of
+                false -> ok;  % per-cell silent step
+                true ->
+                    Note   = snap_int_at(Snap, notes, Cursor, 60),
+                    Transp = lists_nth_or(K + 1, Transps, 0),
+                    FinalNote = clamp_note(Note + Transp),
+                    maybe_emit_with_ratchet(FinalNote, Cursor, WallUs,
+                                            StepDurUs, Snap, State)
+            end
+    end.
+
+clamp_note(N) when N < 0   -> 0;
+clamp_note(N) when N > 127 -> 127;
+clamp_note(N) -> N.
+
+%% Indexed lookup with a default for shortfall.  Used to apply the
+%% per-playhead transp / speed lists with the spec §5.3 forgiving
+%% semantics — surplus dropped (we only access K+1), shortfall defaulted.
+lists_nth_or(N, L, _Default) when N >= 1, N =< length(L) ->
+    lists:nth(N, L);
+lists_nth_or(_, _, Default) -> Default.
+
+%% Read a per-cell array from the snapshot as an Erlang list.  Snapshot
+%% arrays cross the FFI boundary as Erlang `array` records (per
+%% [[reference_purerl_array_is_erlang_array_module]]); convert with
+%% `array:to_list/1` so the voice can index by position via lists:nth.
+%% Absent / non-array values fall back to the empty list — the caller
+%% then takes the zip-with-default path.
+snap_array_as_list(Snap, Key) ->
+    case maps:get(Key, Snap, undefined) of
+        undefined -> [];
+        Arr ->
+            try array:to_list(Arr)
+            catch _:_ when is_list(Arr) -> Arr;
+                  _:_ -> []
+            end
+    end.
+
 %% Probability gate + ratchet expansion.  Called once per emit step.
 %% Reads the per-cell probability, ratchet, and velocity from the
 %% snapshot (PureScript Arrays delivered as Erlang `array` records —
@@ -421,6 +492,12 @@ snap_int_at(Snap, Key, Idx, Default) ->
     end.
 
 snap_number_at(Snap, Key, Idx, Default) ->
+    case maps:get(Key, Snap, undefined) of
+        undefined -> Default;
+        Arr       -> array_get_or(Arr, Idx, Default)
+    end.
+
+snap_bool_at(Snap, Key, Idx, Default) ->
     case maps:get(Key, Snap, undefined) of
         undefined -> Default;
         Arr       -> array_get_or(Arr, Idx, Default)

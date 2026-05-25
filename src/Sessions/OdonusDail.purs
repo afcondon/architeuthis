@@ -89,6 +89,7 @@ odonusOn ch scale dist ratchetArr probArr = odonusWith
   , vel:     100
   , durMs:   200
   , stepsPerCycle: 8
+  , heads:   1
   , notes:   chromaticAscentNotes
   , skip:    replicate16 false
   , gate:    firstHalfActive
@@ -107,6 +108,10 @@ odonusOn ch scale dist ratchetArr probArr = odonusWith
       , mod2:         replicate16 (pure 0)
       , mod3:         replicate16 (pure 0)
       , mod4:         replicate16 (pure 0)
+      , transp:       [ pure 0 ]
+      , speed:        [ pure 1.0 ]
+      , direction:    [ pure 0 ]
+      , mute:         [ pure false ]
       , scale:        scale
       , distribution: dist
       , advance:      pure true

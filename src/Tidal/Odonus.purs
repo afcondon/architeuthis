@@ -149,6 +149,37 @@ type OdonusConfig =
   , mod2        :: Array (Pattern Int)
   , mod3        :: Array (Pattern Int)
   , mod4        :: Array (Pattern Int)
+  -- | Per-playhead transposition in semitones (Slab 6.2).  Length
+  -- | should equal `heads` on the binding; the engine zips with-defaults
+  -- | so shortfall reads as 0 and surplus is dropped.  Each playhead K
+  -- | sees its cell's note + transp[K] applied before MIDI emit — gives
+  -- | the Fugue Machine "voice K offset by 7 semitones" idiom.
+  , transp      :: Array (Pattern Int)
+  -- | Per-playhead speed multiplier as a phase accumulator (Slab 6.2).
+  -- | Each playhead carries a Number accumulator; per master tick it
+  -- | adds `speed[K]` to that accumulator, advancing the cursor by
+  -- | `floor` of the new value while keeping the fractional remainder.
+  -- | speed = 1.0 advances every tick (default); 0.5 every other tick;
+  -- | 2.0 jumps two cells per tick.  Same emit rate either way — only
+  -- | the cell-stride changes.
+  , speed       :: Array (Pattern Number)
+  -- | Per-playhead direction (Slab 6.2c).  Encoded as Int so it can
+  -- | sweep through the live-control bus as a Number knob:
+  -- |
+  -- |   * 0 = forward  (cursor + 1 each advance, wrap 15→0)
+  -- |   * 1 = backward (cursor - 1 each advance, wrap 0→15)
+  -- |   * 2 = pendulum (alternates +1/-1, flipping at boundaries)
+  -- |
+  -- | Values outside 0..2 are floor-clamped at the engine.  Pendulum
+  -- | direction-state lives in the engine playhead record (pend_step);
+  -- | switching mode mid-traversal resets pend_step to +1 next time
+  -- | the playhead enters pend mode.
+  , direction   :: Array (Pattern Int)
+  -- | Per-playhead mute (Slab 6.2c).  When true, the engine still
+  -- | advances the cursor (so position stays in lockstep with siblings)
+  -- | but the voice skips the MIDI emit — you hear silence on that
+  -- | playhead but it's still "running" for the moment you re-enable.
+  , mute        :: Array (Pattern Boolean)
   -- | Per-instance scale + distribution mode (Dail-inspired).  The
   -- | per-cell `notes` integers are reinterpreted through this lens
   -- | just before they reach the engine:
@@ -189,6 +220,15 @@ type OdonusSnapshot =
   , mod2        :: Array Int
   , mod3        :: Array Int
   , mod4        :: Array Int
+  -- Slab 6.2 per-playhead arrays.  Length is `heads` from the
+  -- binding; the engine zips against its playhead list with the
+  -- forgiving "shorter wins, surplus dropped, shortfall defaults"
+  -- semantics from spec §5.3.
+  , transp      :: Array Int
+  , speed       :: Array Number
+  -- Slab 6.2c additions.
+  , direction   :: Array Int
+  , mute        :: Array Boolean
   }
 
 -- | Default config: Y-clock fires once per 4-step cycle (so
@@ -212,6 +252,12 @@ odonusConfig =
   , mod2:         Array.replicate 16 (pure 0)
   , mod3:         Array.replicate 16 (pure 0)
   , mod4:         Array.replicate 16 (pure 0)
+  -- Default single-playhead Fugue Machine degenerate case.  Sessions
+  -- with heads > 1 should override these with matching-length arrays.
+  , transp:       [ pure 0 ]
+  , speed:        [ pure 1.0 ]
+  , direction:    [ pure 0 ]      -- 0 = forward
+  , mute:         [ pure false ]
   , scale:        cChromatic
   , distribution: Natural
   }
@@ -228,6 +274,14 @@ replicate16 v = Array.replicate 16 v
 
 -- | A typed René voice declared at the Session level.  16-cell
 -- | content + 4 modal arrays + nav mode + patterned Y-clock.
+-- |
+-- | Slab 6.2 adds `heads` for multi-playhead voices: the engine spawns
+-- | `heads` independent cursors over the same 16-cell grid, each with
+-- | its own (Pattern-controllable) transposition and speed.  `heads = 1`
+-- | gives the single-cursor behaviour of pre-6.2; `heads = 4` with
+-- | distinct `transp` and `speed` arrays in `config` gives Fugue
+-- | Machine.  All playheads share notes / skip / gate / glide / vel /
+-- | mod1-4 / ratchet / probability — those are per-cell, not per-head.
 data Odonus (s :: Symbol)
   = OdonusBinding
       { device        :: MidiDevice
@@ -235,6 +289,7 @@ data Odonus (s :: Symbol)
       , vel           :: Int
       , durMs         :: Int
       , stepsPerCycle :: Int
+      , heads         :: Int
       , notes         :: Array Int   -- 16 entries; MIDI note numbers
       , skip          :: Array Boolean
       , gate          :: Array Boolean
@@ -263,6 +318,7 @@ odonus dev ch ns = OdonusBinding
   , vel: 100
   , durMs: 200
   , stepsPerCycle: 4
+  , heads: 1
   , notes: ns
   , skip:  replicate16 false
   , gate:  replicate16 true
@@ -278,6 +334,7 @@ odonusWith
      , channel :: Int
      , vel :: Int, durMs :: Int
      , stepsPerCycle :: Int
+     , heads :: Int
      , notes :: Array Int
      , skip :: Array Boolean
      , gate :: Array Boolean
@@ -336,6 +393,13 @@ evaluateParamsAtControls cfg controls pos =
      , mod2:        map sampleM  cfg.mod2
      , mod3:        map sampleM  cfg.mod3
      , mod4:        map sampleM  cfg.mod4
+     -- Per-playhead arrays.  sampleT defaults to 0 semitones, sampleSp
+     -- to 1.0 (advance every tick), sampleD to 0 (forward), sampleMu
+     -- to false (un-muted).
+     , transp:      map (\p -> sampleIntAt    controls 0   p pos) cfg.transp
+     , speed:       map (\p -> sampleNumberAt controls 1.0 p pos) cfg.speed
+     , direction:   map (\p -> sampleIntAt    controls 0     p pos) cfg.direction
+     , mute:        map (\p -> sampleBoolAt   controls false p pos) cfg.mute
      }
 
 -- | Erlang-facing entry point so a voice can build the `ControlMap`

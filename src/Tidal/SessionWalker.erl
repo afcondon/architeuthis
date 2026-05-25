@@ -375,33 +375,41 @@ repetitorBindingFields(_) ->
 %% PureScript Array (Erlang `array` module) — apply_event handler
 %% does array:to_list/1 at the engine seam.
 %% --------------------------------------------------------------------
-odonusBindingFields({odonusBinding,
-                   #{device        := {midiDevice, DevName, DevLat},
-                     channel       := Ch,
-                     vel           := V,
-                     durMs         := Dur,
-                     stepsPerCycle := Sp,
-                     notes         := Notes,
-                     skip          := Skip,
-                     gate          := Gate,
-                     glide         := Glide,
-                     navMode       := NavTuple,
-                     config        := Cfg}})
-    when is_binary(DevName), is_integer(DevLat),
-         is_integer(Ch), is_integer(V), is_integer(Dur),
-         is_integer(Sp) ->
-    {just, #{deviceName      => DevName,
-             deviceLatencyMs => DevLat,
-             channel         => Ch,
-             vel             => V,
-             durMs           => Dur,
-             stepsPerCycle   => Sp,
-             notes           => Notes,
-             skip            => Skip,
-             gate            => Gate,
-             glide           => Glide,
-             navMode         => nav_mode_to_binary(NavTuple),
-             config          => Cfg}};
+odonusBindingFields({odonusBinding, Map}) when is_map(Map) ->
+    case Map of
+        #{device        := {midiDevice, DevName, DevLat},
+          channel       := Ch,
+          vel           := V,
+          durMs         := Dur,
+          stepsPerCycle := Sp,
+          notes         := Notes,
+          skip          := Skip,
+          gate          := Gate,
+          glide         := Glide,
+          navMode       := NavTuple,
+          config        := Cfg}
+            when is_binary(DevName), is_integer(DevLat),
+                 is_integer(Ch), is_integer(V), is_integer(Dur),
+                 is_integer(Sp) ->
+            Heads = case maps:get(heads, Map, 1) of
+                        H when is_integer(H), H >= 1 -> H;
+                        _ -> 1
+                    end,
+            {just, #{deviceName      => DevName,
+                     deviceLatencyMs => DevLat,
+                     channel         => Ch,
+                     vel             => V,
+                     durMs           => Dur,
+                     stepsPerCycle   => Sp,
+                     heads           => Heads,
+                     notes           => Notes,
+                     skip            => Skip,
+                     gate            => Gate,
+                     glide           => Glide,
+                     navMode         => nav_mode_to_binary(NavTuple),
+                     config          => Cfg}};
+        _ -> {nothing}
+    end;
 odonusBindingFields(_) ->
     {nothing}.
 

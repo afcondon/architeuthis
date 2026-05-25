@@ -226,6 +226,7 @@ data RegistrationEvent
       , vel :: Int
       , durMs :: Int
       , stepsPerCycle :: Int
+      , heads :: Int
       , notes :: Array Int
       , skip :: Array Boolean
       , gate :: Array Boolean
@@ -640,6 +641,7 @@ pickOdonus deviceAliases { name: alias, value } = do
       , vel: fields.vel
       , durMs: fields.durMs
       , stepsPerCycle: fields.stepsPerCycle
+      , heads: fields.heads
       , notes: fields.notes
       , skip: fields.skip
       , gate: fields.gate
@@ -895,6 +897,7 @@ foreign import odonusBindingFields
        , vel :: Int
        , durMs :: Int
        , stepsPerCycle :: Int
+       , heads :: Int
        , notes :: Array Int
        , skip :: Array Boolean
        , gate :: Array Boolean

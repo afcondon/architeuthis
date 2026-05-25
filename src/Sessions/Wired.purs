@@ -59,6 +59,7 @@ studioOdonus = odonusWith
   , vel:     100
   , durMs:   200
   , stepsPerCycle: 16
+  , heads:   1
   , notes:   odonusDefaultNotes
   , skip:    replicate16 false
   , gate:    replicate16 true
@@ -77,6 +78,10 @@ studioOdonus = odonusWith
       , mod2:         replicate16 (pure 0)
       , mod3:         replicate16 (pure 0)
       , mod4:         replicate16 (pure 0)
+      , transp:       [ pure 0 ]
+      , speed:        [ pure 1.0 ]
+      , direction:    [ pure 0 ]
+      , mute:         [ pure false ]
       , scale:        cChromatic
       , distribution: Natural
       , advance:  gateFromBus "rhythmBank.0"

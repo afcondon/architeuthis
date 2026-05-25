@@ -31,6 +31,7 @@ phase4Odonus = odonusWith
   , vel:     100
   , durMs:   50              -- short like Phase 3's pitch "c2"
   , stepsPerCycle: 16
+  , heads:   1
   , notes:   phase4Notes
   , skip:    replicate16 false
   , gate:    replicate16 true
@@ -49,6 +50,10 @@ phase4Odonus = odonusWith
       , mod2:         replicate16 (pure 0)
       , mod3:         replicate16 (pure 0)
       , mod4:         replicate16 (pure 0)
+      , transp:       [ pure 0 ]
+      , speed:        [ pure 1.0 ]
+      , direction:    [ pure 0 ]
+      , mute:         [ pure false ]
       , scale:        cChromatic
       , distribution: Natural
       , advance:  pure true  -- step every tick, no euclidean gating
