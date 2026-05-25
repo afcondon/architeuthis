@@ -42,6 +42,7 @@ module Tidal.Odonus
   , odonusWith
   , odonusConfig
   , replicate16
+  , playing
   , evaluateParamsAt
   , evaluateParamsAtControls
   , buildControlMap
@@ -61,6 +62,7 @@ import Tidal.Pattern.Types (ControlMap, Event(..), Pattern, Value(..))
 import Data.Int as Int
 import Data.Rational (fromInt)
 import Tidal.Scales (Scale, Distribution(..), applyDistribution, cChromatic, shiftDegreesInScale)
+import Tidal.LiveControl (liveBoolArrayOr)
 
 -- ---------------------------------------------------------------------------
 -- NavMode — traversal modes
@@ -288,6 +290,34 @@ odonusConfig =
 -- | defaults.
 replicate16 :: forall a. a -> Array a
 replicate16 v = Array.replicate 16 v
+
+-- | Build an `OdonusConfig.mute` array where the listed playhead
+-- | indices start audible and all others start silent.  Reads from
+-- | the standard `odonus.mute` bus prefix so the L-top fugue
+-- | dashboard's mute toggles can still flip each head live regardless
+-- | of the start state.  Use this to choose how a fugue/multi-playhead
+-- | session boots:
+-- |
+-- | ```purescript
+-- |   -- start with no heads audible — bring them in live by pressing
+-- |   -- L-top fugue dashboard's row 0 mute toggles
+-- |   mute: playing 4 []
+-- |
+-- |   -- start with only head 0 audible, build up
+-- |   mute: playing 4 [0]
+-- |
+-- |   -- the default-style "everyone playing"
+-- |   mute: playing 4 [0, 1, 2, 3]
+-- | ```
+-- |
+-- | First arg is the binding's `heads` value; second is the indices
+-- | of heads that should be audible at start (0-based, may be empty
+-- | or out of range — out-of-range entries simply have no effect).
+playing :: Int -> Array Int -> Array (Pattern Boolean)
+playing total active =
+  let muted = map (\i -> not (Array.elem i active))
+                  (Array.range 0 (total - 1))
+  in liveBoolArrayOr muted "odonus.mute"
 
 -- ---------------------------------------------------------------------------
 -- The typed binding

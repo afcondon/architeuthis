@@ -199,6 +199,7 @@ import Tidal.Odonus
   , odonusWith
   , odonusConfig
   , replicate16
+  , playing
   )
 
 -- | Right-associative function application — Haskell/Tidal idiom for
