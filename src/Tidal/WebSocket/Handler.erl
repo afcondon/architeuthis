@@ -200,6 +200,24 @@ try_parse_prefixed(<<"clear-scale">>) ->
     %% until a new set-scale arrives.  Useful for "all chromatic"
     %% sections that should ignore key state.
     {clear_scale};
+try_parse_prefixed(<<"clear-controls">>) ->
+    %% clear-controls — empty the live-control bus, sending every
+    %% knob's reading back to its declared default on the next tick.
+    %% Heavy-reset use case from the L-mid Globals dashboard: improv
+    %% on the Twister has wandered into chaos, this snaps everything
+    %% home without re-loading the session.
+    {clear_controls};
+try_parse_prefixed(<<"clear-controls ", _/binary>>) ->
+    {clear_controls};
+try_parse_prefixed(<<"phase-resync">>) ->
+    %% phase-resync — every Odonus voice's playheads back to cursor 0
+    %% + accumulator 0 + pend_step +1.  Re-aligns all running playheads
+    %% on the next master tick.  Bar-line emergency button: if cursors
+    %% have drifted (manual poking, mute-then-unmute reveals offset,
+    %% etc.) this snaps everyone home together.
+    {phase_resync};
+try_parse_prefixed(<<"phase-resync ", _/binary>>) ->
+    {phase_resync};
 try_parse_prefixed(<<"reload-baseline">>) ->
     %% reload-baseline — code:load_file the typeful-cues baseline module
     %% (Calypso.Generated.Session). Used by Calypso's /session-source
@@ -916,6 +934,25 @@ handle_pattern_message(Text, State) ->
         {clear_scale} ->
             tidal_scale_bus:clear_scale(),
             {reply, {text, <<"OK: scale cleared">>}, State};
+        {clear_controls} ->
+            %% Reset the live-control bus.  Every set-control knob
+            %% reading drops back to the cell's declared default on the
+            %% next compute tick.  Version counter is bumped inside
+            %% clear/0 so cached ControlMaps in voices are invalidated.
+            tidal_control_bus:clear(),
+            {reply, {text, <<"OK: controls cleared">>}, State};
+        {phase_resync} ->
+            %% Walk every Odonus voice and cast phase_resync.  Each
+            %% voice resets its engine's playheads to cursor 0,
+            %% accumulator 0, pend_step +1, and rewinds last_step to
+            %% -1 so emission re-aligns on the next master tick.
+            %% odonus_voice_sup:which_voices/0 returns bare pids.
+            Pids = odonus_voice_sup:which_voices(),
+            lists:foreach(
+              fun(Pid) -> gen_server:cast(Pid, phase_resync) end, Pids),
+            N = list_to_binary(integer_to_list(length(Pids))),
+            {reply, {text, <<"OK: phase-resync ", N/binary,
+                             " Odonus voice(s)">>}, State};
         {reload_baseline} ->
             %% Force-load the typeful-cues baseline from ebin/. The
             %% Calypso server has just written + built a new

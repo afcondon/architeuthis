@@ -45,7 +45,8 @@
     step_y_all/1,
     current_cursors/1,
     nav_modes/0,
-    set_field/3
+    set_field/3,
+    reset_playheads/1
 ]).
 
 %% --------------------------------------------------------------------
@@ -87,6 +88,18 @@ normalise_16(L, Def) when is_list(L) ->
         N when N >= 16 -> lists:sublist(L, 16);
         N -> L ++ lists:duplicate(16 - N, Def)
     end.
+
+%% --------------------------------------------------------------------
+%% reset_playheads(State) — reset every playhead's cursor + accumulator
+%% + pend_step to the zero/identity state, preserving the rest of the
+%% engine record (notes / skip / gate / glide / nav_mode untouched).
+%% The number of playheads is taken from the existing State so a phase-
+%% resync after a heads-change still produces the right cardinality.
+%% --------------------------------------------------------------------
+reset_playheads(#{playheads := Playheads} = State) ->
+    Fresh = [#{cursor => 0, accumulator => 0.0, pend_step => 1}
+             || _ <- Playheads],
+    State#{playheads := Fresh}.
 
 %% --------------------------------------------------------------------
 %% set_field(State, Field, Value) — replace one of the 16-element

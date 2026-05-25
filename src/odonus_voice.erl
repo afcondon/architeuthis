@@ -16,6 +16,7 @@
          get_state/1,
          get_samples/1,
          clear_samples/1,
+         phase_resync/1,
          registered_name/1]).
 
 -export([init/1, handle_call/3, handle_cast/2, terminate/2]).
@@ -112,6 +113,14 @@ get_samples(Name) ->
 clear_samples(Name) ->
     gen_server:cast(registered_name(Name), clear_samples).
 
+%% @doc Reset every playhead's cursor + phase accumulator to zero.
+%% Cells / notes / gates / glides / config all preserved — only the
+%% traversal state resets.  Used by the `phase-resync` WS verb when
+%% an Odonus voice has drifted out of step with the bar (e.g. after
+%% manual cursor poking) and needs to re-align at downbeat 0.
+phase_resync(Name) ->
+    gen_server:cast(registered_name(Name), phase_resync).
+
 registered_name(Name) when is_atom(Name) ->
     binary_to_atom(<<"odonus_voice_",
                      (atom_to_binary(Name, utf8))/binary>>, utf8);
@@ -164,6 +173,13 @@ handle_cast({compute_until, Window}, State) ->
     {noreply, NewState};
 handle_cast(clear_samples, State) ->
     {noreply, State#st{samples = []}};
+handle_cast(phase_resync, State) ->
+    %% Reset every playhead's cursor + accumulator + pend_step to zero.
+    %% Also reset last_step to -1 so process_window/2's "first tick"
+    %% branch fires next, aligning step emission with the current
+    %% master cycle rather than continuing from the pre-reset count.
+    Engine = odonus_engine:reset_playheads(State#st.engine),
+    {noreply, State#st{engine = Engine, last_step = -1}};
 handle_cast({set_config, Cfg}, State) ->
     %% Cfg is a partial-update map.  Engine arrays (notes/skip/gate/
     %% glide) update via odonus_engine:set_field which preserves the
