@@ -17,6 +17,8 @@
          get_samples/1,
          clear_samples/1,
          phase_resync/1,
+         hush/1,
+         unhush/1,
          registered_name/1]).
 
 -export([init/1, handle_call/3, handle_cast/2, terminate/2]).
@@ -64,6 +66,11 @@
     %% cache was built; -1 means "no cache yet, rebuild on first use".
     control_version :: integer(),
     cached_controls :: term() | undefined,
+    %% Hush flag — when true, emit_step does the engine advance and
+    %% sample work but skips MIDI emit, so the playheads still keep
+    %% in lockstep with the master clock but silently.  Toggled by the
+    %% L-mid Globals "hush" / "unhush" buttons.  Default false (audible).
+    hushed         :: boolean(),
     %% Phase 4 timing instrumentation — per-step timestamp record.
     %% Each entry is the tuple emitted in emit_step/6.  Prepended
     %% (most recent first); no bound — caller is expected to dump
@@ -121,6 +128,16 @@ clear_samples(Name) ->
 phase_resync(Name) ->
     gen_server:cast(registered_name(Name), phase_resync).
 
+%% @doc Silence this Odonus voice — emit_step still runs the engine
+%% advance (so playheads stay in step with the master clock) but skips
+%% MIDI output.  Use `unhush/1` to resume emission.
+hush(Name) ->
+    gen_server:cast(registered_name(Name), hush).
+
+%% @doc Resume MIDI emission after a hush.
+unhush(Name) ->
+    gen_server:cast(registered_name(Name), unhush).
+
 registered_name(Name) when is_atom(Name) ->
     binary_to_atom(<<"odonus_voice_",
                      (atom_to_binary(Name, utf8))/binary>>, utf8);
@@ -148,6 +165,7 @@ init({Name, Config}) ->
         latency_us      = round(maps:get(latency_ms, Config, 0.0) * 1000),
         control_version = -1,
         cached_controls = undefined,
+        hushed          = false,
         samples         = []
     },
     tidal_log:info(
@@ -180,6 +198,10 @@ handle_cast(phase_resync, State) ->
     %% master cycle rather than continuing from the pre-reset count.
     Engine = odonus_engine:reset_playheads(State#st.engine),
     {noreply, State#st{engine = Engine, last_step = -1}};
+handle_cast(hush, State) ->
+    {noreply, State#st{hushed = true}};
+handle_cast(unhush, State) ->
+    {noreply, State#st{hushed = false}};
 handle_cast({set_config, Cfg}, State) ->
     %% Cfg is a partial-update map.  Engine arrays (notes/skip/gate/
     %% glide) update via odonus_engine:set_field which preserves the
@@ -356,8 +378,14 @@ emit_step(S, Controls, ActiveScale, CurrentCycle, CycleDurMs, NowUs, TRecv, Stat
             Cursors = odonus_engine:current_cursors(Engine2),
             TranspList = snap_array_as_list(Snap, transp),
             MuteList   = snap_array_as_list(Snap, mute),
-            emit_all_playheads(Cursors, TranspList, MuteList,
-                               WallUs, StepDurUs, Snap, State),
+            %% Hush gate: engine advance + cursor bookkeeping still run
+            %% (so the playheads stay in step with the master clock and
+            %% unhush picks up cleanly), but MIDI emission is suppressed.
+            case State#st.hushed of
+                true  -> ok;
+                false -> emit_all_playheads(Cursors, TranspList, MuteList,
+                                            WallUs, StepDurUs, Snap, State)
+            end,
             TEmitDone = erlang:monotonic_time(microsecond),
             %% Per-step diagnostic sample.  Tuple shape (microseconds):
             %% { NowUs       — when tidal_clock fired the broadcast

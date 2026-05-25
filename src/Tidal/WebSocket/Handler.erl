@@ -218,6 +218,16 @@ try_parse_prefixed(<<"phase-resync">>) ->
     {phase_resync};
 try_parse_prefixed(<<"phase-resync ", _/binary>>) ->
     {phase_resync};
+try_parse_prefixed(<<"unhush">>) ->
+    %% unhush — resume MIDI emission on every Odonus voice after a
+    %% previous `hush`.  Complements the L-mid Globals panic button:
+    %% hush silences, unhush brings everything back.  Engine state
+    %% kept advancing in lockstep with the master clock during the
+    %% hush, so playheads pick up at the position they would have
+    %% been at had nothing happened.
+    {unhush};
+try_parse_prefixed(<<"unhush ", _/binary>>) ->
+    {unhush};
 try_parse_prefixed(<<"shred-mod ", Rest/binary>>) ->
     %% shred-mod <N> — Mimetic-Digitalis-style reroll of Odonus's modN
     %% (1..4) per-cell array.  Reads `odonus.shredRateN` from the control
@@ -654,8 +664,24 @@ handle_pattern_message(Text, State) ->
             Reply = {text, <<"OK: unbind ", Name/binary>>},
             {reply, Reply, State};
         {hush} ->
+            %% Tidal-voice patterns get cleared; Odonus voices flip
+            %% their hush flag so emit_step skips MIDI output (engine
+            %% advance keeps running so they stay clock-aligned).
             tidal_voice_sup:hush_all(),
+            OdonusPids = odonus_voice_sup:which_voices(),
+            lists:foreach(
+              fun(Pid) -> gen_server:cast(Pid, hush) end, OdonusPids),
             Reply = {text, <<"OK: hush">>},
+            {reply, Reply, State};
+        {unhush} ->
+            %% Inverse of {hush} for the Odonus side.  Tidal voices
+            %% don't carry a hush flag — they're "hushed" by clearing
+            %% the pattern, which requires re-arming to bring back, so
+            %% unhush only touches Odonus.
+            OdonusPids = odonus_voice_sup:which_voices(),
+            lists:foreach(
+              fun(Pid) -> gen_server:cast(Pid, unhush) end, OdonusPids),
+            Reply = {text, <<"OK: unhush">>},
             {reply, Reply, State};
         {silence_one, Name} ->
             %% Per-voice silence: clear the pattern but keep the
