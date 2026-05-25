@@ -41,7 +41,7 @@ fugueMachine = odonusWith
       , direction:    liveIntArrayOr    [ 0, 0, 0, 0 ] "odonus.direction"
       , mute:         liveBoolArrayOr   [ false, false, false, false ]
                                         "odonus.mute"
-      , scale:        cChromatic
+      , scale:        cMajor
       , distribution: Natural
       , advance:      pure true
       }

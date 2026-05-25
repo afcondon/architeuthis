@@ -85,6 +85,7 @@ module Tidal.Scales
   , quantiseInKey
   , transposeDiatonic
   , transposeChromatic
+  , shiftDegreesInScale
   , octave
     -- * Legacy interval-table API
   , lookupScale
@@ -924,6 +925,59 @@ transposeChromatic offset = map step <<< toPattern
     step = case _ of
       Chromatic n -> Chromatic (n + offset)
       other       -> other
+
+-- | Shift a MIDI note by `offset` scale-degrees within `scale`.
+-- | Returns a MIDI note that is in-scale by construction — no
+-- | post-hoc snap needed.  This is the in-house transposition for
+-- | per-voice / per-playhead shifts: works in scale-degree space
+-- | regardless of how widely the scale's intervals are spaced, so a
+-- | "+4 in C-major" lands on the perfect fifth even though +4 semitones
+-- | would land on a chromatic E.
+-- |
+-- | For `cChromatic` the function collapses to raw semitone shift —
+-- | every degree of chromatic IS a semitone, so degree-shift and
+-- | semitone-shift agree.  This is the graceful-degradation case: a
+-- | session that hasn't picked a non-chromatic scale gets the same
+-- | audible result it would have gotten from `note + offset`.
+-- |
+-- | The input is first snapped to its nearest in-scale degree via
+-- | `quantiseToScale` to give a well-defined starting degree; the
+-- | shift is then exact.  See [[feedback_transpose_via_scale_and_offset]]
+-- | for the rationale (don't ship a naive semitone transpose; quantise
+-- | via scale + offset).
+shiftDegreesInScale :: Scale -> Int -> Int -> Int
+shiftDegreesInScale scale offset note =
+  let snapped = quantiseToScale scale note
+      d       = noteToDegreeIn scale snapped
+  in renderDegree scale (d + offset)
+
+-- | Reverse of `renderDegree` for in-scale notes: returns the 1-based
+-- | degree of `note` in `scale`.  Assumes `note` is exactly in-scale
+-- | (produced by `renderDegree` or `quantiseToScale`).  Off-scale
+-- | inputs resolve to the nearest in-scale degree below.
+noteToDegreeIn :: Scale -> Int -> Int
+noteToDegreeIn (Scale s) note =
+  let n         = Array.length s.intervals
+      dist      = note - s.root
+      periodIdx =
+        if dist >= 0
+          then dist / s.period
+          else -((-dist - 1) / s.period + 1)
+      remainder = dist - periodIdx * s.period
+      stepIdx   = case Array.findIndex (\iv -> iv == remainder) s.intervals of
+        Just i  -> i
+        Nothing -> nearestBelowIdx s.intervals remainder
+  in periodIdx * n + stepIdx + 1
+
+-- | Index of the largest element of `arr` that is `<= target`.
+-- | Used as a fallback when the input isn't exactly in-scale; assumes
+-- | `arr` is ascending (the scale intervals are sorted by construction).
+nearestBelowIdx :: Array Int -> Int -> Int
+nearestBelowIdx arr target =
+  case Array.findIndex (\iv -> iv > target) arr of
+    Just 0  -> 0
+    Just i  -> i - 1
+    Nothing -> max 0 (Array.length arr - 1)
 
 -- | Shift a scale's root by `n` periods.  `octave (-2) cMajor` is C2-
 -- | rooted C major; `octave 1 aMinor` is A5-rooted A minor.  For

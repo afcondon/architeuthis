@@ -206,6 +206,12 @@ process_window(Window, State) ->
     CycleDurMs   = maps:get(cycleDurationMs, Window),
     NowUs        = maps:get(nowUnixUs,       Window),
     ControlPairs = maps:get(controlPairs, Window, array:from_list([])),
+    %% Active scale from tidal_scale_bus, threaded by tidal_clock into
+    %% every Window.  Pushed to the PS evaluator as a `Maybe Scale` —
+    %% `{just, S}` overrides the binding's static `cfg.scale`,
+    %% `{nothing}` falls back.  This is how `set-scale c-minor` retunes
+    %% all running Odonus voices on the next tick.
+    ActiveScale  = maps:get(activeScale, Window, {nothing}),
     %% F1 — rebuild the opaque PureScript ControlMap only when the
     %% bus's version counter advances.  Pre-F1 each step rebuilt the
     %% Map from scratch inside `evaluateParamsAt`, costing ~1 ms of
@@ -262,7 +268,7 @@ process_window(Window, State) ->
             Steps = lists:seq(StartStep, EndStepExcl - 1),
             FinalState = lists:foldl(
                 fun(S, Acc) ->
-                    emit_step(S, Controls, CurrentCycle,
+                    emit_step(S, Controls, ActiveScale, CurrentCycle,
                               CycleDurMs, NowUs, TRecv, Acc)
                 end, State1, Steps),
             FinalState#st{last_step = EndStepExcl - 1}
@@ -275,7 +281,7 @@ process_window(Window, State) ->
 %%
 %% The engine guarantees the cursor lands on a non-skipped cell, so
 %% emit logic just discriminates emit vs silent_step.
-emit_step(S, Controls, CurrentCycle, CycleDurMs, NowUs, TRecv, State) ->
+emit_step(S, Controls, ActiveScale, CurrentCycle, CycleDurMs, NowUs, TRecv, State) ->
     StepCycle = S / State#st.steps_per_cycle,
     %% F-LAT — subtract device latency so link-spike / CoreMIDI have
     %% lead time to schedule precisely; mirrors Dispatcher.purs's
@@ -290,7 +296,8 @@ emit_step(S, Controls, CurrentCycle, CycleDurMs, NowUs, TRecv, State) ->
     Snap = case State#st.cfg of
         undefined -> #{stepYNow => false, advance => true};
         Cfg ->
-            'tidal_odonus@ps':evaluateParamsAtControls(Cfg, Controls, StepCycle)
+            'tidal_odonus@ps':evaluateParamsAtControls(
+                Cfg, Controls, ActiveScale, StepCycle)
     end,
     TEvalDone = erlang:monotonic_time(microsecond),
     %% The advance gate decides whether this micro-tick steps the
@@ -404,7 +411,7 @@ emit_all_playheads(Cursors, Transps, Mutes, WallUs, StepDurUs, Snap, State) ->
                                 WallUs, StepDurUs, Snap, State)
       end, Indexed).
 
-emit_one_playhead(K, Cursor, Transps, Mutes, WallUs, StepDurUs, Snap, State) ->
+emit_one_playhead(K, Cursor, _Transps, Mutes, WallUs, StepDurUs, Snap, State) ->
     Muted = lists_nth_or(K + 1, Mutes, false),
     case Muted of
         true -> ok;   % per-playhead silent (cursor already advanced)
@@ -413,9 +420,16 @@ emit_one_playhead(K, Cursor, Transps, Mutes, WallUs, StepDurUs, Snap, State) ->
             case Gate of
                 false -> ok;  % per-cell silent step
                 true ->
-                    Note   = snap_int_at(Snap, notes, Cursor, 60),
-                    Transp = lists_nth_or(K + 1, Transps, 0),
-                    FinalNote = clamp_note(Note + Transp),
+                    %% Read the pre-resolved note from the snapshot's
+                    %% P × 16 transposedNotes grid (scale-degree shift
+                    %% already applied in PureScript via
+                    %% shiftDegreesInScale).  Fall back to raw notes[Cursor]
+                    %% when transposedNotes is missing or short — that's
+                    %% the identity-shift case (transp K = 0 equivalent).
+                    RawNote = snap_int_at(Snap, notes, Cursor, 60),
+                    FinalNote = clamp_note(
+                        snap_2d_int_at(Snap, transposedNotes,
+                                       K, Cursor, RawNote)),
                     maybe_emit_with_ratchet(FinalNote, Cursor, WallUs,
                                             StepDurUs, Snap, State)
             end
@@ -509,6 +523,25 @@ array_get_or(Arr, Idx, Default) ->
     case Idx >= 0 andalso Idx < array:size(Arr) of
         true  -> array:get(Idx, Arr);
         false -> Default
+    end.
+
+%% Two-level snapshot lookup: outer indexed by playhead K, inner by
+%% cell cursor.  Used for the transposedNotes grid (P × 16) where each
+%% entry is the cell's note already shifted by transp[K] scale-degrees.
+%% Either bound out of range falls back to Default.
+snap_2d_int_at(Snap, Key, K, Idx, Default) ->
+    case maps:get(Key, Snap, undefined) of
+        undefined -> Default;
+        Outer ->
+            case K >= 0 andalso K < array:size(Outer) of
+                false -> Default;
+                true ->
+                    Inner = array:get(K, Outer),
+                    case Idx >= 0 andalso Idx < array:size(Inner) of
+                        false -> Default;
+                        true  -> array:get(Idx, Inner)
+                    end
+            end
     end.
 
 %% =========================================================================

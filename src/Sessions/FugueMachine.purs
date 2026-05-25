@@ -4,10 +4,15 @@
 -- | one Odonus voice on IAC ch1 with four playheads walking the same
 -- | 16-cell grid at different speeds and transpositions.
 -- |
+-- | `transp` values are **scale-degrees within `scale`** (cMajor here),
+-- | not raw semitones — so transp=7 in C-major lands at the octave
+-- | (degree 1+7 = degree 8 = C5), not at a chromatic G.  See
+-- | [[feedback_transpose_via_scale_and_offset]].
+-- |
 -- |   * Playhead 0 — speed 1.0, transp  0  (baseline melody)
--- |   * Playhead 1 — speed 2.0, transp  7  (fifth above, double-time)
--- |   * Playhead 2 — speed 0.5, transp 12  (octave above, half-time)
--- |   * Playhead 3 — speed 1.5, transp -5  (fourth below, dotted rate)
+-- |   * Playhead 1 — speed 2.0, transp  7  (octave up, double-time)
+-- |   * Playhead 2 — speed 0.5, transp 12  (octave-and-a-fifth up, half-time)
+-- |   * Playhead 3 — speed 1.5, transp -5  (sixth below, dotted rate)
 -- |
 -- | All four emit on the same MIDI channel; Live's instrument plays
 -- | them as a chord-with-counterpoint.  Same grid means a Twister
@@ -74,7 +79,7 @@ fugueMachine = odonusWith
       , direction:    liveIntArrayOr    [ 0, 0, 0, 0 ] "odonus.direction"
       , mute:         liveBoolArrayOr   [ false, false, false, false ]
                                         "odonus.mute"
-      , scale:        cChromatic
+      , scale:        cMajor
       , distribution: Natural
       , advance:      pure true
       }

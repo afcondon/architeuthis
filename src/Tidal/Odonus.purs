@@ -55,11 +55,11 @@ import Data.Array as Array
 import Data.Foldable (foldl)
 import Data.Map (Map)
 import Data.Map as Map
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe(..), fromMaybe)
 import Tidal.Pattern.Core (queryArcWith)
 import Tidal.Pattern.Types (ControlMap, Event(..), Pattern, Value(..))
 import Data.Rational (fromInt)
-import Tidal.Scales (Scale, Distribution(..), applyDistribution, cChromatic)
+import Tidal.Scales (Scale, Distribution(..), applyDistribution, cChromatic, shiftDegreesInScale)
 
 -- ---------------------------------------------------------------------------
 -- NavMode — traversal modes
@@ -149,11 +149,23 @@ type OdonusConfig =
   , mod2        :: Array (Pattern Int)
   , mod3        :: Array (Pattern Int)
   , mod4        :: Array (Pattern Int)
-  -- | Per-playhead transposition in semitones (Slab 6.2).  Length
-  -- | should equal `heads` on the binding; the engine zips with-defaults
-  -- | so shortfall reads as 0 and surplus is dropped.  Each playhead K
-  -- | sees its cell's note + transp[K] applied before MIDI emit — gives
-  -- | the Fugue Machine "voice K offset by 7 semitones" idiom.
+  -- | Per-playhead transposition in **scale-degrees** within `scale`.
+  -- | Length should equal `heads` on the binding; the engine zips with-
+  -- | defaults so shortfall reads as 0 and surplus is dropped.
+  -- |
+  -- | A value of `N` means "shift the cell's in-scale note by N degrees
+  -- | along the scale" — so `+4` in cMajor lands on the perfect fifth
+  -- | (degree 1 + 4 = degree 5), not on a chromatic E.  For `cChromatic`
+  -- | this collapses to raw semitones (each degree IS a semitone) so the
+  -- | default scale gives the legacy semitone-transpose behaviour.
+  -- | See [[feedback_transpose_via_scale_and_offset]] — scale-degree is
+  -- | the correct semantic; semitone-with-snap is the chromatic
+  -- | specialisation.
+  -- |
+  -- | Resolved at evaluate time via `shiftDegreesInScale` and baked into
+  -- | the `transposedNotes` grid in the snapshot, so the Erlang voice
+  -- | just reads pre-shifted notes per (playhead, cell) — no scale
+  -- | knowledge on the BEAM side.
   , transp      :: Array (Pattern Int)
   -- | Per-playhead speed multiplier as a phase accumulator (Slab 6.2).
   -- | Each playhead carries a Number accumulator; per master tick it
@@ -229,6 +241,14 @@ type OdonusSnapshot =
   -- Slab 6.2c additions.
   , direction   :: Array Int
   , mute        :: Array Boolean
+  -- Per-playhead × per-cell pre-resolved MIDI note grid.  Row K is
+  -- the 16-cell `notes` array shifted by `transp[K]` *scale-degrees*
+  -- within `cfg.scale` (via `shiftDegreesInScale`), so each entry is
+  -- already in-scale.  Erlang's emit path reads
+  -- `transposedNotes[K][cursor]` directly — no scale knowledge or
+  -- per-emit arithmetic on the BEAM side.  Empty / short rows fall
+  -- back to raw `notes[cursor]` (the K = identity-shift case).
+  , transposedNotes :: Array (Array Int)
   }
 
 -- | Default config: Y-clock fires once per 4-step cycle (so
@@ -352,54 +372,83 @@ odonusWith = OdonusBinding
 evaluateParamsAt
   :: OdonusConfig
   -> Array { name :: String, value :: Number }
+  -> Maybe Scale
   -> Number
   -> OdonusSnapshot
-evaluateParamsAt cfg controlPairs pos =
-  evaluateParamsAtControls cfg (pairsToControlMap controlPairs) pos
+evaluateParamsAt cfg controlPairs activeScale pos =
+  evaluateParamsAtControls cfg (pairsToControlMap controlPairs) activeScale pos
 
 -- | Cache-friendly evaluator: takes a pre-built `ControlMap` instead
 -- | of rebuilding from the snapshot pairs every step.  The voice
 -- | gen_server holds onto the map across ticks and only rebuilds when
 -- | `tidal_control_bus`'s version counter changes (F1 — see the
 -- | timing investigation notes at `tools/timing-data/phase-4-diagnostic/`).
+-- |
+-- | The `activeScale` argument is the per-tick scale override pulled
+-- | from `tidal_scale_bus` by the clock and threaded through the
+-- | voice's Window — `Just s` overrides `cfg.scale` for both the
+-- | distribute step and the scale-degree transposition; `Nothing`
+-- | falls back to the binding's static `cfg.scale`.  This is how
+-- | a wire-level `set-scale c-minor` retunes every Odonus mid-play.
 evaluateParamsAtControls
   :: OdonusConfig
   -> ControlMap
+  -> Maybe Scale
   -> Number
   -> OdonusSnapshot
-evaluateParamsAtControls cfg controls pos =
+evaluateParamsAtControls cfg controls activeScale pos =
   let sampleN  p = sampleIntAt    controls 60    p pos
       sampleS  p = sampleBoolAt   controls false p pos
       sampleR  p = sampleIntAt    controls 1     p pos
       sampleP  p = sampleNumberAt controls 1.0   p pos
-      sampleG  p = sampleBoolAt   controls true  p pos   -- gate default open
-      sampleGl p = sampleBoolAt   controls false p pos   -- glide default off
-      sampleV  p = sampleIntAt    controls 100   p pos   -- vel default 100
-      sampleM  p = sampleIntAt    controls 0     p pos   -- mod default 0
-      -- Per-cell integer → MIDI note number, run through the scale's
-      -- distribution mode.  Natural + cChromatic is the identity, so
-      -- existing sessions are unaffected.
-      distribute = applyDistribution cfg.distribution cfg.scale
-  in { stepYNow:    sampleBoolAt controls false cfg.stepYNow pos
-     , notes:       map (distribute <<< sampleN) cfg.notes
-     , skip:        map sampleS cfg.skip
-     , advance:     sampleBoolAt controls true cfg.advance pos
-     , ratchet:     map sampleR cfg.ratchet
-     , probability: map sampleP cfg.probability
-     , gate:        map sampleG  cfg.gate
-     , glide:       map sampleGl cfg.glide
-     , vel:         map sampleV  cfg.vel
-     , mod1:        map sampleM  cfg.mod1
-     , mod2:        map sampleM  cfg.mod2
-     , mod3:        map sampleM  cfg.mod3
-     , mod4:        map sampleM  cfg.mod4
-     -- Per-playhead arrays.  sampleT defaults to 0 semitones, sampleSp
-     -- to 1.0 (advance every tick), sampleD to 0 (forward), sampleMu
-     -- to false (un-muted).
-     , transp:      map (\p -> sampleIntAt    controls 0   p pos) cfg.transp
-     , speed:       map (\p -> sampleNumberAt controls 1.0 p pos) cfg.speed
-     , direction:   map (\p -> sampleIntAt    controls 0     p pos) cfg.direction
-     , mute:        map (\p -> sampleBoolAt   controls false p pos) cfg.mute
+      sampleG  p = sampleBoolAt   controls true  p pos
+      sampleGl p = sampleBoolAt   controls false p pos
+      sampleV  p = sampleIntAt    controls 100   p pos
+      sampleM  p = sampleIntAt    controls 0     p pos
+      -- Active scale overrides the binding's static `cfg.scale`.  A
+      -- wire-level `set-scale c-minor` populates `tidal_scale_bus`; the
+      -- clock pushes it into every Window as `activeScale`, the voice
+      -- threads it here — so all Odonus voices retune atomically on the
+      -- next tick.  Falls back to `cfg.scale` when no global scale set.
+      effectiveScale = fromMaybe cfg.scale activeScale
+      distribute     = applyDistribution cfg.distribution effectiveScale
+
+      -- Per-cell notes, scale-quantised once.  Reused below to build the
+      -- per-playhead transposed grid without re-sampling cfg.notes.
+      cellNotes :: Array Int
+      cellNotes = map (distribute <<< sampleN) cfg.notes
+
+      -- Per-playhead transposition counts, interpreted as scale-degree
+      -- shifts (not semitones — see field doc).
+      transpDegrees :: Array Int
+      transpDegrees = map (\p -> sampleIntAt controls 0 p pos) cfg.transp
+
+      -- P × 16 pre-resolved note grid.  Row K shifts every cell by
+      -- `transpDegrees[K]` degrees in `effectiveScale`.  In cChromatic
+      -- this collapses to raw semitone shift; in cMajor / cMinor / etc.
+      -- it stays in-scale by construction.
+      transposedGrid :: Array (Array Int)
+      transposedGrid =
+        map (\dN -> map (shiftDegreesInScale effectiveScale dN) cellNotes)
+            transpDegrees
+  in { stepYNow:        sampleBoolAt controls false cfg.stepYNow pos
+     , notes:           cellNotes
+     , skip:            map sampleS cfg.skip
+     , advance:         sampleBoolAt controls true cfg.advance pos
+     , ratchet:         map sampleR cfg.ratchet
+     , probability:     map sampleP cfg.probability
+     , gate:            map sampleG  cfg.gate
+     , glide:           map sampleGl cfg.glide
+     , vel:             map sampleV  cfg.vel
+     , mod1:            map sampleM  cfg.mod1
+     , mod2:            map sampleM  cfg.mod2
+     , mod3:            map sampleM  cfg.mod3
+     , mod4:            map sampleM  cfg.mod4
+     , transp:          transpDegrees
+     , speed:           map (\p -> sampleNumberAt controls 1.0 p pos) cfg.speed
+     , direction:       map (\p -> sampleIntAt    controls 0     p pos) cfg.direction
+     , mute:            map (\p -> sampleBoolAt   controls false p pos) cfg.mute
+     , transposedNotes: transposedGrid
      }
 
 -- | Erlang-facing entry point so a voice can build the `ControlMap`
