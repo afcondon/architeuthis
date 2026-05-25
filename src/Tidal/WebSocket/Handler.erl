@@ -218,6 +218,17 @@ try_parse_prefixed(<<"phase-resync">>) ->
     {phase_resync};
 try_parse_prefixed(<<"phase-resync ", _/binary>>) ->
     {phase_resync};
+try_parse_prefixed(<<"shred-mod ", Rest/binary>>) ->
+    %% shred-mod <N> — Mimetic-Digitalis-style reroll of Odonus's modN
+    %% (1..4) per-cell array.  Reads `odonus.shredRateN` from the control
+    %% bus (0..1, default 1.0 = full reroll); for each cell index 0..15
+    %% rolls a uniform random < rate; on success writes a fresh random
+    %% 0..127 to `odonus.modN.<idx>` via tidal_control_bus:set.  Voices
+    %% pick up the new values on the next compute tick.
+    case parse_int(trim_binary(Rest)) of
+        {ok, N} when N >= 1, N =< 4 -> {shred_mod, N};
+        _ -> none
+    end;
 try_parse_prefixed(<<"reload-baseline">>) ->
     %% reload-baseline — code:load_file the typeful-cues baseline module
     %% (Calypso.Generated.Session). Used by Calypso's /session-source
@@ -953,6 +964,39 @@ handle_pattern_message(Text, State) ->
             N = list_to_binary(integer_to_list(length(Pids))),
             {reply, {text, <<"OK: phase-resync ", N/binary,
                              " Odonus voice(s)">>}, State};
+        {shred_mod, N} ->
+            %% Mimetic-Digitalis-style mod reroll.  Reads the L-mid
+            %% Globals shred-rate knob for modN from the control bus;
+            %% for each cell idx 0..15 rolls uniform random < rate;
+            %% on success writes a fresh random 0..127 to the cell's
+            %% bus key.  Voices read the bus via liveIntArrayOr so the
+            %% new values reach the engine on the next compute tick.
+            %% Rate default 1.0 = full reroll on first press (no knob
+            %% touched yet → defaults to full Mimetic behaviour).
+            NBin     = integer_to_binary(N),
+            RateKey  = <<"odonus.shredRate", NBin/binary>>,
+            ModPrefix = <<"odonus.mod", NBin/binary, ".">>,
+            Rate = case tidal_control_bus:get(RateKey, 1.0) of
+                     R when is_number(R), R >= 0.0, R =< 1.0 -> R;
+                     _ -> 1.0
+                   end,
+            Replaced = lists:foldl(
+              fun(I, Acc) ->
+                case rand:uniform() =< Rate of
+                  false -> Acc;
+                  true  ->
+                    NewVal = float(rand:uniform(128) - 1),
+                    Key = <<ModPrefix/binary,
+                            (integer_to_binary(I))/binary>>,
+                    tidal_control_bus:set(Key, NewVal),
+                    Acc + 1
+                end
+              end, 0, lists:seq(0, 15)),
+            RBin = integer_to_binary(Replaced),
+            RateBin = list_to_binary(io_lib:format("~p", [Rate])),
+            {reply, {text, <<"OK: shred-mod ", NBin/binary,
+                             " rate=", RateBin/binary,
+                             " replaced=", RBin/binary>>}, State};
         {reload_baseline} ->
             %% Force-load the typeful-cues baseline from ebin/. The
             %% Calypso server has just written + built a new

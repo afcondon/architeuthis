@@ -51,6 +51,10 @@ module Tidal.Scales
   , cHarmonicMinor
   , cHarmonicMajor
   , cMelodicMinor
+  , cMajorPentatonic
+  , cMinorPentatonic
+  , cMessiaen3
+  , cPhrygianDominant
   , dMajor
   , dMinor
   , dDorian
@@ -141,6 +145,7 @@ module Tidal.Scales
   , marva
   , bhairav
   , ahirbhairav
+  , phrygianDominant
     -- * Other 7-note scales
   , superLocrian
   , romanianMinor
@@ -488,6 +493,12 @@ bhairav = [0.0, 1.0, 4.0, 5.0, 7.0, 8.0, 11.0]
 ahirbhairav :: Array Number
 ahirbhairav = [0.0, 1.0, 4.0, 5.0, 7.0, 9.0, 10.0]
 
+-- | Phrygian Dominant (5th mode of harmonic minor): 1 b2 3 4 5 b6 b7.
+-- | The "Hava Nagila" / Spanish-Phrygian / klezmer scale.  Distinct from
+-- | `bhairav` which has natural-7 rather than b7.
+phrygianDominant :: Array Number
+phrygianDominant = [0.0, 1.0, 4.0, 5.0, 7.0, 8.0, 10.0]
+
 -------------------------------------------------------------------------------
 -- Other 7-note scales
 -------------------------------------------------------------------------------
@@ -685,6 +696,21 @@ cHarmonicMajor = mkScale "c-harmonic-major" 60 harmonicMajor
 cMelodicMinor :: Scale
 cMelodicMinor = mkScale "c-melodic-minor" 60 melodicMinor
 
+-- | Curated pop-scale constants for the L-mid Globals scale-selector
+-- | knob (Slab 6.7c).  All C-rooted so the curated picker steps through
+-- | modes-over-same-tonic, matching the "stays in key" jam idiom.
+cMajorPentatonic :: Scale
+cMajorPentatonic = mkScale "c-major-pentatonic" 60 majPent
+
+cMinorPentatonic :: Scale
+cMinorPentatonic = mkScale "c-minor-pentatonic" 60 minPent
+
+cMessiaen3 :: Scale
+cMessiaen3 = mkScale "c-messiaen-3" 60 messiaen3
+
+cPhrygianDominant :: Scale
+cPhrygianDominant = mkScale "c-phrygian-dominant" 60 phrygianDominant
+
 dMajor :: Scale
 dMajor = mkScale "d-major" 62 major
 
@@ -807,6 +833,7 @@ namedScales :: Array Scale
 namedScales =
   [ cMajor, cMinor, cMixolydian, cDorian, cPhrygian, cLydian
   , cAeolian, cLocrian, cHarmonicMinor, cHarmonicMajor, cMelodicMinor
+  , cMajorPentatonic, cMinorPentatonic, cMessiaen3, cPhrygianDominant
   , dMajor, dMinor, dDorian, dMixolydian
   , eMinor, eDorian, eMixolydian, ePhrygian
   , fMajor, fLydian, fMixolydian

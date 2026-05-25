@@ -58,6 +58,7 @@ import Data.Map as Map
 import Data.Maybe (Maybe(..), fromMaybe)
 import Tidal.Pattern.Core (queryArcWith)
 import Tidal.Pattern.Types (ControlMap, Event(..), Pattern, Value(..))
+import Data.Int as Int
 import Data.Rational (fromInt)
 import Tidal.Scales (Scale, Distribution(..), applyDistribution, cChromatic, shiftDegreesInScale)
 
@@ -413,15 +414,35 @@ evaluateParamsAtControls cfg controls activeScale pos =
       effectiveScale = fromMaybe cfg.scale activeScale
       distribute     = applyDistribution cfg.distribution effectiveScale
 
+      -- L-mid Globals master knobs (Slab 6.7b).  Read directly from the
+      -- ControlMap with sensible defaults — these are wire-only fields,
+      -- no per-binding config, applied uniformly across every Odonus
+      -- voice + playhead.
+      --   masterTransp : extra scale-degrees added to every playhead's
+      --                  transp[K] before the in-scale shift.
+      --   masterSpeed  : multiplier applied to every speed[K] before
+      --                  the phase-accumulator advance.
+      masterTransp :: Int
+      masterTransp = case Map.lookup "odonus.masterTransp" controls of
+        Just (VNumber n) -> Int.round n
+        _ -> 0
+      masterSpeed :: Number
+      masterSpeed = case Map.lookup "odonus.masterSpeed" controls of
+        Just (VNumber n) -> n
+        _ -> 1.0
+
       -- Per-cell notes, scale-quantised once.  Reused below to build the
       -- per-playhead transposed grid without re-sampling cfg.notes.
       cellNotes :: Array Int
       cellNotes = map (distribute <<< sampleN) cfg.notes
 
-      -- Per-playhead transposition counts, interpreted as scale-degree
-      -- shifts (not semitones — see field doc).
+      -- Per-playhead transposition counts (scale-degree shifts), with
+      -- masterTransp added uniformly so the L-mid Globals knob shifts
+      -- every playhead together.
       transpDegrees :: Array Int
-      transpDegrees = map (\p -> sampleIntAt controls 0 p pos) cfg.transp
+      transpDegrees =
+        map ((_ + masterTransp) <<<
+             (\p -> sampleIntAt controls 0 p pos)) cfg.transp
 
       -- P × 16 pre-resolved note grid.  Row K shifts every cell by
       -- `transpDegrees[K]` degrees in `effectiveScale`.  In cChromatic
@@ -431,6 +452,13 @@ evaluateParamsAtControls cfg controls activeScale pos =
       transposedGrid =
         map (\dN -> map (shiftDegreesInScale effectiveScale dN) cellNotes)
             transpDegrees
+
+      -- Per-playhead speed, master-multiplied so the L-mid Globals
+      -- knob speeds / slows every playhead in lockstep.
+      effectiveSpeeds :: Array Number
+      effectiveSpeeds =
+        map ((_ * masterSpeed) <<<
+             (\p -> sampleNumberAt controls 1.0 p pos)) cfg.speed
   in { stepYNow:        sampleBoolAt controls false cfg.stepYNow pos
      , notes:           cellNotes
      , skip:            map sampleS cfg.skip
@@ -445,7 +473,7 @@ evaluateParamsAtControls cfg controls activeScale pos =
      , mod3:            map sampleM  cfg.mod3
      , mod4:            map sampleM  cfg.mod4
      , transp:          transpDegrees
-     , speed:           map (\p -> sampleNumberAt controls 1.0 p pos) cfg.speed
+     , speed:           effectiveSpeeds
      , direction:       map (\p -> sampleIntAt    controls 0     p pos) cfg.direction
      , mute:            map (\p -> sampleBoolAt   controls false p pos) cfg.mute
      , transposedNotes: transposedGrid
