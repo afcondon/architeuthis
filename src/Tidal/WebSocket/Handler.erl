@@ -239,6 +239,19 @@ try_parse_prefixed(<<"shred-mod ", Rest/binary>>) ->
         {ok, N} when N >= 1, N =< 4 -> {shred_mod, N};
         _ -> none
     end;
+try_parse_prefixed(<<"set-nav-mode ", Rest/binary>>) ->
+    %% set-nav-mode <cartesian|forward|reverse> — live-mutate the
+    %% traversal mode on every Odonus voice.  Reuses the existing
+    %% `{set_config, #{nav_mode => Atom}}` cast path, so the engine's
+    %% validating setter (odonus_engine:set_field) accepts or rejects
+    %% the atom.  Wired to L-mid Globals knob 4 (Row 1 col 0) as a
+    %% 3-position stepped knob.
+    case trim_binary(Rest) of
+        <<"cartesian">> -> {set_nav_mode, cartesian};
+        <<"forward">>   -> {set_nav_mode, forward};
+        <<"reverse">>   -> {set_nav_mode, reverse};
+        _               -> none
+    end;
 try_parse_prefixed(<<"reload-baseline">>) ->
     %% reload-baseline — code:load_file the typeful-cues baseline module
     %% (Calypso.Generated.Session). Used by Calypso's /session-source
@@ -994,6 +1007,22 @@ handle_pattern_message(Text, State) ->
             N = list_to_binary(integer_to_list(length(Pids))),
             {reply, {text, <<"OK: phase-resync ", N/binary,
                              " Odonus voice(s)">>}, State};
+        {set_nav_mode, Mode} ->
+            %% Live-mutate nav_mode on every Odonus voice.  Reuses the
+            %% existing set_config cast path which already handles a
+            %% partial #{nav_mode => Atom} via odonus_engine:set_field
+            %% (validated against nav_modes() — bad atoms are rejected
+            %% server-side, but the parser already restricts to the
+            %% three known modes so we won't get here with garbage).
+            Pids = odonus_voice_sup:which_voices(),
+            lists:foreach(
+              fun(Pid) -> gen_server:cast(Pid, {set_config,
+                                                #{nav_mode => Mode}}) end,
+              Pids),
+            ModeBin = atom_to_binary(Mode, utf8),
+            N2 = list_to_binary(integer_to_list(length(Pids))),
+            {reply, {text, <<"OK: set-nav-mode ", ModeBin/binary,
+                             " on ", N2/binary, " Odonus voice(s)">>}, State};
         {shred_mod, N} ->
             %% Mimetic-Digitalis-style mod reroll.  Reads the L-mid
             %% Globals shred-rate knob for modN from the control bus;
