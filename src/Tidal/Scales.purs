@@ -39,6 +39,7 @@ module Tidal.Scales
   , quantiseToScale
   , applyDistribution
     -- * Named scale constants
+  , cChromatic
   , cMajor
   , cMinor
   , cMixolydian
@@ -636,6 +637,19 @@ mkScaleP name root ivs period = Scale
 -- Named scale constants
 -------------------------------------------------------------------------------
 -- MIDI numbers for the canonical roots: C4 = 60, C#4 = 61, …, B4 = 71.
+
+-- | The chromatic identity scale.  All 12 semitones active, period 12.
+-- | `quantiseToScale cChromatic n == n` for every MIDI `n` (every cell
+-- | is its own nearest active note), and `renderDegree cChromatic d`
+-- | indexes the chromatic scale (degree 1 → C, degree 2 → C#, …).
+-- |
+-- | This is the default scale for `OdonusConfig` / future per-vmod
+-- | scale fields: with `Distribution = Natural`, the per-cell `notes`
+-- | array passes through untouched (so today's "60 62 64 …" literal
+-- | MIDI cells keep behaving identically), while flipping to `Equal`
+-- | turns the same array into a chromatic-degree index.
+cChromatic :: Scale
+cChromatic = mkScale "c-chromatic" 60 chromatic
 
 cMajor :: Scale
 cMajor = mkScale "c-major" 60 major

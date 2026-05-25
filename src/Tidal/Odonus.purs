@@ -59,6 +59,7 @@ import Data.Maybe (Maybe(..))
 import Tidal.Pattern.Core (queryArcWith)
 import Tidal.Pattern.Types (ControlMap, Event(..), Pattern, Value(..))
 import Data.Rational (fromInt)
+import Tidal.Scales (Scale, Distribution(..), applyDistribution, cChromatic)
 
 -- ---------------------------------------------------------------------------
 -- NavMode — traversal modes
@@ -100,16 +101,94 @@ type OdonusConfig =
   -- | The same gate-pattern shape will eventually apply to Balistes /
   -- | Repetitor / Steppy-style siblings.
   , advance  :: Pattern Boolean
+  -- | Per-cell ratchet count.  When `ratchet[i]` resolves to `N`, the
+  -- | engine subdivides cell i's wall-time window into N evenly-spaced
+  -- | sub-emits, each at vel/dur.  `1` is the no-op default — one
+  -- | emit per step at the step's wall time.  Higher values produce
+  -- | Metropolix-flavoured retrigger flurries on a per-cell basis;
+  -- | sweeping the array live via the Twister gives you Twister-knob
+  -- | → "how much retrigger this cell".  Clamped to `>= 1` at the
+  -- | voice (a 0 reads as 1; negatives clamp to 1).
+  , ratchet     :: Array (Pattern Int)
+  -- | Per-cell probability of firing, on [0.0, 1.0].  `1.0` is the
+  -- | no-op default (always fire); `0.0` never fires; `0.5` fires
+  -- | half the time.  Sampled fresh per step — each pass through the
+  -- | grid rolls independently, so a per-cell probability of 0.5
+  -- | doesn't generate the same fire/skip pattern twice.  The roll
+  -- | is shared across a step's ratchets — when probability fails,
+  -- | the whole step is silent regardless of ratchet count.
+  , probability :: Array (Pattern Number)
+  -- | Per-cell gate (Slab 6.1).  Lifted from registration-time-only
+  -- | `Array Boolean` to `Array (Pattern Boolean)` so the Twister side-
+  -- | button gate-bank can toggle a cell's gate live.  When a cell's
+  -- | gate samples false the engine lands on it but emits no MIDI
+  -- | (silent_step in `odonus_engine:current_event`); cursor advance
+  -- | continues normally.  Overrides the binding-time `gate` array
+  -- | when present.  Default `replicate16 (pure true)` preserves
+  -- | "every cell fires" behaviour.
+  , gate        :: Array (Pattern Boolean)
+  -- | Per-cell glide (Slab 6.1).  Lifted alongside gate so the side-
+  -- | button glide-bank is symmetric.  Today this is engine-internal
+  -- | only (the binding-time `glide` was already a pass-through marker
+  -- | with no synthesis effect); the wire-up to a per-cell portamento
+  -- | / MIDI CC65 hint is a follow-up slab.
+  , glide       :: Array (Pattern Boolean)
+  -- | Per-cell velocity (Slab 6.1).  Lifted from the binding's scalar
+  -- | `vel :: Int` so the Vel knob bank sweeps each cell's velocity
+  -- | independently.  The engine reads the sampled value at emit time
+  -- | (overrides the binding's scalar `vel`).  Default
+  -- | `replicate16 (pure 100)` preserves today's velocity baseline.
+  , vel         :: Array (Pattern Int)
+  -- | Four per-cell modulation slots (Slab 6.1).  Today these are
+  -- | data-only — the snapshot carries them through to the voice but
+  -- | the engine does not yet emit MIDI CCs for them.  Wiring is the
+  -- | per-rig CC/CV translation layer (task #151).  The Twister surface
+  -- | already needs them in place so banks Mod1..Mod4 have somewhere
+  -- | to write.  Default `replicate16 (pure 0)`.
+  , mod1        :: Array (Pattern Int)
+  , mod2        :: Array (Pattern Int)
+  , mod3        :: Array (Pattern Int)
+  , mod4        :: Array (Pattern Int)
+  -- | Per-instance scale + distribution mode (Dail-inspired).  The
+  -- | per-cell `notes` integers are reinterpreted through this lens
+  -- | just before they reach the engine:
+  -- |
+  -- |   * `Natural` snaps each sampled integer (treated as a MIDI
+  -- |     number) to the nearest active scale note.  With `cChromatic`
+  -- |     this is the identity — every chromatic step is in-scale —
+  -- |     so the defaults preserve today's "notes are literal MIDI"
+  -- |     behaviour.
+  -- |   * `Equal` indexes each sampled integer as a 1-based scale
+  -- |     *degree* through `renderDegree`.  A 7-note scale sweeps
+  -- |     across multiple octaves automatically as the integer grows.
+  -- |
+  -- | A live `set-control odonus.scale c-minor` is not yet wired (the
+  -- | scale is a static value, not a Pattern Scale); the next move is
+  -- | the obvious one — promote to `Pattern Scale` and sample at the
+  -- | same per-step cadence as everything else.  Thread 2.5 will give
+  -- | Vetula an output channel to publish the *currently-held chord
+  -- | tones* as a scale, so the held chord becomes a live quantiser.
+  , scale        :: Scale
+  , distribution :: Distribution
   }
 
 -- | Snapshot returned by `evaluateParamsAt`.  Carries the resolved
 -- | per-cell arrays so the voice can refresh the engine's traversal
 -- | state before step_x / step_y / current_event run.
 type OdonusSnapshot =
-  { stepYNow :: Boolean
-  , notes    :: Array Int
-  , skip     :: Array Boolean
-  , advance  :: Boolean
+  { stepYNow    :: Boolean
+  , notes       :: Array Int
+  , skip        :: Array Boolean
+  , advance     :: Boolean
+  , ratchet     :: Array Int
+  , probability :: Array Number
+  , gate        :: Array Boolean
+  , glide       :: Array Boolean
+  , vel         :: Array Int
+  , mod1        :: Array Int
+  , mod2        :: Array Int
+  , mod3        :: Array Int
+  , mod4        :: Array Int
   }
 
 -- | Default config: Y-clock fires once per 4-step cycle (so
@@ -120,10 +199,21 @@ type OdonusSnapshot =
 -- | them controller-driven.
 odonusConfig :: OdonusConfig
 odonusConfig =
-  { stepYNow: pure false
-  , notes:    Array.replicate 16 (pure 60)
-  , skip:     Array.replicate 16 (pure false)
-  , advance:  pure true
+  { stepYNow:     pure false
+  , notes:        Array.replicate 16 (pure 60)
+  , skip:         Array.replicate 16 (pure false)
+  , advance:      pure true
+  , ratchet:      Array.replicate 16 (pure 1)
+  , probability:  Array.replicate 16 (pure 1.0)
+  , gate:         Array.replicate 16 (pure true)
+  , glide:        Array.replicate 16 (pure false)
+  , vel:          Array.replicate 16 (pure 100)
+  , mod1:         Array.replicate 16 (pure 0)
+  , mod2:         Array.replicate 16 (pure 0)
+  , mod3:         Array.replicate 16 (pure 0)
+  , mod4:         Array.replicate 16 (pure 0)
+  , scale:        cChromatic
+  , distribution: Natural
   }
 
 -- | Helper: build a 16-element array of a single repeated value.
@@ -221,12 +311,31 @@ evaluateParamsAtControls
   -> Number
   -> OdonusSnapshot
 evaluateParamsAtControls cfg controls pos =
-  let sampleN p = sampleIntAt controls 60 p pos
-      sampleS p = sampleBoolAt controls false p pos
-  in { stepYNow: sampleBoolAt controls false cfg.stepYNow pos
-     , notes:    map sampleN cfg.notes
-     , skip:     map sampleS cfg.skip
-     , advance:  sampleBoolAt controls true cfg.advance pos
+  let sampleN  p = sampleIntAt    controls 60    p pos
+      sampleS  p = sampleBoolAt   controls false p pos
+      sampleR  p = sampleIntAt    controls 1     p pos
+      sampleP  p = sampleNumberAt controls 1.0   p pos
+      sampleG  p = sampleBoolAt   controls true  p pos   -- gate default open
+      sampleGl p = sampleBoolAt   controls false p pos   -- glide default off
+      sampleV  p = sampleIntAt    controls 100   p pos   -- vel default 100
+      sampleM  p = sampleIntAt    controls 0     p pos   -- mod default 0
+      -- Per-cell integer → MIDI note number, run through the scale's
+      -- distribution mode.  Natural + cChromatic is the identity, so
+      -- existing sessions are unaffected.
+      distribute = applyDistribution cfg.distribution cfg.scale
+  in { stepYNow:    sampleBoolAt controls false cfg.stepYNow pos
+     , notes:       map (distribute <<< sampleN) cfg.notes
+     , skip:        map sampleS cfg.skip
+     , advance:     sampleBoolAt controls true cfg.advance pos
+     , ratchet:     map sampleR cfg.ratchet
+     , probability: map sampleP cfg.probability
+     , gate:        map sampleG  cfg.gate
+     , glide:       map sampleGl cfg.glide
+     , vel:         map sampleV  cfg.vel
+     , mod1:        map sampleM  cfg.mod1
+     , mod2:        map sampleM  cfg.mod2
+     , mod3:        map sampleM  cfg.mod3
+     , mod4:        map sampleM  cfg.mod4
      }
 
 -- | Erlang-facing entry point so a voice can build the `ControlMap`
@@ -253,6 +362,19 @@ sampleBoolAt controls dflt pat at =
 -- | `Pattern Int` notes at each step's cycle position.
 sampleIntAt :: ControlMap -> Int -> Pattern Int -> Number -> Int
 sampleIntAt controls dflt pat at =
+  let arc0 = fromInt (truncTo16th at)
+      arc1 = fromInt (truncTo16th at + 1)
+      slice = queryArcWith controls pat
+                (arc0 / fromInt 16)
+                (arc1 / fromInt 16)
+  in case Array.head slice of
+       Just (Digital e) -> e.value
+       Just (Analog e)  -> e.value
+       Nothing -> dflt
+
+-- | Number-typed twin.  Used for per-cell probability sampling.
+sampleNumberAt :: ControlMap -> Number -> Pattern Number -> Number -> Number
+sampleNumberAt controls dflt pat at =
   let arc0 = fromInt (truncTo16th at)
       arc1 = fromInt (truncTo16th at + 1)
       slice = queryArcWith controls pat

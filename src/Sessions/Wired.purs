@@ -68,6 +68,17 @@ studioOdonus = odonusWith
       { stepYNow: liveBoolOr false "odonus.stepY"
       , notes:    liveIntArrayOr odonusDefaultNotes "odonus.note"
       , skip:     liveBoolArrayOr (replicate16 false) "odonus.skip"
+      , ratchet:      replicate16 (pure 1)
+      , probability:  replicate16 (pure 1.0)
+      , gate:         replicate16 (pure true)
+      , glide:        replicate16 (pure false)
+      , vel:          replicate16 (pure 100)
+      , mod1:         replicate16 (pure 0)
+      , mod2:         replicate16 (pure 0)
+      , mod3:         replicate16 (pure 0)
+      , mod4:         replicate16 (pure 0)
+      , scale:        cChromatic
+      , distribution: Natural
       , advance:  gateFromBus "rhythmBank.0"
       }
   }

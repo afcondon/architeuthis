@@ -40,6 +40,17 @@ phase4Odonus = odonusWith
       { stepYNow: pure false
       , notes:    map pure phase4Notes
       , skip:     map pure (replicate16 false)
+      , ratchet:      replicate16 (pure 1)
+      , probability:  replicate16 (pure 1.0)
+      , gate:         replicate16 (pure true)
+      , glide:        replicate16 (pure false)
+      , vel:          replicate16 (pure 100)
+      , mod1:         replicate16 (pure 0)
+      , mod2:         replicate16 (pure 0)
+      , mod3:         replicate16 (pure 0)
+      , mod4:         replicate16 (pure 0)
+      , scale:        cChromatic
+      , distribution: Natural
       , advance:  pure true  -- step every tick, no euclidean gating
       }
   }

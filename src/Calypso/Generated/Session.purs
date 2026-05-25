@@ -1,32 +1,49 @@
 module Calypso.Generated.Session where
 
 import Calypso.Prelude
-import Studio (iac, bass1)
+import Studio (iac)
 
-baselineMajor :: PitchedPart PitchedNote12
-baselineMajor = on vBass bass1 (inKey cMajor (degree "1 2 3 4 5 6 7 8 9 10 11 12 13 14"))
+defaultNotes :: Array Int
+defaultNotes =
+  [ 60, 62, 64, 65, 67, 69, 71, 72
+  , 74, 76, 77, 79, 81, 83, 84, 86
+  ]
 
-phrygianDomLT :: PitchedPart PitchedNote12
-phrygianDomLT = on vBass bass1 (inKey cPhrygianDomLT (degree "1 2 3 4 5 6 7 8 9 10 11 12 13 14"))
-
-triad3oct :: PitchedPart PitchedNote12
-triad3oct = on vBass bass1 (inKey cMajorTriad3oct (degree "1 2 3 4 5 6 7 8 9"))
-
-chromaticQuantised :: PitchedPart PitchedNote12
-chromaticQuantised = on vBass bass1 (quantiseInKey cMajor (pitch "c4 c#4 d4 d#4 e4 f4 f#4 g4"))
-
-chromaticQuantisedMultiOct :: PitchedPart PitchedNote12
-chromaticQuantisedMultiOct = on vBass bass1 (quantiseInKey cPhrygianDomLT (pitch "c4 c#4 d4 d#4 e4 c5 c#5 d5"))
+twisterOdonus :: Odonus "twisterOdonus"
+twisterOdonus = odonusWith
+  { device:  iac
+  , channel: 1
+  , vel:     100
+  , durMs:   200
+  , stepsPerCycle: 16
+  , notes:   defaultNotes
+  , skip:    replicate16 false
+  , gate:    replicate16 true
+  , glide:   replicate16 false
+  , navMode: NavForward
+  , config:
+      { stepYNow:     pure false
+      , notes:        liveIntArrayOr defaultNotes "odonus.note"
+      , skip:         liveBoolArrayOr (replicate16 false) "odonus.skip"
+      , ratchet:      liveIntArrayOr    (replicate16 1)   "odonus.ratchet"
+      , probability:  liveNumberArrayOr (replicate16 1.0) "odonus.probability"
+      , gate:         liveBoolArrayOr (replicate16 true)  "odonus.gate"
+      , glide:        liveBoolArrayOr (replicate16 false) "odonus.glide"
+      , vel:          liveIntArrayOr  (replicate16 100)   "odonus.vel"
+      , mod1:         liveIntArrayOr  (replicate16 0)     "odonus.mod1."
+      , mod2:         liveIntArrayOr  (replicate16 0)     "odonus.mod2."
+      , mod3:         liveIntArrayOr  (replicate16 0)     "odonus.mod3."
+      , mod4:         liveIntArrayOr  (replicate16 0)     "odonus.mod4."
+      , scale:        cChromatic
+      , distribution: Natural
+      , advance:      pure true
+      }
+  }
 
 session :: Session
 session = Session
   { devices:     [iac]
-  , instruments: [bass1]
+  , instruments: []
   , drumKits:    []
-  , parts: eraseAll [ baselineMajor
-                    , phrygianDomLT
-                    , triad3oct
-                    , chromaticQuantised
-                    , chromaticQuantisedMultiOct
-                    ]
+  , parts:       []
   }

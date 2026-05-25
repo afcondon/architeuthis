@@ -54,6 +54,7 @@ import Tidal.Scales
   , transposeDiatonic
   , transposeChromatic
   , octave
+  , cChromatic
   , cMajor, cMinor, cMixolydian, cDorian, cPhrygian, cLydian
   , cAeolian, cLocrian, cHarmonicMinor, cHarmonicMajor, cMelodicMinor
   , dMajor, dMinor, dDorian, dMixolydian

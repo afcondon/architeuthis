@@ -313,9 +313,14 @@ emit_step(S, Controls, CurrentCycle, CycleDurMs, NowUs, TRecv, State) ->
                 false -> Engine0
             end,
             Engine2 = odonus_engine:step_x(Engine1),
+            %% Step duration in microseconds — width of the per-step
+            %% wall-time window.  Used to space ratchet sub-emits
+            %% evenly across the step.
+            StepDurUs = round((CycleDurMs * 1000) / State#st.steps_per_cycle),
             case odonus_engine:current_event(Engine2) of
-                {emit, Note, _Idx} ->
-                    emit_note(Note, WallUs, State);
+                {emit, Note, Idx} ->
+                    maybe_emit_with_ratchet(Note, Idx, WallUs, StepDurUs,
+                                            Snap, State);
                 {silent_step, _Idx} ->
                     ok
             end,
@@ -336,36 +341,98 @@ emit_step(S, Controls, CurrentCycle, CycleDurMs, NowUs, TRecv, State) ->
                      samples = [Sample | State#st.samples]}
     end.
 
-%% Pull notes + skip arrays out of the snapshot (if present) and
-%% refresh the engine's stored copies before this step's traversal
-%% runs.  This is the seam through which controller-bus writes (Twister
-%% knobs → odonus.note0..15) reach the engine's skip-aware step_x and
-%% current_event logic.
+%% Pull per-cell arrays out of the snapshot (if present) and refresh
+%% the engine's stored copies before this step's traversal runs.  This
+%% is the seam through which controller-bus writes (Twister knobs →
+%% odonus.note0..15, odonus.gate0..15, …) reach the engine's skip-aware
+%% step_x and current_event logic.
+%%
+%% Slab 6.1: gate + glide added.  gate gates the per-cell emit (silent
+%% vs sounding step), glide is engine-internal only today (carried for
+%% the future per-cell portamento hook).
 %%
 %% Per [[reference_purerl_array_is_erlang_array_module]] PureScript
 %% Arrays cross the boundary as Erlang `array` records, not lists;
 %% convert with array:to_list/1 before handing to odonus_engine:set_field.
 refresh_from_snapshot(Engine, Snap) ->
-    Engine1 = case maps:get(notes, Snap, undefined) of
-        undefined -> Engine;
-        N -> odonus_engine:set_field(Engine, notes, array:to_list(N))
-    end,
-    case maps:get(skip, Snap, undefined) of
-        undefined -> Engine1;
-        Sk -> odonus_engine:set_field(Engine1, skip, array:to_list(Sk))
-    end.
+    Fields = [notes, skip, gate, glide],
+    lists:foldl(
+      fun(Field, Eng) ->
+              case maps:get(Field, Snap, undefined) of
+                  undefined -> Eng;
+                  Arr       -> odonus_engine:set_field(
+                                 Eng, Field, array:to_list(Arr))
+              end
+      end, Engine, Fields).
 
-emit_note(Note, WallUs, State) ->
+emit_note(Note, Vel, WallUs, DurMs, State) ->
     Thunk = tidal_mIDIBridge@foreign:scheduleNoteAt(
               State#st.midi_socket,
               State#st.port_name,
               State#st.channel,
               Note,
-              State#st.vel,
-              State#st.dur_ms,
+              Vel,
+              DurMs,
               WallUs),
     Thunk(),
     ok.
+
+%% Probability gate + ratchet expansion.  Called once per emit step.
+%% Reads the per-cell probability, ratchet, and velocity from the
+%% snapshot (PureScript Arrays delivered as Erlang `array` records —
+%% see [[reference_purerl_array_is_erlang_array_module]]).  A failed
+%% probability roll silences the entire step regardless of ratchet
+%% count; a successful roll emits Ratchet evenly-spaced sub-notes
+%% across the step's wall-time window at the per-cell velocity.  Each
+%% sub-note's MIDI dur_ms is clamped so back-to-back ratchets don't
+%% overlap.
+%%
+%% Slab 6.1: vel is now per-cell.  Falls back to the binding's scalar
+%% `vel` if the snapshot lacks a vel array (older callers / cfg-less
+%% registrations).  MIDI range clamped to 0..127.
+maybe_emit_with_ratchet(Note, Idx, WallUs, StepDurUs, Snap, State) ->
+    Prob    = snap_number_at(Snap, probability, Idx, 1.0),
+    Ratchet = max(1, snap_int_at(Snap, ratchet, Idx, 1)),
+    Vel     = clamp_vel(snap_int_at(Snap, vel, Idx, State#st.vel)),
+    Roll    = rand:uniform(),
+    case Roll =< Prob of
+        false ->
+            ok;
+        true ->
+            SubDurUs = StepDurUs div Ratchet,
+            SubDurMs = max(1, SubDurUs div 1000),
+            EmitDurMs = min(State#st.dur_ms, SubDurMs),
+            lists:foreach(
+                fun(K) ->
+                    SubWallUs = WallUs + K * SubDurUs,
+                    emit_note(Note, Vel, SubWallUs, EmitDurMs, State)
+                end,
+                lists:seq(0, Ratchet - 1))
+    end.
+
+clamp_vel(V) when V < 0   -> 0;
+clamp_vel(V) when V > 127 -> 127;
+clamp_vel(V) -> V.
+
+snap_int_at(Snap, Key, Idx, Default) ->
+    case maps:get(Key, Snap, undefined) of
+        undefined -> Default;
+        Arr       -> array_get_or(Arr, Idx, Default)
+    end.
+
+snap_number_at(Snap, Key, Idx, Default) ->
+    case maps:get(Key, Snap, undefined) of
+        undefined -> Default;
+        Arr       -> array_get_or(Arr, Idx, Default)
+    end.
+
+%% PureScript Arrays cross the boundary as Erlang `array` records.
+%% array:get/2 throws on out-of-bounds, so guard with a size check.
+array_get_or(Arr, Idx, Default) ->
+    case Idx >= 0 andalso Idx < array:size(Arr) of
+        true  -> array:get(Idx, Arr);
+        false -> Default
+    end.
 
 %% =========================================================================
 %% Helpers

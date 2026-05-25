@@ -32,6 +32,7 @@ module Tidal.LiveControl
   , liveBoolOr
   , liveIntArrayOr
   , liveBoolArrayOr
+  , liveNumberArrayOr
   , gateFromBus
   ) where
 
@@ -157,3 +158,10 @@ liveIntArrayOr defaults prefix =
 liveBoolArrayOr :: Array Boolean -> String -> Array (Pattern Boolean)
 liveBoolArrayOr defaults prefix =
   Array.mapWithIndex (\i d -> liveBoolOr d (prefix <> show i)) defaults
+
+-- | Number-array companion to `liveIntArrayOr`.  Used for per-cell
+-- | continuous values that aren't naturally integer — Odonus's
+-- | probability array (`0.0..1.0`), future per-cell pan / gain / etc.
+liveNumberArrayOr :: Array Number -> String -> Array (Pattern Number)
+liveNumberArrayOr defaults prefix =
+  Array.mapWithIndex (\i d -> liveOr d (prefix <> show i)) defaults
