@@ -39,8 +39,7 @@ fugueMachine = odonusWith
       , transp:       liveIntArrayOr    [  0,  7, 12, -5  ] "odonus.transp"
       , speed:        liveNumberArrayOr [ 1.0, 2.0, 0.5, 1.5 ] "odonus.speed"
       , direction:    liveIntArrayOr    [ 0, 0, 0, 0 ] "odonus.direction"
-      , mute:         liveBoolArrayOr   [ false, false, false, false ]
-                                        "odonus.mute"
+      , mute:         playing 4 []
       , scale:        cMajor
       , distribution: Natural
       , advance:      pure true
