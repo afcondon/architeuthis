@@ -25,6 +25,7 @@
 -module(tidal_control_bus).
 
 -export([init/0,
+         clear_except/1,
          set/2,
          get/2,
          snapshot/0,
@@ -106,3 +107,25 @@ clear() ->
     ets:delete_all_objects(?TABLE),
     ets:update_counter(?TABLE, ?VERSION_KEY, 1, {?VERSION_KEY, 0}),
     ok.
+
+%% Clear all controls *except* keys matching one of the given
+%% prefixes.  Used by the L-mid Globals "clear-controls" button to
+%% wipe knob-improv state while keeping audible-performance state
+%% (the `odonus.mute*` keys: a user who explicitly un-muted a
+%% playhead expects it to stay un-muted across a knob reset).
+clear_except(PreservePrefixes) when is_list(PreservePrefixes) ->
+    init(),
+    All = ets:tab2list(?TABLE),
+    Keep =
+        [E || {K, _V} = E <- All,
+              K =/= version,
+              lists:any(fun(P) -> starts_with(K, P) end, PreservePrefixes)],
+    ets:delete_all_objects(?TABLE),
+    lists:foreach(fun(E) -> ets:insert(?TABLE, E) end, Keep),
+    ets:update_counter(?TABLE, ?VERSION_KEY, 1, {?VERSION_KEY, 0}),
+    ok.
+
+starts_with(B, P) when is_binary(B), is_binary(P), byte_size(B) >= byte_size(P) ->
+    binary:part(B, 0, byte_size(P)) =:= P;
+starts_with(_, _) ->
+    false.

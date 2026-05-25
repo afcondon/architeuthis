@@ -972,12 +972,16 @@ handle_pattern_message(Text, State) ->
             tidal_scale_bus:clear_scale(),
             {reply, {text, <<"OK: scale cleared">>}, State};
         {clear_controls} ->
-            %% Reset the live-control bus.  Every set-control knob
-            %% reading drops back to the cell's declared default on the
-            %% next compute tick.  Version counter is bumped inside
-            %% clear/0 so cached ControlMaps in voices are invalidated.
-            tidal_control_bus:clear(),
-            {reply, {text, <<"OK: controls cleared">>}, State};
+            %% Reset the live-control bus, preserving Odonus mute state
+            %% (`odonus.mute*` keys).  Mute is a deliberate audible-
+            %% performance gesture — a user who un-muted a playhead
+            %% expects it to stay un-muted across a knob reset.  Every
+            %% other set-control reading drops back to the cell's
+            %% declared default on the next compute tick.  Version
+            %% counter is bumped inside clear_except/1 so cached
+            %% ControlMaps in voices are invalidated.
+            tidal_control_bus:clear_except([<<"odonus.mute">>]),
+            {reply, {text, <<"OK: controls cleared (mutes preserved)">>}, State};
         {phase_resync} ->
             %% Walk every Odonus voice and cast phase_resync.  Each
             %% voice resets its engine's playheads to cursor 0,
