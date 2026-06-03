@@ -47,6 +47,10 @@ module Tidal.Pattern.Core
   , stutter
   , ply
   , chunk
+  , within
+  , swingBy
+  , swingByR
+  , swing
     -- * Oscillators (continuous patterns)
   , sine
   , cosine
@@ -841,6 +845,54 @@ chunk n f p
     eventStartTime :: Event a -> Time
     eventStartTime (Digital ev) = let Arc a = ev.part in a.start
     eventStartTime (Analog ev) = let Arc a = ev.part in a.start
+
+-- | Apply `f` only to events whose cycle position falls in the half-open slice
+-- | `[s, e)`; events outside the slice pass through untouched. The predicate is
+-- | tested on each event's (possibly transformed) start, so `within s e (rotR x)`
+-- | keeps the shifted copies that land in the slice — the building block of
+-- | `swingBy`. (Tidal's `within`, specialised to two `Time` bounds.)
+within :: forall a. Time -> Time -> (Pattern a -> Pattern a) -> Pattern a -> Pattern a
+within s e f p =
+  stack
+    [ filterEvents inSlice (f p)
+    , filterEvents (not <<< inSlice) p
+    ]
+  where
+    inSlice ev = let t = cyclePos (evStart ev) in t >= s && t < e
+    evStart :: Event a -> Time
+    evStart (Digital ev) = let Arc a = ev.part in a.start
+    evStart (Analog ev) = let Arc a = ev.part in a.start
+
+-- | Swing. Divide each cycle into `n` equal parts and nudge the *second half*
+-- | of every part later by `amt` (measured in part-units), producing the
+-- | long-short lilt. `swingBy (fromInt 1 / fromInt 3) (fromInt 4)` is classic
+-- | triplet 8th-note swing in 4/4; `amt = 0` is dead straight.
+-- |
+-- | Swing is phase-locked to the cycle and deterministic, so the *same*
+-- | `swingBy amt n` applied to any pattern displaces its offbeats identically.
+-- | That is the property a shared groove relies on: wrap every voice that should
+-- | swing with one `swingBy` and they lock to a single feel — while voices left
+-- | unwrapped (and the clock itself, which is upstream of any pattern) stay
+-- | straight.
+swingBy :: forall a. Time -> Time -> Pattern a -> Pattern a
+swingBy amt n = inside n (within half one (rotR amt))
+  where
+    half = fromInt 1 / fromInt 2
+    one = fromInt 1
+
+-- | `swing n = swingBy (1/3) n` — the default triplet swing, dividing the cycle
+-- | into `n` parts.
+swing :: forall a. Time -> Pattern a -> Pattern a
+swing = swingBy (fromInt 1 / fromInt 3)
+
+-- | `swingBy` with the amount given as the integer ratio `num/den` of a slice
+-- | and the subdivision `n` as an Int — so code generators can express swing
+-- | with plain integers and never need to emit `Rational` arithmetic (the
+-- | division happens here, where the numeric `Prelude` is in scope).
+-- | `swingByR 1 6 4` ≈ a true-triplet 8th swing; `swingByR 1 3 4` = the default
+-- | hard swing. `num = 0` is straight.
+swingByR :: forall a. Int -> Int -> Int -> Pattern a -> Pattern a
+swingByR num den n = swingBy (fromInt num / fromInt den) (fromInt n)
 
 -------------------------------------------------------------------------------
 -- Filtering
