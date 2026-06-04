@@ -77,6 +77,13 @@ Implementation shape:
   the small piece of new tooling; it doubles as the corpus front-end below.
 - A proper **named drum-mapping system** (token → device/pad, per kit) is
   deferred — this session hand-set notes per rack as a stopgap.
+- **Swing calibration is an A/B, not a guess.** The %→depth mapping
+  (Lumbeat swing% → our `swingByR` depth) is currently eyeballed (25% → 0.25;
+  Bembé 50% on 12/8 is a flagged approximation). To calibrate: record Lumbeat's
+  MIDI out *and* our output into parallel Ableton tracks at the same tempo,
+  overlay, and read the per-hit timing offsets — that gives the true mapping and
+  confirms whether `swingByR` even models the feel (esp. 12/8 triplet swing,
+  which the 16th-shuffle mechanism may not). "Close enough" until then.
 
 ## Parked: AfroLatin-Grids / corpus-derived kernel
 
