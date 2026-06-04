@@ -317,11 +317,7 @@ dispatchPrimAction (State s) name token wallUs delayMs _delayInt params = case _
           -- at the event's cycle by the voice) overrides the binding's
           -- default velocity. Out-of-range / non-numeric tokens fall
           -- back to the binding default.
-          let velocity = case Map.lookup "vel" params of
-                Nothing -> m.velocity
-                Just velTok -> case param7bit velTok of
-                  Just v -> v
-                  Nothing -> m.velocity
+          let velocity = velFromParams params m.velocity
           let adjustedUnixUs = wallUs - dev.latencyMs * 1000.0
           Log.debug $ "♪ [" <> name <> "] midi " <> dev.name <> " ch" <> show m.channel <> " note " <> show note <> " vel " <> show velocity
           scheduleNoteAt s.bridgeClient dev.name m.channel note velocity m.durationMs adjustedUnixUs
@@ -356,11 +352,7 @@ dispatchPrimAction (State s) name token wallUs delayMs _delayInt params = case _
               Log.debug $ "✗ [" <> name <> "] midi-drum-kit: unknown device alias '"
                 <> m.device <> "'"
             Just dev -> do
-              let velocity = case Map.lookup "vel" params of
-                    Nothing -> hit.velocity
-                    Just velTok -> case param7bit velTok of
-                      Just v -> v
-                      Nothing -> hit.velocity
+              let velocity = velFromParams params hit.velocity
               let adjustedUnixUs = wallUs - dev.latencyMs * 1000.0
               Log.debug $ "♪ [" <> name <> "] drum " <> dev.name
                 <> " ch" <> show m.channel <> " hit " <> token
@@ -619,12 +611,27 @@ setLinkTempo bpm (State s) =
 isSlotOverride :: String -> Binding -> Boolean
 isSlotOverride paramName binding = case paramName of
   "vel" -> Array.any consumesVel binding
-    where
-    consumesVel = case _ of
-      MidiNote _ -> true
-      MidiDrumKit _ -> true
-      _ -> false
+  "gain" -> Array.any consumesVel binding
   _ -> false
+  where
+  consumesVel = case _ of
+    MidiNote _ -> true
+    MidiDrumKit _ -> true
+    _ -> false
+
+-- | Resolve a note velocity from per-event `#` params. An absolute `vel`
+-- | (0..127) wins; otherwise a normalized `gain` (0..1) maps to
+-- | `velocity = gain * 127` (the neutral accent channel — same knob renders as
+-- | Dirt amp / modular accent on other backends); otherwise the binding/hit
+-- | default. So `# gain "1 0.6 .8"` accents drum hits, `# vel "120 70"` sets
+-- | absolute MIDI velocity.
+velFromParams :: Map String String -> Int -> Int
+velFromParams params dflt =
+  case Map.lookup "vel" params >>= param7bit of
+    Just v -> v
+    Nothing -> case Map.lookup "gain" params >>= Number.fromString of
+      Just g -> clamp7bit (g * 127.0)
+      Nothing -> dflt
 
 -- | Compositional `#` fanout: when a param name matches another
 -- | registered binding, fire that binding's MidiCC actions with the

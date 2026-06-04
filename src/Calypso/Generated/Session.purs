@@ -1,55 +1,46 @@
 module Calypso.Generated.Session where
 
 import Calypso.Prelude
-import Studio (iac)
-import Data.Functor (map)
+import Studio (iac, bass1, bass2, bass3, bass4)
 
-fugueNotes :: Array Int
-fugueNotes =
-  [ 60, 62, 64, 65, 67, 69, 71, 72
-  , 74, 76, 77, 79, 77, 76, 74, 72
+-- Genre: subzero minimal techno (seed 56)
+-- subzero minimal techno | c aeolian | density 0.6
+
+drumsKit :: DrumKit
+drumsKit = midiDrumKit iac 10
+  [ hit "bd" 36 100 50
+  , hit "sn" 38 100 50
+  , hit "rim" 37 90 30
+  , hit "cp" 39 100 30
+  , hit "hh" 42 80 30
+  , hit "oh" 46 80 60
+  , hit "shaker" 82 70 25
+  , hit "perc" 64 90 40
+  , hit "ride" 51 80 50
+  , hit "crash" 49 90 80
+  , hit "lt" 45 100 40
+  , hit "mt" 47 100 40
+  , hit "ht" 50 100 40
+  , hit "cr" 49 90 80
+  , hit "rd" 51 80 60
   ]
 
-fugueMachine :: Odonus "fugueMachine"
-fugueMachine = odonusWith
-  { device:  iac
-  , channel: 1
-  , vel:     100
-  , durMs:   200
-  , stepsPerCycle: 16
-  , heads:   4
-  , notes:   fugueNotes
-  , skip:    replicate16 false
-  , gate:    replicate16 true
-  , glide:   replicate16 false
-  , navMode: NavForward
-  , config:
-      { stepYNow:     pure false
-      , notes:        liveIntArrayOr    fugueNotes              "odonus.note"
-      , skip:         liveBoolArrayOr   (replicate16 false)     "odonus.skip"
-      , ratchet:      liveIntArrayOr    (replicate16 1)         "odonus.ratchet"
-      , probability:  liveNumberArrayOr (replicate16 1.0)       "odonus.probability"
-      , gate:         liveBoolArrayOr   (replicate16 true)      "odonus.gate"
-      , glide:        liveBoolArrayOr   (replicate16 false)     "odonus.glide"
-      , vel:          liveIntArrayOr    (replicate16 100)       "odonus.vel"
-      , mod1:         liveIntArrayOr    (replicate16 0)         "odonus.mod1."
-      , mod2:         liveIntArrayOr    (replicate16 0)         "odonus.mod2."
-      , mod3:         liveIntArrayOr    (replicate16 0)         "odonus.mod3."
-      , mod4:         liveIntArrayOr    (replicate16 0)         "odonus.mod4."
-      , transp:       liveIntArrayOr    [  0,  7, 12, -5  ] "odonus.transp"
-      , speed:        liveNumberArrayOr [ 1.0, 2.0, 0.5, 1.5 ] "odonus.speed"
-      , direction:    liveIntArrayOr    [ 0, 0, 0, 0 ] "odonus.direction"
-      , mute:         playing 4 []
-      , scale:        cMajor
-      , distribution: Natural
-      , advance:      pure true
-      }
-  }
+part0 :: PitchedPart
+part0 = on vBass bass1 (swingByR 12 96 8 (inKey cAeolian (degree "~ ~ 0 ~ ~ ~ 0 ~ ~ ~ 0 ~ ~ ~ 0 ~")))
+
+part1 :: PitchedPart
+part1 = on vFugue bass2 (swingByR 12 96 8 (inKey cAeolian (degree "~ ~ ~ ~ ~ ~ [0,2,4,6] ~ ~ ~ ~ ~ ~ ~ [0,2,4,6] ~")))
+
+partDrums :: DrumPart
+partDrums = on vDrums drumsKit (swingByR 12 96 8 (stack [ toPattern (drum "bd ~ ~ ~ bd ~ ~ ~ bd ~ ~ ~ bd ~ ~ ~"), toPattern (drum "~ ~ hh ~ ~ ~ hh ~ ~ ~ hh ~ ~ ~ hh ~"), toPattern (drum "~ ~ ~ ~ sn ~ ~ ~ ~ ~ ~ ~ sn ~ ~ sn"), toPattern (drum "~ ~ ~ ~ ~ perc ~ ~ ~ perc ~ ~ ~ ~ ~ ~") ]))
+
+piece :: Section
+piece = stack [ armPart part0, armPart part1, armPart partDrums ]
 
 session :: Session
 session = Session
   { devices:     [iac]
-  , instruments: []
-  , drumKits:    []
-  , parts:       []
+  , instruments: [bass1, bass2, bass3, bass4]
+  , drumKits:    [drumsKit]
+  , parts:       eraseAll [ part0, part1 ] <+> eraseAll [ partDrums ]
   }

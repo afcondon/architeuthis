@@ -24,19 +24,19 @@ import Tidal.Vetula (cMajorKey, mcmullenYellow)
 import Tidal.Vetula.Voicing (Selector(..), drop2)
 import Tidal.Vetula.Pattern (VetulaPart, vetula, vetulaSplit)
 
-bassChan :: Instrument PitchedNote12
+bassChan :: Instrument
 bassChan = midiChannelWith iac 1 { defNote: 36, defVel: 100, defDurMs: 1800 }
 
-upperChan :: Instrument PitchedNote12
+upperChan :: Instrument
 upperChan = midiChannelWith iac 2 { defNote: 60, defVel: 100, defDurMs: 1800 }
 
 prog :: VetulaPart
 prog = vetula cMajorKey mcmullenYellow drop2
 
-bass :: PitchedPart PitchedNote12
+bass :: PitchedPart
 bass = on vBass bassChan (vetulaSplit (TakeLow 1) prog)
 
-upper :: PitchedPart PitchedNote12
+upper :: PitchedPart
 upper = on vUpper upperChan (vetulaSplit (DropS (TakeLow 1)) prog)
 
 session :: Session

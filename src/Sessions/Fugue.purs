@@ -42,16 +42,16 @@ qd2A = on vDrums qd2 (drum "~ ~ sn ~ ~ ~ sn ~")
 -- an Instrument.
 -- ---------------------------------------------------------------------------
 
-bass1A :: PitchedPart PitchedNote12
+bass1A :: PitchedPart
 bass1A = on vBass bass1 (pitch "c2 e2 g2 ~ b2 ~ g2 e2")
 
-bass1B :: PitchedPart PitchedNote12
+bass1B :: PitchedPart
 bass1B = on vBass bass1 (pitch "c4 c4 ~ g4 ~ c3 e3 ~")
 
-bass1Deg :: PitchedPart PitchedNote12
+bass1Deg :: PitchedPart
 bass1Deg = on vBass bass1 (inKey aHarmonicMinor (degree "1 5 3 5 1 3 5 -1"))
 
-bass1Mix :: PitchedPart PitchedNote12
+bass1Mix :: PitchedPart
 bass1Mix = on vBass bass1 (inKey dDorian (degree "5 5 5 3 3 7 -1"))
 
 -- ---------------------------------------------------------------------------
@@ -60,10 +60,10 @@ bass1Mix = on vBass bass1 (inKey dDorian (degree "5 5 5 3 3 7 -1"))
 
 mPart = degree "1 2 3 4 5 4 3 2"
 
-melodyM :: PitchedPart PitchedNote12
+melodyM :: PitchedPart
 melodyM = on vBass bass1 mPart
 
-melodyT :: PitchedPart PitchedNote12
+melodyT :: PitchedPart
 melodyT = on vBass bass2 (tintinnabuli aMinor aMinT above1 mPart)
 
 -- ---------------------------------------------------------------------------
@@ -72,16 +72,16 @@ melodyT = on vBass bass2 (tintinnabuli aMinor aMinT above1 mPart)
 
 subject = degree "1 5 3 5 1 3 5 -1"
 
-fugue1 :: PitchedPart PitchedNote12
+fugue1 :: PitchedPart
 fugue1 = on vFugue bass1 (fugueVoice defaultVoice subject)
 
-fugue2 :: PitchedPart PitchedNote12
+fugue2 :: PitchedPart
 fugue2 = on vFugue bass2 (fugueVoice (defaultVoice { transpose = 7 }) subject)
 
-fugue3 :: PitchedPart PitchedNote12
+fugue3 :: PitchedPart
 fugue3 = on vFugue bass3 (fugueVoice (defaultVoice { transpose = 7, speed = doubleSpeed }) subject)
 
-fugue4 :: PitchedPart PitchedNote12
+fugue4 :: PitchedPart
 fugue4 = on vFugue bass4 (fugueVoice (defaultVoice { transpose = -3, retrograde = true, speed = halfSpeed }) subject)
 
 intro :: Section

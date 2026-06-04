@@ -37,7 +37,7 @@ import Tidal.Pattern.Types
   , eventPart
   , Arc(..)
   )
-import Tidal.Pitch (PitchedNote12(..))
+import Tidal.Sound (Sound)
 import Tidal.Pattern.Types (Pattern)
 import Tidal.Voice (Window) as TV
 
@@ -48,7 +48,7 @@ import Tidal.Voice (Window) as TV
 -- | binding under `<kitAlias>.<hitName>`, at which point `DestDrumKit`
 -- | grows a hit-name field (or the discriminator moves to per-event).
 data Destination
-  = DestInstrument (Instrument PitchedNote12)
+  = DestInstrument Instrument
   | DestDrumKit DrumKit
 
 -- | One arm command surfaced to the BEAM.  Wall time is the precise
@@ -60,17 +60,16 @@ data Destination
 -- | ETS map from destination-value → binding name, which the conductor
 -- | unwraps and uses to find the right voice supervisor.
 -- |
--- | `body` is always `Pattern PitchedNote12`: PitchedParts pass theirs through
--- | unchanged; DrumParts have their `Pattern DrumHitRef` (Pattern
--- | String) coerced here to `Pattern PitchedNote12` via the `Sample` variant
--- | so the existing dispatcher emit path handles them.  This Sample
--- | coercion is the PR 2a runtime-compat shim; PR 2b replaces it with
--- | per-hit binding lookups.
+-- | `body` is always `Pattern Sound`: both PitchedParts and DrumParts
+-- | now carry their body as the unified `Sound` payload (the lift from
+-- | the pitch carrier happens at the `on` boundary in Calypso.Prelude),
+-- | so the conductor passes it through unchanged to the same dispatch
+-- | path the `play-armed` WS verb uses.
 type ArmCommand =
   { wallTimeUs :: Number
   , mvoice :: String
   , destination :: Destination
-  , body :: Pattern PitchedNote12
+  , body :: Pattern Sound
   }
 
 -- | Conductor state.  `lastEmittedUntil` is an integer-rational cycle
@@ -131,5 +130,5 @@ eventToArm w e =
         { wallTimeUs
         , mvoice: d.mvoice
         , destination: DestDrumKit d.destination
-        , body: map Sample d.body
+        , body: d.body
         }

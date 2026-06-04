@@ -50,21 +50,21 @@ cvRouter = CvRouter "127.0.0.1" 57120
 -- defaults (note 60, vel 100, dur 50).
 -- ---------------------------------------------------------------------------
 
-bass1 :: Instrument PitchedNote12
+bass1 :: Instrument
 bass1 = midiChannel iac 1
 
 -- | Second IAC bass instrument — companion to `bass1`.  Used in
 -- | tintinnabuli-style two-voice demos where M-voice and T-voice need
 -- | separate destinations.
-bass2 :: Instrument PitchedNote12
+bass2 :: Instrument
 bass2 = midiChannel iac 2
 
 -- | Third + fourth IAC bass instruments — for 4-voice fugue / canon
 -- | textures where each playhead lands on its own MIDI channel.
-bass3 :: Instrument PitchedNote12
+bass3 :: Instrument
 bass3 = midiChannel iac 3
 
-bass4 :: Instrument PitchedNote12
+bass4 :: Instrument
 bass4 = midiChannel iac 4
 
 -- ---------------------------------------------------------------------------
@@ -79,7 +79,7 @@ bass4 = midiChannel iac 4
 -- | legacy hard-coded `plaitsBinding` in Tidal.Binding (preserved as
 -- | a default registry entry for back-compat); declaring it here in
 -- | Studio makes the typed surface the source of truth.
-plaits :: Instrument PitchedNote12
+plaits :: Instrument
 plaits = vPerOct cvRouter { gateChannel: 6, voctBus: 15 }
 
 -- ---------------------------------------------------------------------------

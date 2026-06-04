@@ -13,7 +13,7 @@ module Sessions.Phase1Sparse where
 import Calypso.Prelude
 import Studio (iac, bass1)
 
-bass1Sparse :: PitchedPart PitchedNote12
+bass1Sparse :: PitchedPart
 bass1Sparse = on vBass bass1 (pitch "c4")
 
 session :: Session

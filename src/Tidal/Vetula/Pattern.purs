@@ -16,7 +16,7 @@
 -- | gets the MIDI scheduler / SuperDirt emit / timing stack for free.
 -- |
 -- | `vetula key progression voicing >> piano1` produces a
--- | `String -> PitchedPart PitchedNote12` (via the
+-- | `String -> PitchedPart` (via the
 -- | `routedInstrument` instance from `Calypso.Prelude`) — drop the
 -- | resulting PitchedPart into a `Session`'s `parts` field and the
 -- | substrate plays it.
@@ -396,6 +396,6 @@ vetulaEuclid k n (VetulaPart r) =
 -- | Combined with `routedInstrument` from `Calypso.Prelude`:
 -- |
 -- |   vetula key prog strat >> piano1
--- |     :: String -> PitchedPart PitchedNote12
+-- |     :: String -> PitchedPart
 instance notationVetulaPart :: Notation VetulaPart PitchedNote12 where
   toPattern = vetulaPattern

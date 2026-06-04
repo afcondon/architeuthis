@@ -21,19 +21,19 @@ module Sessions.Dail where
 import Calypso.Prelude
 import Studio (iac, bass1)
 
-baselineMajor :: PitchedPart PitchedNote12
+baselineMajor :: PitchedPart
 baselineMajor = on vBass bass1 (inKey cMajor (degree "1 2 3 4 5 6 7 8 9 10 11 12 13 14"))
 
-phrygianDomLT :: PitchedPart PitchedNote12
+phrygianDomLT :: PitchedPart
 phrygianDomLT = on vBass bass1 (inKey cPhrygianDomLT (degree "1 2 3 4 5 6 7 8 9 10 11 12 13 14"))
 
-triad3oct :: PitchedPart PitchedNote12
+triad3oct :: PitchedPart
 triad3oct = on vBass bass1 (inKey cMajorTriad3oct (degree "1 2 3 4 5 6 7 8 9"))
 
-chromaticQuantised :: PitchedPart PitchedNote12
+chromaticQuantised :: PitchedPart
 chromaticQuantised = on vBass bass1 (quantiseInKey cMajor (pitch "c4 c#4 d4 d#4 e4 f4 f#4 g4"))
 
-chromaticQuantisedMultiOct :: PitchedPart PitchedNote12
+chromaticQuantisedMultiOct :: PitchedPart
 chromaticQuantisedMultiOct = on vBass bass1 (quantiseInKey cPhrygianDomLT (pitch "c4 c#4 d4 d#4 e4 c5 c#5 d5"))
 
 session :: Session

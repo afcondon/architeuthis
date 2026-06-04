@@ -32,7 +32,6 @@ module Tidal.Voice
   , initialState
   , initialContinuousState
   , setPattern
-  , setPatternWithParams
   , setContinuousPattern
   , installFromSpec
   , clearPattern
@@ -44,7 +43,7 @@ module Tidal.Voice
   , EventToDispatch(..)
   , ComputeResult
   , computeUntil
-  , liftStringToPitch
+  , liftStringToSound
   ) where
 
 import Prelude
@@ -63,10 +62,17 @@ import Tidal.Dispatch.Helpers (samplePatternAtWith)
 import Tidal.Eval.Interpret (tpatToPattern)
 import Tidal.Parse.Parser (parse)
 import Tidal.Pattern.Core (queryArcWith)
-import Tidal.Pattern.Types (Arc(..), ControlMap, Event(..), Pattern, Value(..))
-import Tidal.Pitch (PitchedNote12(..), pitchToken)
-import Tidal.Pitch.Parse (pitchTok)
+import Tidal.Pattern.Types (Arc(..), ControlMap, Event(..), Pattern, Value(..), eventValue)
 import Tidal.Scales (Scale, renderDegree)
+import Tidal.Sound
+  ( Sound
+  , Pitch(..)
+  , Token(..)
+  , classifyToken
+  , controlVerb
+  , merge
+  , soundParams
+  )
 
 -- ---------------------------------------------------------------------------
 -- VoiceKind — discrete vs continuous voice payload (private).
@@ -76,16 +82,18 @@ import Tidal.Scales (Scale, renderDegree)
 -- | sees `State` as opaque; discrimination happens at the
 -- | `EventToDispatch` boundary instead.
 -- |
--- | A discrete voice's pattern is `Pattern PitchedNote12` — the typed
--- | substrate.  `PitchedNote12` carries Degree / Chromatic / Sample; the
--- | voice renders to a token-string at emit time, consulting the
--- | active scale (Window.activeScale) for Degrees.  Params stay
--- | `Pattern String` since `#`-joined params (`# gain "0.5 0.8"`) are
--- | numeric / sample-name controls, not pitch-bearing.
+-- | A discrete voice's pattern is `Pattern Sound` — the one typed
+-- | payload (see `Tidal.Sound`).  Each `Sound` carries an optional
+-- | `source` token, an optional `pitch` (Degree / Note / Chromatic),
+-- | and the typed control fields (`gain`, `pan`, …).  The voice renders
+-- | each event to a dispatcher token-string at emit time, consulting the
+-- | active scale (Window.activeScale) for Degrees, and projects the
+-- | control fields to the dispatcher's param map (`soundParams`).  The
+-- | old `params :: Map String (Pattern String)` sidecar is gone —
+-- | `#`-joined controls now live in the `Sound` itself.
 data VoiceKind
   = Discrete
-      { pattern :: Maybe (Pattern PitchedNote12)
-      , params :: Map String (Pattern String)
+      { pattern :: Maybe (Pattern Sound)
       , binding :: Binding
       }
   | Continuous
@@ -123,7 +131,7 @@ newtype State = State
 initialState :: String -> Binding -> State
 initialState name binding = State
   { name
-  , kind: Discrete { pattern: Nothing, params: Map.empty, binding }
+  , kind: Discrete { pattern: Nothing, binding }
   , phase: fromInt 0
   , lastEmittedUntil: fromInt 0
   , muted: false
@@ -143,20 +151,9 @@ initialContinuousState name dest = State
 -- | Continuous voice — the WS handler is responsible for routing
 -- | by kind, so reaching this with a Continuous voice indicates a
 -- | bug; we'd rather drop than crash mid-tick.
-setPattern :: Pattern PitchedNote12 -> State -> State
+setPattern :: Pattern Sound -> State -> State
 setPattern p (State s) = case s.kind of
-  Discrete d -> State (s { kind = Discrete (d { pattern = Just p, params = Map.empty }) })
-  Continuous _ -> State s
-
--- | Replace the pattern AND the parameter-pattern map atomically on a
--- | Discrete voice. Silent no-op on Continuous.
-setPatternWithParams
-  :: Pattern PitchedNote12
-  -> Map String (Pattern String)
-  -> State
-  -> State
-setPatternWithParams p ps (State s) = case s.kind of
-  Discrete d -> State (s { kind = Discrete (d { pattern = Just p, params = ps }) })
+  Discrete d -> State (s { kind = Discrete (d { pattern = Just p }) })
   Continuous _ -> State s
 
 -- | Replace the pattern on a Continuous voice. Silent no-op on Discrete.
@@ -181,33 +178,35 @@ installFromSpec patStr paramSpecs st@(State s) = case s.kind of
     Left err -> Left (show err)
     Right ast ->
       let
-        -- Parser produces Pattern String; lift to Pattern PitchedNote12 using
-        -- the pitch-classifier (per-token Chromatic vs Sample shape).
-        -- Same semantics as `Tidal.Pitch.Parse.pitch`, fused inline so
-        -- we avoid re-parsing.
-        stringPat = tpatToPattern ast :: Pattern String
-        pitchPat = map pitchTok stringPat
-        paramsMap = Map.fromFoldable
-          $ Array.mapMaybe
-              (\ps -> case parse ps.pat of
-                Right p -> Just (Tuple ps.name (tpatToPattern p :: Pattern String))
-                Left _ -> Nothing)
-              paramSpecs
-      in Right (setPatternWithParams pitchPat paramsMap st)
+        -- Parser produces Pattern String; classify each token into a
+        -- `Sound` (note-name/number → pitch, else source token) — the
+        -- same shape `Tidal.Pitch.Parse.pitch` used to give, now over
+        -- the unified payload.
+        basePat = map classifyToken (tpatToPattern ast :: Pattern String)
+        -- Each `# <name> <pat>` segment whose name is a known control
+        -- is parsed and `#`-merged onto the base.  Unknown names are
+        -- dropped (the old open `# <binding-name>` fanout is not
+        -- reinstated here — see docs/typed-edsl-plan.md).
+        controlPats = Array.mapMaybe
+          (\ps -> case controlVerb ps.name of
+            Just verb -> Just (verb ps.pat)
+            Nothing -> Nothing)
+          paramSpecs
+        fullPat = Array.foldl merge basePat controlPats
+      in Right (setPattern fullPat st)
 
 -- | Lift a `Pattern String` produced by the bare mini-notation parser
--- | into a `Pattern PitchedNote12` using the per-token pitch classifier.
--- | Used at the Erlang boundary by verbs that parse their pattern body
--- | separately (e.g. `fh2-trigger`, `kit`) and then hand it to
--- | `set_voice_pat`.
-liftStringToPitch :: Pattern String -> Pattern PitchedNote12
-liftStringToPitch = map pitchTok
+-- | into a `Pattern Sound` by classifying each token.  Used at the
+-- | Erlang boundary by verbs that parse their pattern body separately
+-- | (e.g. `fh2-trigger`, `kit`) and then hand it to `set_voice_pat`.
+liftStringToSound :: Pattern String -> Pattern Sound
+liftStringToSound = map classifyToken
 
 -- | Clear the pattern of a voice regardless of kind. Used by
 -- | `unbind` and by Tidal-compat `hush_all`.
 clearPattern :: State -> State
 clearPattern (State s) = case s.kind of
-  Discrete d -> State (s { kind = Discrete (d { pattern = Nothing, params = Map.empty }) })
+  Discrete d -> State (s { kind = Discrete (d { pattern = Nothing }) })
   Continuous c -> State (s { kind = Continuous (c { pattern = Nothing }) })
 
 setMuted :: Boolean -> State -> State
@@ -241,7 +240,7 @@ snapshot (State s) = case s.kind of
     , hasPattern: case d.pattern of
         Just _ -> true
         Nothing -> false
-    , paramCount: Map.size d.params
+    , paramCount: 0
     , muted: s.muted
     }
   Continuous c ->
@@ -348,8 +347,7 @@ computeDiscrete
   :: Window
   -> ControlMap
   -> State
-  -> { pattern :: Maybe (Pattern PitchedNote12)
-     , params :: Map String (Pattern String)
+  -> { pattern :: Maybe (Pattern Sound)
      , binding :: Binding
      }
   -> ComputeResult
@@ -372,30 +370,8 @@ computeDiscrete w controls (State s) d = case d.pattern of
           -- integer boundary. (Earlier sub-cycle filters dropped
           -- events at non-zero positions — see PR1.4e+1 fix.)
           queryEvents = queryArcWith controls pat fromCycle toCycle
-          -- Sample each param pattern at this event's cycle position.
-          -- Params with no event at this point (e.g. a rest token) are
-          -- absent from the map; the dispatcher treats absence as
-          -- "use binding default".
-          sampleParamsAt cyc =
-            Map.fromFoldable
-              $ Array.mapMaybe
-                  (\(Tuple paramName paramPat) ->
-                    case samplePatternAtWith controls cyc paramPat of
-                      Just v -> Just (Tuple paramName v)
-                      Nothing -> Nothing)
-                  (Map.toUnfoldable d.params :: Array (Tuple String (Pattern String)))
-          -- Render PitchedNote12 → dispatcher-facing token using the active
-          -- scale (if any).  Degree pitches without an active scale
-          -- become silence (token = "" → dispatcher drops).
-          renderToken :: PitchedNote12 -> Maybe String
-          renderToken = case _ of
-            Chromatic n -> Just (show n)
-            Sample tok -> Just tok
-            Degree deg -> case w.activeScale of
-              Just scl -> Just (show (renderDegree scl deg))
-              Nothing -> Nothing
-          toDispatch :: Event PitchedNote12 -> Maybe EventToDispatch
-          toDispatch e = case renderToken (eventPitch e) of
+          toDispatch :: Event Sound -> Maybe EventToDispatch
+          toDispatch e = case renderToken w.activeScale (eventValue e) of
             Nothing -> Nothing
             Just tok ->
               let
@@ -407,7 +383,7 @@ computeDiscrete w controls (State s) d = case d.pattern of
               in Just $ DiscreteEvent
                 { token: tok
                 , wallTimeUs
-                , params: sampleParamsAt eventCycle
+                , params: soundParams (eventValue e)
                 }
           evs = if s.muted
                   then []
@@ -415,6 +391,23 @@ computeDiscrete w controls (State s) d = case d.pattern of
           newSt = State (s { lastEmittedUntil = toCycle })
         in
           { newState: newSt, events: evs }
+
+-- | Render a `Sound`'s token for the dispatcher, consulting the active
+-- | scale for late-bound `Degree` pitches.  A `source` token wins (drum
+-- | hit / sample name); otherwise the `pitch` field renders — `Degree`
+-- | through the active scale (silence if none set), `Note`/`Chromatic`
+-- | as their MIDI number.  An empty `Sound` (no source, no pitch)
+-- | produces no token, so the dispatcher emits nothing.
+renderToken :: Maybe Scale -> Sound -> Maybe String
+renderToken mScale snd = case snd.source of
+  Just (Token tok) -> Just tok
+  Nothing -> case snd.pitch of
+    Just (Chromatic m) -> Just (show m)
+    Just (Note x) -> Just (show (Int.round x))
+    Just (Degree deg) -> case mScale of
+      Just scl -> Just (show (renderDegree scl deg))
+      Nothing -> Nothing
+    Nothing -> Nothing
 
 computeContinuous
   :: Window
@@ -454,8 +447,3 @@ eventStartCycle :: forall a. Event a -> Rational
 eventStartCycle = case _ of
   Digital { whole: Arc { start } } -> start
   Analog { part: Arc { start } } -> start
-
-eventPitch :: Event PitchedNote12 -> PitchedNote12
-eventPitch = case _ of
-  Digital { value } -> value
-  Analog { value } -> value

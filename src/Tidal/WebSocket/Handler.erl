@@ -586,10 +586,10 @@ install_pattern_voice(ParserResult, VoiceName, Binding, VerbLabel,
     case ParserResult of
         {right, PatStr} ->
             %% Parser produces Pattern String; voice expects Pattern
-            %% Pitch (the typed substrate).  Lift per-event with the
-            %% mini-classifier (note-shaped → Chromatic, sample-shaped
-            %% → Sample) before installing.
-            Pat = ('tidal_voice@ps':liftStringToPitch())(PatStr),
+            %% Sound (the unified typed carrier).  Classify per-event
+            %% (note-shaped → Chromatic pitch, sample-shaped → source
+            %% token) before installing.
+            Pat = ('tidal_voice@ps':liftStringToSound())(PatStr),
             tidal_dispatcher:set_binding(VoiceName, Binding),
             case tidal_voice_sup:set_voice_pat(VoiceName, Binding, Pat) of
                 ok ->
@@ -2905,26 +2905,16 @@ resolve_cue_body(CueName) ->
             end
     end.
 
-%% Body-type shim: if the part's destination is a DrumKit
-%% (purs-backend-erl encoding: `{midiDrumKit, ...}`), the body is
-%% `Pattern String` from `Tidal.Drum:drum/1`.  Coerce each event's
-%% String value to a `Sample` variant via the PureScript helper so
-%% the voice gen_server's `Pattern Pitch` carrier handles it; the
-%% dispatcher's `MidiDrumKit` arm (PR 2b) then renders `Sample s`
-%% back to the hit-name token `s` and looks up its (note, vel,
-%% durMs) in the binding's hits map.
-%%
-%% The destination's tag atom is the only thing inspected here — a
-%% minor boundary violation that survives because the alternative
-%% (parameterising the voice gen_server over a polymorphic note
-%% type) is Slab B work.
-coerce_body_for_dispatch(Dest, Pat) ->
-    case is_tuple(Dest) andalso tuple_size(Dest) >= 1 andalso element(1, Dest) of
-        midiDrumKit ->
-            ('tidal_drum@ps':drumPatternToPitch())(Pat);
-        _ ->
-            Pat
-    end.
+%% Body pass-through.  Since the typed-`Sound` realignment, BOTH
+%% pitched and drum part bodies are already `Pattern Sound` (the lift
+%% from the `PitchedNote12` pitch carrier happens at the `on` boundary
+%% in `Calypso.Prelude`, and drum/`#`-control verbs are `Sound`-typed
+%% directly).  So no per-destination coercion is needed any more — the
+%% body flows straight to the voice's `setPattern`.  Kept as a named
+%% function (rather than inlining) so the dispatch call site stays
+%% readable and a future destination-specific shim has a home.
+coerce_body_for_dispatch(_Dest, Pat) ->
+    Pat.
 
 fh2_daemon_call(Command) ->
     SockPath = fh2_daemon_socket_path(),

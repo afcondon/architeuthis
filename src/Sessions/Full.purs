@@ -173,16 +173,16 @@ qd2A = on vDrums qd2 (drum "~ ~ sn ~ ~ ~ sn ~")
 
 subject = degree "1 5 3 5 1 3 5 -1"
 
-fugue1 :: PitchedPart PitchedNote12
+fugue1 :: PitchedPart
 fugue1 = on vFugue bass1 (fugueVoice defaultVoice subject)
 
-fugue2 :: PitchedPart PitchedNote12
+fugue2 :: PitchedPart
 fugue2 = on vFugue bass2 (fugueVoice (defaultVoice { transpose = 7 }) subject)
 
-fugue3 :: PitchedPart PitchedNote12
+fugue3 :: PitchedPart
 fugue3 = on vFugue bass3 (fugueVoice (defaultVoice { transpose = 7, speed = doubleSpeed }) subject)
 
-fugue4 :: PitchedPart PitchedNote12
+fugue4 :: PitchedPart
 fugue4 = on vFugue bass4 (fugueVoice (defaultVoice { transpose = -3, retrograde = true, speed = halfSpeed }) subject)
 
 -- ---------------------------------------------------------------------------

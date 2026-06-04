@@ -25,8 +25,15 @@ module Tidal.Cell.Prelude
   , module Tidal.Pitch.Parse
   , module Tidal.Scales
   , module Tidal.Tintinnabuli
-  , module Tidal.Drum
   , module Tidal.Emit
+  -- Typed-`Sound` surface: the source / control verbs (`s`/`sound`/
+  -- `drum`/`n`/`gain`/…) + the typed `#` merge, plus the `Sound`/`Token`
+  -- types and bridge helpers.  Imported `hiding` the `Sound`-level
+  -- `degree`/`note`/`pitch` verbs and the `Pitch` constructors, which
+  -- would clash with the `PitchedNote12`-typed `pitch`/`degree` from
+  -- `Tidal.Pitch.Parse` above — pitched authoring stays on that
+  -- carrier so the scale machinery (`inKey`/transpose) is unchanged.
+  , module Tidal.Sound
   , r
   ) where
 
@@ -80,7 +87,7 @@ import Tidal.Tintinnabuli
   , aMajT, aMinT
   , bMajT, bMinT, bDimT
   )
-import Tidal.Drum (drum)
+import Tidal.Sound hiding (degree, note, pitch, Pitch(..))
 import Tidal.Emit
   ( class Emitable, noteName
   , class ToMidiNote, toMidiNote

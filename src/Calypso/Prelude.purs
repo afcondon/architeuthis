@@ -124,6 +124,7 @@ import Tidal.Notation
 import Tidal.Routed
 import Tidal.MidiDevice (MidiDevice(..))
 import Tidal.Pitch (PitchedNote12)
+import Tidal.Sound (Sound, toSound)
 import Tidal.Voices (VoiceName(..), voiceNameString, vBass, vDrums, vFugue, vHeld1, vUpper)
 import Data.Symbol (class IsSymbol)
 import Tidal.Selene
@@ -261,7 +262,12 @@ data CvRouter = CvRouter String Int
 -- |   * `VPerOctInstrument` — V/oct CV + gate-trigger via es9-daemon.
 -- |     Walks to a compound `gate G + cv V voct` binding at register
 -- |     time, reusing the existing Gate + CV NoteNameVoct PrimActions.
-data Instrument note
+-- | (The former `note` type parameter was dropped in the typed-`Sound`
+-- | realignment: pitch now lives in the `Sound` payload, so an
+-- | Instrument is purely a routing destination.  Pitched authoring
+-- | stays `PitchedNote12`-typed and is lifted to `Sound` at the `on`
+-- | boundary via `toSound`.)
+data Instrument
   = MidiInstrument MidiDevice Int Int Int Int
   | VPerOctInstrument CvRouter { gateChannel :: Int, voctBus :: Int }
 
@@ -277,7 +283,7 @@ data Instrument note
 -- | Use `midiChannelWith` when you need a specific default note (e.g.
 -- | a mono synth that wants a particular triggered pitch when the
 -- | pattern doesn't override).
-midiChannel :: forall note. MidiDevice -> Int -> Instrument note
+midiChannel :: MidiDevice -> Int -> Instrument
 midiChannel device channel = MidiInstrument device channel 60 100 50
 
 -- | The full-control MIDI instrument constructor for cases where
@@ -289,11 +295,10 @@ midiChannel device channel = MidiInstrument device channel 60 100 50
 -- | sub1 = midiChannelWith iac 5 { defNote: 24, defVel: 110, defDurMs: 200 }
 -- | ```
 midiChannelWith
-  :: forall note
-   . MidiDevice
+  :: MidiDevice
   -> Int
   -> { defNote :: Int, defVel :: Int, defDurMs :: Int }
-  -> Instrument note
+  -> Instrument
 midiChannelWith device channel { defNote, defVel, defDurMs } =
   MidiInstrument device channel defNote defVel defDurMs
 
@@ -313,10 +318,9 @@ midiChannelWith device channel { defNote, defVel, defDurMs } =
 -- | the gate trigger and the V/oct CV pre-set (with cvLeadMs head
 -- | start so the CV settles before the gate arrives).
 vPerOct
-  :: forall note
-   . CvRouter
+  :: CvRouter
   -> { gateChannel :: Int, voctBus :: Int }
-  -> Instrument note
+  -> Instrument
 vPerOct = VPerOctInstrument
 
 -- ---------------------------------------------------------------------------
@@ -412,10 +416,10 @@ gateHit name gateChannel durMs = { name, gateChannel, durMs }
 -- | voice supervisor.  Parameterised by `note` to support future
 -- | non-12-TET pitch types; today every PitchedPart has
 -- | `note ~ PitchedNote12`.
-newtype PitchedPart note = PitchedPart
+newtype PitchedPart = PitchedPart
   { mvoice      :: String
-  , destination :: Instrument note
-  , body        :: Pattern note
+  , destination :: Instrument
+  , body        :: Pattern Sound
   }
 
 -- | A `DrumPart` is a `Pattern DrumHitRef` (sequence of named drum
@@ -429,7 +433,7 @@ newtype PitchedPart note = PitchedPart
 newtype DrumPart = DrumPart
   { mvoice      :: String
   , destination :: DrumKit
-  , body        :: Pattern DrumHitRef
+  , body        :: Pattern Sound
   }
 
 -- | The polymorphic `on` constructor — typeclass-dispatched on the
@@ -445,11 +449,16 @@ class On dest body part | dest -> body part where
   on :: forall s n. IsSymbol s => Notation n body
      => VoiceName s -> dest -> n -> part
 
-instance onInstrument :: On (Instrument note) note (PitchedPart note) where
+-- | Pitched authoring stays `PitchedNote12`-typed (so `inKey`/`degree`/
+-- | transpose are untouched); the body is lifted to the unified `Sound`
+-- | carrier here via `toSound`.
+instance onInstrument :: On Instrument PitchedNote12 PitchedPart where
   on vn destination body =
-    PitchedPart { mvoice: voiceNameString vn, destination, body: toPattern body }
+    PitchedPart { mvoice: voiceNameString vn, destination, body: toSound (toPattern body) }
 
-instance onDrumKit :: On DrumKit DrumHitRef DrumPart where
+-- | Drum / control authoring is already `Sound`-typed (`drum "…"`,
+-- | `# gain "…"`), so the body passes straight through.
+instance onDrumKit :: On DrumKit Sound DrumPart where
   on vn destination body =
     DrumPart { mvoice: voiceNameString vn, destination, body: toPattern body }
 
@@ -464,14 +473,14 @@ instance onDrumKit :: On DrumKit DrumHitRef DrumPart where
 -- | The mvoice argument is supplied at use-site (or by a cell
 -- | template wrapper applying the cell name).
 instance routedInstrument
-  :: Notation n note
-  => RoutedTo n (Instrument note) (String -> PitchedPart note) where
+  :: Notation n PitchedNote12
+  => RoutedTo n Instrument (String -> PitchedPart) where
   routedTo n dest = \mvoice ->
-    PitchedPart { mvoice, destination: dest, body: toPattern n }
+    PitchedPart { mvoice, destination: dest, body: toSound (toPattern n) }
 
 -- | `notation >> drumkit` → `String -> DrumPart`.
 instance routedDrumKit
-  :: Notation n DrumHitRef
+  :: Notation n Sound
   => RoutedTo n DrumKit (String -> DrumPart) where
   routedTo n dest = \mvoice ->
     DrumPart { mvoice, destination: dest, body: toPattern n }
@@ -492,13 +501,13 @@ instance routedDrumKit
 data AnyPart
   = AnyPitchedPart
       { mvoice      :: String
-      , destination :: Instrument PitchedNote12
-      , body        :: Pattern PitchedNote12
+      , destination :: Instrument
+      , body        :: Pattern Sound
       }
   | AnyDrumPart
       { mvoice      :: String
       , destination :: DrumKit
-      , body        :: Pattern DrumHitRef
+      , body        :: Pattern Sound
       }
 
 -- | Erase a typed Part into an `AnyPart`.  Typeclass-resolved so a
@@ -506,11 +515,9 @@ data AnyPart
 class Erase a where
   erase :: a -> AnyPart
 
--- | Pitched-part erasure is currently restricted to `PitchedNote12`
--- | (matching `AnyPitchedPart`'s concrete type).  Future note types
--- | will need either a new `AnyPart` constructor or the deferred
--- | existential refactor.
-instance erasePitched :: Erase (PitchedPart PitchedNote12) where
+-- | Both part kinds now carry a `Pattern Sound` body, so erasure is a
+-- | straight unwrap into the matching `AnyPart` constructor.
+instance erasePitched :: Erase PitchedPart where
   erase (PitchedPart r) = AnyPitchedPart r
 
 instance eraseDrum :: Erase DrumPart where
@@ -535,15 +542,11 @@ infixr 5 appendParts as <+>
 -- | The Session value: devices, instruments, drum kits, and the bag
 -- | of erased parts.  Walked at baseline load.
 -- |
--- | The `instruments` field is typed at `Instrument PitchedNote12` —
--- | the dominant case today.  A future microtonal rig with a mix of
--- | `Instrument PitchedNote12` and `Instrument MaqamNote` declarations
--- | can either omit them from this listing (the walker enumerates
--- | module exports independently) or introduce an existentialised
--- | `AnyInstrument` field; revisit when a second note type lands.
+-- | `instruments` are now plain `Instrument` values (the `note` type
+-- | parameter was dropped — pitch lives in the `Sound` payload).
 newtype Session = Session
   { devices     :: Array MidiDevice
-  , instruments :: Array (Instrument PitchedNote12)
+  , instruments :: Array Instrument
   , drumKits    :: Array DrumKit
   , parts       :: Array AnyPart
   }
@@ -568,7 +571,7 @@ emptySession = Session
 addDevice :: MidiDevice -> Session -> Session
 addDevice d (Session s) = Session s { devices = s.devices `DataSemigroup.append` [d] }
 
-addInstrument :: Instrument PitchedNote12 -> Session -> Session
+addInstrument :: Instrument -> Session -> Session
 addInstrument i (Session s) = Session s { instruments = s.instruments `DataSemigroup.append` [i] }
 
 addDrumKit :: DrumKit -> Session -> Session
