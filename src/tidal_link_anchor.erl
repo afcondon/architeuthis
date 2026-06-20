@@ -155,16 +155,34 @@ init() ->
     %% configurations (observed with the Python listener). Any-interface
     %% accepts loopback unconditionally and listening on UDP doesn't trip
     %% macOS Local Network TCC.
+    %% Retry the bind across a restart race: when Bosun/DeepStar SIGTERMs
+    %% the old beam and immediately starts a new one, the old process can
+    %% still hold UDP 57121 for a moment. A single open() then fails and we
+    %% used to give up permanently (silently no-anchor forever). Retry for
+    %% ~2s so the new listener reclaims the port once the old beam exits.
+    case open_socket(10) of
+        undefined ->
+            tidal_log:err("link-anchor: could not bind UDP ~B after retries~n",
+                          [?DEFAULT_PORT]),
+            %% Stay alive answering no_anchor rather than crashing callers.
+            loop(#{socket => undefined, anchor => undefined, last_recv_us => 0,
+                   subscribers => sets:new()});
+        Socket ->
+            tidal_log:info("link-anchor listening on UDP *:~B~n", [?DEFAULT_PORT]),
+            loop(#{socket => Socket, anchor => undefined, last_recv_us => 0,
+                   subscribers => sets:new()})
+    end.
+
+%% Try to bind ?DEFAULT_PORT, retrying every 200ms up to N times. Returns
+%% the socket or `undefined` if it never came free.
+open_socket(0) -> undefined;
+open_socket(N) ->
     case gen_udp:open(?DEFAULT_PORT, [binary, {active, true}, {reuseaddr, true}]) of
         {ok, Socket} ->
-            tidal_log:info("link-anchor listening on UDP *:~B~n", [?DEFAULT_PORT]),
-            loop(#{socket => Socket, anchor => undefined, last_recv_us => 0});
-        {error, Reason} ->
-            tidal_log:err("link-anchor: gen_udp:open(~B) failed: ~p~n",
-                          [?DEFAULT_PORT, Reason]),
-            %% Stay alive even if the socket couldn't bind, so callers
-            %% don't crash; just answer no_anchor to every query.
-            loop(#{socket => undefined, anchor => undefined, last_recv_us => 0})
+            Socket;
+        {error, _Reason} ->
+            timer:sleep(200),
+            open_socket(N - 1)
     end.
 
 loop(State) ->
@@ -185,6 +203,11 @@ loop(State) ->
                       {anchor_rx, Beat, Tempo, Quantum, AgeUs}),
                     NewState = State#{anchor => {UnixUs, Beat, Tempo, Quantum},
                                       last_recv_us => NowUs},
+                    %% Fan the fresh anchor out to subscribed WS clients
+                    %% (Atlantis Sync Protocol — Binnacle apps in the
+                    %% browser). Plain message-passing, no pg/ETS.
+                    broadcast_anchor(UnixUs, Beat, Tempo, Quantum,
+                                     maps:get(subscribers, State, sets:new())),
                     loop(NewState);
                 error ->
                     %% Unknown packet — log once at debug, ignore.
@@ -202,6 +225,26 @@ loop(State) ->
             From ! {Ref, Reply},
             loop(State);
 
+        {subscribe, Pid} when is_pid(Pid) ->
+            %% A WS handler wants the anchor stream. Monitor it so we
+            %% prune the subscriber set when the connection dies, and
+            %% send the current anchor immediately (don't wait up to
+            %% 100ms for the next publish).
+            erlang:monitor(process, Pid),
+            Subs = sets:add_element(
+                     Pid, maps:get(subscribers, State, sets:new())),
+            case maps:get(anchor, State) of
+                undefined -> ok;
+                {U, B, T, Q} ->
+                    Pid ! {anchor_broadcast, format_anchor(U, B, T, Q)}
+            end,
+            loop(State#{subscribers => Subs});
+
+        {'DOWN', _Ref, process, Pid, _Reason} ->
+            Subs = sets:del_element(
+                     Pid, maps:get(subscribers, State, sets:new())),
+            loop(State#{subscribers => Subs});
+
         stop ->
             case maps:get(socket, State) of
                 undefined -> ok;
@@ -213,6 +256,20 @@ loop(State) ->
         _Other ->
             loop(State)
     end.
+
+%% Fan an anchor out to every subscribed WS handler pid.
+broadcast_anchor(UnixUs, Beat, Tempo, Quantum, Subscribers) ->
+    Bin = format_anchor(UnixUs, Beat, Tempo, Quantum),
+    lists:foreach(fun(Pid) -> Pid ! {anchor_broadcast, Bin} end,
+                  sets:to_list(Subscribers)).
+
+%% Atlantis Sync Protocol anchor frame: `anchor <unixMicros> <beat>
+%% <tempo> <quantum>`. unixMicros is the int64 wall-clock timestamp;
+%% the browser maps it via Date.now() (same machine) and extrapolates
+%% beat(t) = beat + (t - unixMicros) * tempo / 60e6.
+format_anchor(UnixUs, Beat, Tempo, Quantum) ->
+    iolist_to_binary(
+      io_lib:format("anchor ~B ~f ~f ~f", [UnixUs, Beat, Tempo, Quantum])).
 
 %% Synchronous request/reply against the registered process.
 %%

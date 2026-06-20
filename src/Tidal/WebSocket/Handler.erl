@@ -480,6 +480,47 @@ try_parse_prefixed(<<"cv-cont ", Rest/binary>>) ->
 try_parse_prefixed(<<"cv ", Rest/binary>>) ->
     parse_binding_cv_verb(Rest);
 
+%% --- Atlantis Sync Protocol: clock subscription + direct es9 output ----
+%% These verbs let a browser app (via Binnacle) drive the rig directly:
+%% subscribe to the forwarded Link anchor, and schedule sample-accurate
+%% gates / set CV on es9-daemon buses without going through the BEAM
+%% pattern scheduler.  Opt-in: anchors are only pushed to clients that
+%% send `clock-subscribe`, so Calypso (also on :3012) is unaffected.
+try_parse_prefixed(<<"clock-subscribe">>) -> {clock_subscribe};
+try_parse_prefixed(<<"clock-subscribe ", _/binary>>) -> {clock_subscribe};
+try_parse_prefixed(<<"fire-at ", Rest/binary>>) ->
+    %% fire-at <bus> <val> <durMs> <delayMs> → /cv/trig/at (sample-accurate)
+    case ws_tokens(Rest) of
+        [B, V, D, Dl] ->
+            case {parse_int(B), parse_number(V),
+                  parse_number(D), parse_number(Dl)} of
+                {{ok, Bus}, {ok, Val}, {ok, Dur}, {ok, Delay}} ->
+                    {fire_at, Bus, Val, Dur, Delay};
+                _ -> none
+            end;
+        _ -> none
+    end;
+try_parse_prefixed(<<"cv-out ", Rest/binary>>) ->
+    %% cv-out <bus> <val> → /cv (immediate CV set, e.g. pitch)
+    case ws_tokens(Rest) of
+        [B, V] ->
+            case {parse_int(B), parse_number(V)} of
+                {{ok, Bus}, {ok, Val}} -> {cv_out, Bus, Val};
+                _ -> none
+            end;
+        _ -> none
+    end;
+try_parse_prefixed(<<"cv-slew ", Rest/binary>>) ->
+    %% cv-slew <bus> <val> <lagSec> → /cv/slew (glide)
+    case ws_tokens(Rest) of
+        [B, V, L] ->
+            case {parse_int(B), parse_number(V), parse_number(L)} of
+                {{ok, Bus}, {ok, Val}, {ok, Lag}} -> {cv_slew, Bus, Val, Lag};
+                _ -> none
+            end;
+        _ -> none
+    end;
+
 try_parse_prefixed(_) ->
     none.
 
@@ -668,6 +709,26 @@ split_lat_suffix(Bin) ->
 %% fall through to the legacy single-pattern / multi-track JSON parser.
 handle_pattern_message(Text, State) ->
     case try_parse_prefixed(Text) of
+        {clock_subscribe} ->
+            %% Register this WS handler with the anchor listener; it will
+            %% start receiving {anchor_broadcast, Bin} info messages
+            %% (handled in websocket_info/2). Idempotent + harmless if the
+            %% anchor listener isn't running.
+            case whereis(tidal_link_anchor) of
+                undefined -> ok;
+                _ -> tidal_link_anchor ! {subscribe, self()}
+            end,
+            {reply, {text, <<"OK: clock-subscribe">>}, State};
+        {fire_at, Bus, Val, Dur, Delay} ->
+            es9_relay(<<"/cv/trig/at">>,
+                      [Bus, float(Val), float(Dur), float(Delay)]),
+            {reply, {text, <<"OK: fire-at">>}, State};
+        {cv_out, Bus, Val} ->
+            es9_relay(<<"/cv">>, [Bus, float(Val)]),
+            {reply, {text, <<"OK: cv-out">>}, State};
+        {cv_slew, Bus, Val, Lag} ->
+            es9_relay(<<"/cv/slew">>, [Bus, float(Val), float(Lag)]),
+            {reply, {text, <<"OK: cv-slew">>}, State};
         {bind, Name, ActionSpec} ->
             tidal_dispatcher:set_binding_from_spec(Name, ActionSpec),
             Reply = {text, <<"OK: bind ", Name/binary, " ", ActionSpec/binary>>},
@@ -1386,6 +1447,10 @@ safe_parse(Text) ->
     end.
 
 
+websocket_info({anchor_broadcast, Bin}, State) ->
+    %% Forwarded Link anchor from tidal_link_anchor — push it to this
+    %% subscribed browser client as a text frame (Atlantis Sync Protocol).
+    {reply, {text, Bin}, State};
 websocket_info(Info, State) ->
     io:format("WebSocket: Info: ~p~n", [Info]),
     {ok, State}.
@@ -1763,6 +1828,41 @@ fh2_apply_selene_standalone(JsonBinary) ->
 %% new-grammar verb parsers since legacy `binary:split <" ">` doesn't
 %% cope with the multi-space alignment users will write
 %% (`midi      live    "IAC Driver Tidal"`).
+%% --- Direct OSC relay to es9-daemon (Atlantis Sync Protocol output) ----
+%% Self-contained minimal OSC encoder + sender so the fire-at / cv-out /
+%% cv-slew verbs can reach es9-daemon (127.0.0.1:57120) without coupling
+%% to the dispatcher's gate config or tidal_oSC's hardcoded gate-bus math.
+%% Fresh socket per send (matching tidal_oSC's *After helpers — a
+%% long-lived socket silently dies across es9-daemon restarts).
+es9_relay(Address, Args) ->
+    case gen_udp:open(0, [binary]) of
+        {ok, Socket} ->
+            Msg = es9_osc_encode(Address, Args),
+            gen_udp:send(Socket, {127,0,0,1}, 57120, Msg),
+            gen_udp:close(Socket);
+        _ ->
+            ok
+    end.
+
+es9_osc_encode(Address, Args) ->
+    PaddedAddr = es9_osc_pad(Address),
+    {TypeTag, Encoded} = es9_osc_args(Args, <<>>, <<>>),
+    PaddedTag = es9_osc_pad(<<",", TypeTag/binary>>),
+    <<PaddedAddr/binary, PaddedTag/binary, Encoded/binary>>.
+
+es9_osc_args([], Tag, Enc) -> {Tag, Enc};
+es9_osc_args([A | Rest], Tag, Enc) when is_integer(A) ->
+    es9_osc_args(Rest, <<Tag/binary, "i">>,
+                 <<Enc/binary, A:32/big-signed-integer>>);
+es9_osc_args([A | Rest], Tag, Enc) when is_float(A) ->
+    es9_osc_args(Rest, <<Tag/binary, "f">>, <<Enc/binary, A:32/float>>).
+
+%% Pad a binary to a 4-byte boundary with a null terminator (OSC rule).
+es9_osc_pad(Bin) ->
+    Len = byte_size(Bin) + 1,
+    Pad = (4 - (Len rem 4)) rem 4,
+    <<Bin/binary, 0:8, 0:(Pad*8)>>.
+
 ws_tokens(Bin) -> ws_tokens(Bin, []).
 
 ws_tokens(<<>>, Acc) -> lists:reverse(Acc);
