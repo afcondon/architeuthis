@@ -237,13 +237,13 @@ negate x = PRing.sub PSemiring.zero x
 -- CV/Gate routers
 -- ---------------------------------------------------------------------------
 
--- | A named es9-daemon OSC endpoint — `CvRouter <host> <port>`.  The
--- | Studio module declares one per es9-daemon instance the rig talks
--- | to.  Today the runtime routes everything through a singleton OSC
--- | client opened against the default host:port (127.0.0.1:57120);
--- | the named-router abstraction is forward-compat for PR 2c.2's
--- | true multi-router dispatch (shared jams across machines / multi-
--- | ES-9 setups).
+-- | A named OSC endpoint — `CvRouter <host> <port>`.  The Studio module
+-- | declares one per endpoint the rig talks to.  Since PR 2c.2
+-- | (workstream C) the dispatcher routes per-alias against a Map String
+-- | OSCClient: the `es9` alias (CV/gate via es9-daemon, default
+-- | 127.0.0.1:57130) and the `superdirt` alias (audio via SuperDirt,
+-- | default 127.0.0.1:57120) are opened at boot, and any extra endpoint
+-- | a session declares is opened via the `registerCvRouter` verb.
 data CvRouter = CvRouter String Int
 
 -- ---------------------------------------------------------------------------

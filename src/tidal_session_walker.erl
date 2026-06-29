@@ -238,16 +238,15 @@ apply_event({registerMidiDevice,
     NewAcc = Acc#{device_latencies => Lats#{A => float(L)}},
     bump(devices, NewAcc);
 
-%% A es9-daemon event (PR 2c) records the named es9-daemon endpoint in
-%% the Studio snapshot.  In the single-router runtime (PR 2c) the
-%% dispatcher doesn't actually act on this — all OSC goes through the
-%% singleton OSCClient opened against the default host:port at boot.
-%% PR 2c.2 will hook this up to a per-alias OSCClient map so multiple
-%% es9-daemons can be addressed independently (shared jams across
-%% machines / multi-ES-9).  Until then, declaring a non-default
-%% host:port is silently equivalent to the default.
+%% A router event (PR 2c.2 / workstream C) opens the OSC client for a
+%% named endpoint and registers it under its alias in the dispatcher's
+%% per-alias client map.  `es9` (CV/gate) and `superdirt` (audio) are
+%% opened at boot from app-env; this path lets a session declare extra
+%% endpoints — a second ES-9, a remote SuperDirt, a shared-jam target —
+%% and is idempotent (re-declaring an alias swaps its socket).
 apply_event({registerCvRouter,
-             #{alias := _A, host := _H, port := _P}}, Acc) ->
+             #{alias := A, host := H, port := P}}, Acc) ->
+    tidal_dispatcher:register_osc_router(A, H, P),
     bump(cvRouters, Acc);
 
 %% An instrument event synthesises the same Level-2 `midi-note <alias>

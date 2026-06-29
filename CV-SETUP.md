@@ -3,8 +3,10 @@
 > **Superseded.** The SuperCollider layer documented here has been replaced
 > by a sibling Rust CV router living in its own repo at
 > `~/work/afc-work/es9-daemon/` (Marginalia project 185). It speaks the same
-> OSC protocol on :57120 and opens CoreAudio on the ES-9 directly via `cpal`,
-> with no SuperCollider startup ceremony.
+> OSC protocol (on **:57130** since 2026-06-29 — moved off :57120 so a real
+> SuperDirt instance can use the conventional Dirt port; see purerl-tidal
+> workstream C) and opens CoreAudio on the ES-9 directly via `cpal`, with no
+> SuperCollider startup ceremony.
 >
 > The sibling repos in the post-2026-04-25 constellation:
 >
@@ -25,7 +27,7 @@ This document captures all the nitty-gritty details for getting CV/Gate output f
 │  "bd sn hh cp"  │────▶│  MIDIScheduler  │────▶│  CV Engine      │────▶│  Modular    │
 │                 │     │  OSC Client     │     │  OSC Responders │     │  Gates/CV   │
 └─────────────────┘     └─────────────────┘     └─────────────────┘     └─────────────┘
-        WebSocket             UDP:57120              Audio Out
+        WebSocket             UDP:57130              Audio Out
 ```
 
 ## Critical Discoveries
@@ -161,7 +163,7 @@ MIDI Scheduler started
 Device: IAC Driver Tidal
 BPM: 120
 Pattern: ~
-Gate output: enabled (OSC 127.0.0.1:57120)
+Gate output: enabled (OSC 127.0.0.1:57130)
 ```
 
 ### Step 5: Send Patterns

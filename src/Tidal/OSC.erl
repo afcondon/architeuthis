@@ -1,5 +1,5 @@
 -module(tidal_oSC@foreign).
--export([startClient/1, stopClient/1, sendNote/3, sendSample/4]).
+-export([startClient/1, stopClient/1, sendNote/3, sendSample/4, sendDirtAfter/8]).
 -export([sendCV/3, sendCVSlew/4, sendGate/3, sendGateTrig/3, sendGateTrigAt/4, sendGateTrigAfter/4, sendCVAfter/4, sendCVTrigAfter/4, sendESXAfter/4, sendES5GateTrigAfter/4]).
 
 %% Start UDP socket for OSC
@@ -38,6 +38,63 @@ sendSample(Client, Sample, Cycle, Delta) ->
         gen_udp:send(Socket, Host, Port, Msg),
         unit
     end.
+
+%% BEAM-side delayed SuperDirt trigger. Spawns a one-shot process that
+%% sleeps DelayMs then opens a fresh UDP socket, sends a full
+%% /dirt/play message, and closes. Fresh-socket-per-send robustness
+%% model (mirrors sendCVAfter) so a SuperDirt restart can't silently
+%% break a long-lived socket.
+%%
+%% Params is the record-array FFI shape — a list of #{key => Bin,
+%% value => Float} — carrying the per-event Dirt param bag (n, gain,
+%% pan, cutoff, speed, begin, end, shape, …). Each becomes a
+%% <key>/<float> pair in the flat message after the s/orbit/cps/cycle/
+%% delta core that every /dirt/play carries.
+sendDirtAfter(Client, Sample, Orbit, Cps, Cycle, Delta, Params, DelayMs) ->
+    fun() ->
+        {_StoredSocket, Host, Port} = Client,
+        DelayInt = max(0, round(DelayMs)),
+        SampleBin = ensure_binary(Sample),
+        Core = [<<"s">>, SampleBin,
+                <<"orbit">>, Orbit,
+                <<"cps">>, float(Cps),
+                <<"cycle">>, float(Cycle),
+                <<"delta">>, float(Delta)],
+        ExtraArgs = dirt_param_args(Params),
+        Args = Core ++ ExtraArgs,
+        spawn(fun() ->
+            timer:sleep(DelayInt),
+            case gen_udp:open(0, [binary]) of
+                {ok, Socket} ->
+                    Msg = encode_osc(<<"/dirt/play">>, Args),
+                    gen_udp:send(Socket, Host, Port, Msg),
+                    gen_udp:close(Socket);
+                _ ->
+                    ok
+            end
+        end),
+        unit
+    end.
+
+%% Flatten the param record-array into the alternating <key-binary>,
+%% <float-value> arg list /dirt/play wants. Values come through as
+%% PureScript Numbers (Erlang floats); float/1 guards integer-valued
+%% ones so encode_args always tags them 'f'.
+%%
+%% Params is a PureScript `Array` — purs-backend-erl represents that as
+%% Erlang's `array` module, so convert with array:to_list (the direct-list
+%% clause covers callers that already hand a plain list, e.g. test probes).
+dirt_param_args(Params) ->
+    List = case Params of
+        L when is_list(L) -> L;
+        _ -> try array:to_list(Params) catch _:_ -> [] end
+    end,
+    lists:foldr(
+      fun(#{key := K, value := V}, Acc) ->
+              [ensure_binary(K), float(V) | Acc];
+         (_, Acc) ->
+              Acc
+      end, [], List).
 
 %% ============================================
 %% CV/Gate functions for Expert Sleepers ES-9

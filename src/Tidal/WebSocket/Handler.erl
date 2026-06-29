@@ -1830,15 +1830,16 @@ fh2_apply_selene_standalone(JsonBinary) ->
 %% (`midi      live    "IAC Driver Tidal"`).
 %% --- Direct OSC relay to es9-daemon (Atlantis Sync Protocol output) ----
 %% Self-contained minimal OSC encoder + sender so the fire-at / cv-out /
-%% cv-slew verbs can reach es9-daemon (127.0.0.1:57120) without coupling
+%% cv-slew verbs can reach es9-daemon (127.0.0.1:57130) without coupling
 %% to the dispatcher's gate config or tidal_oSC's hardcoded gate-bus math.
 %% Fresh socket per send (matching tidal_oSC's *After helpers — a
 %% long-lived socket silently dies across es9-daemon restarts).
+%% Port moved 57120 → 57130 (workstream C) with the rest of the es9 path.
 es9_relay(Address, Args) ->
     case gen_udp:open(0, [binary]) of
         {ok, Socket} ->
             Msg = es9_osc_encode(Address, Args),
-            gen_udp:send(Socket, {127,0,0,1}, 57120, Msg),
+            gen_udp:send(Socket, {127,0,0,1}, 57130, Msg),
             gen_udp:close(Socket);
         _ ->
             ok

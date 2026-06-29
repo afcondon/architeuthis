@@ -98,6 +98,7 @@ data DestKind
   | ToGate
   | ToESX
   | ToES5
+  | ToDirt  -- ^ SuperDirt audio via `/dirt/play` OSC (workstream C).
 
 derive instance eqDestKind :: Eq DestKind
 
@@ -108,6 +109,7 @@ instance showDestKind :: Show DestKind where
     ToGate -> "ToGate"
     ToESX -> "ToESX"
     ToES5 -> "ToES5"
+    ToDirt -> "ToDirt"
 
 -- ---------------------------------------------------------------------------
 -- Concrete sink types
@@ -184,6 +186,14 @@ data SinkType
       { voice :: Int
       , defaultNote :: Int
       }
+  | SinkDirt
+      { alias :: String
+      , orbit :: Int
+      }
+  -- ^ SuperDirt audio sink (workstream C). Element = SampleOrNote (the
+  --   token is `s`, a sample/synth name; `# n`/`# note` refine it);
+  --   DestKind = ToDirt. The full param bag rides the event, not the
+  --   sink signature.
   | SinkKitDispatch
   -- ^ Meta-sink for the `kit` cell verb. Forwards tokens to whatever
   --   bindings the registry contains at dispatch time, so its true
@@ -239,6 +249,7 @@ inferPrimSinkType = case _ of
   GateDrumKit r ->
     SinkGateDrumKit { router: r.router, hits: Map.size r.hits }
   Fh2Trigger r -> SinkFh2Trigger r
+  Dirt r -> SinkDirt r
   KitDispatch -> SinkKitDispatch
   ChordDispatch r -> SinkChordDispatch r
   YarnsDispatch r -> SinkYarnsDispatch r
@@ -281,6 +292,7 @@ sinkElement = case _ of
   SinkContMidiCC _ -> Number
   SinkContCV _ -> Number
   SinkFh2Trigger _ -> SampleOrNote
+  SinkDirt _ -> SampleOrNote
   SinkKitDispatch -> SampleOrNote
   SinkChordDispatch _ -> Note
   SinkYarnsDispatch _ -> Note
@@ -301,6 +313,7 @@ sinkDestKind = case _ of
   SinkESX _ -> ToESX
   SinkES5Gate _ -> ToES5
   SinkFh2Trigger _ -> ToMidi
+  SinkDirt _ -> ToDirt
   SinkKitDispatch -> ToMidi
   SinkChordDispatch _ -> ToMidi
   SinkYarnsDispatch _ -> ToMidi
@@ -553,6 +566,12 @@ checkPattern sink pat = case sink of
       Left $ "fh2-trigger voice expects sample/note tokens, got a numeric pattern"
     PatString _ -> Right unit  -- defaultNote fallback handles unknowns
 
+  SinkDirt _ -> case pat of
+    PatNumber ->
+      Left $ "dirt voice expects sample/synth-name tokens (e.g., \"bd*4\"), \
+             \got a numeric pattern (set sample params with # n / # gain / …)"
+    PatString _ -> Right unit  -- token is the SuperDirt `s`; permissive
+
   SinkKitDispatch -> case pat of
     PatNumber ->
       Left $ "kit voice expects voice-name tokens (e.g., \"bd sn bd cp\"), got a numeric pattern"
@@ -622,6 +641,8 @@ renderSinkType st =
       SinkFh2Trigger r ->
         "ToMidi device=\"fh2\" voice=" <> show r.voice
           <> " note=" <> show r.defaultNote
+      SinkDirt r ->
+        "ToDirt alias=" <> show r.alias <> " orbit=" <> show r.orbit
       SinkKitDispatch ->
         "Kit (dispatches tokens through binding registry)"
       SinkChordDispatch r ->
@@ -689,6 +710,9 @@ renderSinkTypeJSON st =
       SinkFh2Trigger r ->
         "{\"voice\":" <> show r.voice
           <> ",\"defaultNote\":" <> show r.defaultNote <> "}"
+      SinkDirt r ->
+        "{\"alias\":" <> jsStr r.alias
+          <> ",\"orbit\":" <> show r.orbit <> "}"
       SinkKitDispatch -> "{}"
       SinkChordDispatch r ->
         "{\"device\":" <> jsStr r.device

@@ -2,7 +2,7 @@
 --
 -- Trigger path (orthogonal to the FH-2 MIDI/MCV path):
 --   Tidal binding (es5gate <bit>)
---     → cv-router OSC `/esx5gate <bit> <state>` (UDP 57120)
+--     → cv-router OSC `/esx5gate <bit> <state>` (UDP 57130)
 --     → cv-router writes byte to es5_l_gates AtomicU8
 --     → audio callback packs byte into high byte of the ES-5 L lane
 --       (24-bit PCM ADAT, sample-rate-paced)
@@ -12,7 +12,7 @@
 -- Bit N (0-indexed) → ES-5 panel gate (N+1) (1-indexed). Bit 0 = gate 1.
 --
 -- Pre-conditions:
---   1. cv-router running (default device "ES-9", listening UDP 57120):
+--   1. cv-router running (default device "ES-9", listening UDP 57130):
 --        cd music/expert-sleepers/cv-router && ./target/release/cv-router
 --   2. ES-9 loaded with `cv-router-with-es5.es9` config so USB 5 → ES-5 L:
 --        cd music/expert-sleepers/es9-config && \

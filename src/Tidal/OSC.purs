@@ -12,6 +12,7 @@ module Tidal.OSC
   , stopClient
   , sendNote
   , sendSample
+  , sendDirtAfter
   -- CV/Gate for Expert Sleepers ES-9
   , sendCV
   , sendCVSlew
@@ -73,6 +74,35 @@ foreign import sendNote :: OSCClient -> String -> Int -> Effect Unit
 -- | Send a sample trigger to SuperDirt
 -- | /dirt/play with sample name, cycle position, etc.
 foreign import sendSample :: OSCClient -> String -> Number -> Number -> Effect Unit
+
+-- | BEAM-side delayed SuperDirt trigger. After `delayMs`, opens a fresh
+-- | UDP socket and sends a full Dirt-protocol `/dirt/play` message, then
+-- | closes. Same robustness model as `sendCVAfter` (fresh socket per send,
+-- | so a SuperDirt restart never silently breaks a long-lived socket).
+-- |
+-- | The wire shape is the flat key/value param bag stock SuperDirt's
+-- | message handler reads: `s <name> orbit <int> cps <f> cycle <f>
+-- | delta <f>` followed by each extra param as `<key> <float>`. `s` is
+-- | the sample/synth name (pattern token), `orbit` the SuperDirt orbit,
+-- | `cps`/`cycle`/`delta` the timing triple, and `params` carries
+-- | whatever the event set (`n`, `gain`, `pan`, `cutoff`, `speed`,
+-- | `begin`, `end`, `shape`, …) as `{ key, value }` float entries.
+-- |
+-- | NOTE: a plain (non-bundle) `/dirt/play` plays on receipt, so the
+-- | `delayMs` sleep is what schedules it — matching the CV path's
+-- | accuracy (~one BEAM scheduling tick of jitter), not OSC-bundle
+-- | timetag accuracy. Good enough for the live rig; bundle timetags are
+-- | a later refinement if sub-ms alignment with SC's own clock is needed.
+foreign import sendDirtAfter
+  :: OSCClient
+  -> String   -- s (sample/synth name)
+  -> Int      -- orbit
+  -> Number   -- cps (cycles per second)
+  -> Number   -- cycle (absolute cycle position)
+  -> Number   -- delta (event duration, seconds)
+  -> Array { key :: String, value :: Number }  -- extra float params
+  -> Number   -- delayMs
+  -> Effect Unit
 
 -- | ============================================
 -- | CV/Gate for Expert Sleepers ES-9

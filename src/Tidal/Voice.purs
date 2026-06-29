@@ -383,7 +383,8 @@ computeDiscrete w controls (State s) d = case d.pattern of
               in Just $ DiscreteEvent
                 { token: tok
                 , wallTimeUs
-                , params: soundParams (eventValue e)
+                , params: withDirtTiming w cycleN (eventDeltaCycles e)
+                                         (soundParams (eventValue e))
                 }
           evs = if s.muted
                   then []
@@ -447,3 +448,33 @@ eventStartCycle :: forall a. Event a -> Rational
 eventStartCycle = case _ of
   Digital { whole: Arc { start } } -> start
   Analog { part: Arc { start } } -> start
+
+-- | Event duration in cycles. Digital events use the `whole` arc width
+-- | (the musical event length, Tidal-style); Analog events fall back to
+-- | the queried `part` width. Feeds the SuperDirt `delta` field via
+-- | `withDirtTiming` (delta-seconds = deltaCycles / cps).
+eventDeltaCycles :: forall a. Event a -> Number
+eventDeltaCycles = case _ of
+  Digital { whole: Arc { start, stop } } -> R.toNumber (stop - start)
+  Analog { part: Arc { start, stop } } -> R.toNumber (stop - start)
+
+-- | Attach the SuperDirt timing triple (`_cps`, `_cycle`, `_delta`) to a
+-- | per-event param map under reserved underscore keys. Only the `Dirt`
+-- | dispatch path reads them (and strips them before building the
+-- | `/dirt/play` bag); every other emit kind ignores them, so threading
+-- | them here is additive and leaves the CV / MIDI wire output unchanged.
+-- |
+-- | Carried in the existing `params` map rather than as new event fields
+-- | so the dispatch arity / event record stays byte-compatible — the
+-- | timing is genuinely per-event (cycle, whole-width) and only the voice
+-- | knows it, so the voice is where it has to be sampled.
+withDirtTiming
+  :: Window -> Number -> Number -> Map String String -> Map String String
+withDirtTiming w cycleN deltaCycles params =
+  let
+    cps = if w.cycleDurationMs > 0.0 then 1000.0 / w.cycleDurationMs else 0.0
+    deltaSec = deltaCycles * w.cycleDurationMs / 1000.0
+  in
+    Map.insert "_cps" (show cps)
+      $ Map.insert "_cycle" (show cycleN)
+      $ Map.insert "_delta" (show deltaSec) params

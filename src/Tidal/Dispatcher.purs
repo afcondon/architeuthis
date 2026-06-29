@@ -35,6 +35,7 @@ module Tidal.Dispatcher
   , Config
   , MidiDevice
   , initialState
+  , registerOscClient
   , setBinding
   , setBindingFromSpec
   , removeBinding
@@ -73,7 +74,7 @@ import Tidal.Log as Log
 import Tidal.MIDIBridge (BridgeClient, scheduleCCAt, scheduleNoteAt)
 import Tidal.MIDIBridge as MIDIBridge
 import Tidal.Dispatch.Helpers (clamp7bit, interpretCV, param7bit, resolveTokenMidi)
-import Tidal.OSC (OSCClient, sendCVAfter, sendCVTrigAfter, sendES5GateTrigAfter, sendESXAfter, sendGateTrigAfter)
+import Tidal.OSC (OSCClient, sendCVAfter, sendCVTrigAfter, sendDirtAfter, sendES5GateTrigAfter, sendESXAfter, sendGateTrigAfter)
 import Tidal.Transform (applyTransforms)
 
 -- ---------------------------------------------------------------------------
@@ -92,7 +93,13 @@ type MidiDevice =
 
 newtype State = State
   { bridgeClient :: BridgeClient
-  , oscClient :: Maybe OSCClient
+  , oscClients :: Map String OSCClient
+  -- ^ OSC send sockets keyed by router alias (PR 2c.2 — workstream C).
+  --   `es9` is the CV/gate path (es9-daemon); `superdirt` reaches a real
+  --   SuperDirt instance for audio. Opened at boot from app-env and/or
+  --   added live via `registerOscClient` (the `registerCvRouter` verb).
+  --   Resolution falls back to the `es9` client for unregistered aliases
+  --   so an un-aliased action (Gate / CV / …) routes exactly as before.
   , bindings :: Map String Binding
   , continuousBindings :: Map String ContDest
   , midiDevices :: Map String MidiDevice
@@ -103,14 +110,15 @@ newtype State = State
 
 initialState
   :: { bridgeClient :: BridgeClient
-     , oscClient :: Maybe OSCClient
+     , oscClients :: Array { alias :: String, client :: OSCClient }
      , gateDuration :: Number
      , cvLeadMs :: Number
      }
   -> State
 initialState init = State
   { bridgeClient: init.bridgeClient
-  , oscClient: init.oscClient
+  , oscClients: Map.fromFoldable
+      (map (\r -> Tuple r.alias r.client) init.oscClients)
   , bindings: Map.empty
   , continuousBindings: Map.empty
   , midiDevices: Map.empty
@@ -118,6 +126,24 @@ initialState init = State
   , config: { gateDuration: init.gateDuration, cvLeadMs: init.cvLeadMs }
   , eventCount: 0
   }
+
+-- | Register (or replace) the OSC client for a router alias. Called by
+-- | the Erlang shell's `register_osc_router` path when a session declares
+-- | a `registerCvRouter <alias> <host> <port>` endpoint, so the typed
+-- | Studio `CvRouter` / SuperDirt declarations open real sockets at the
+-- | aliases the dispatcher routes against.
+registerOscClient :: String -> OSCClient -> State -> State
+registerOscClient alias client (State s) =
+  State (s { oscClients = Map.insert alias client s.oscClients })
+
+-- | Resolve a router alias to its OSC client. Falls back to the `es9`
+-- | client for any unregistered alias so the legacy un-aliased actions
+-- | (which pass `"es9"`) and stray router names both reach the default
+-- | CV/gate endpoint rather than silently dropping.
+resolveOsc :: String -> State -> Maybe OSCClient
+resolveOsc alias (State s) = case Map.lookup alias s.oscClients of
+  Just c -> Just c
+  Nothing -> Map.lookup "es9" s.oscClients
 
 -- ---------------------------------------------------------------------------
 -- Mutations
@@ -239,12 +265,17 @@ dispatchEvent { name, token, wallTimeUs, params } (State s) = do
       -- 2. Compositional `#` fanout: any param NAME that matches another
       --    registered binding fires that binding's MidiCC actions with
       --    the joined value as the token. Slot-override params (consumed
-      --    by step 1) are skipped here to avoid double-fire.
-      for_ (Map.toUnfoldable params :: Array (Tuple String String))
-        \(Tuple paramName paramValue) ->
-          when (not (isSlotOverride paramName binding)) do
-            dispatchComposedFanout (State s) name paramName paramValue
-                                   wallTimeUs delayClamped
+      --    by step 1) and the reserved `_cps`/`_cycle`/`_delta` timing
+      --    keys are skipped here to avoid double-fire. A Dirt binding
+      --    consumes its whole param bag in step 1, so it skips fanout
+      --    entirely.
+      when (not (Array.any isDirtAction binding)) $
+        for_ (Map.toUnfoldable params :: Array (Tuple String String))
+          \(Tuple paramName paramValue) ->
+            when (not (isSlotOverride paramName binding)
+                  && not (isDirtTimingKey paramName)) do
+              dispatchComposedFanout (State s) name paramName paramValue
+                                     wallTimeUs delayClamped
   pure (State (s { eventCount = s.eventCount + 1 }))
 
 dispatchPrimAction
@@ -259,7 +290,7 @@ dispatchPrimAction
   -> Effect Unit
 dispatchPrimAction (State s) name token wallUs delayMs _delayInt params = case _ of
   CV bus mapping ->
-    case s.oscClient, interpretCV mapping token of
+    case resolveOsc "es9" (State s), interpretCV mapping token of
       Just osc, Just value -> do
         -- CV pre-sets fire `cvLeadMs` earlier than the gate, so V/oct
         -- has time to settle before the gate trigger arrives.
@@ -269,7 +300,7 @@ dispatchPrimAction (State s) name token wallUs delayMs _delayInt params = case _
       _, _ -> pure unit
 
   ESX e ->
-    case s.oscClient, Number.fromString token of
+    case resolveOsc "es9" (State s), Number.fromString token of
       Just osc, Just value -> do
         let adjusted = max 0.0 (delayMs - Int.toNumber e.latencyMs)
         Log.debug $ "⌇ [" <> name <> "] esx slot " <> show e.slot <> " = " <> show value
@@ -278,7 +309,7 @@ dispatchPrimAction (State s) name token wallUs delayMs _delayInt params = case _
 
   Gate g ->
     when (token /= "~") do
-      case s.oscClient of
+      case resolveOsc "es9" (State s) of
         Just osc -> do
           let adjusted = max 0.0 (delayMs - Int.toNumber g.latencyMs)
           Log.debug $ "⚡ [" <> name <> "] gate " <> show g.channel <> " in " <> show (Int.floor adjusted) <> "ms"
@@ -287,7 +318,7 @@ dispatchPrimAction (State s) name token wallUs delayMs _delayInt params = case _
 
   CVTrig g ->
     when (token /= "~") do
-      case s.oscClient of
+      case resolveOsc "es9" (State s) of
         Just osc -> do
           let adjusted = max 0.0 (delayMs - Int.toNumber g.latencyMs)
           Log.debug $ "⚡ [" <> name <> "] cv-trig bus " <> show g.bus <> " in " <> show (Int.floor adjusted) <> "ms"
@@ -296,7 +327,7 @@ dispatchPrimAction (State s) name token wallUs delayMs _delayInt params = case _
 
   ES5Gate g ->
     when (token /= "~") do
-      case s.oscClient of
+      case resolveOsc "es9" (State s) of
         Just osc -> do
           let adjusted = max 0.0 (delayMs - Int.toNumber g.latencyMs)
           Log.debug $ "✦ [" <> name <> "] es5gate " <> show g.bit
@@ -373,7 +404,7 @@ dispatchPrimAction (State s) name token wallUs delayMs _delayInt params = case _
           Log.debug $ "  · [" <> name <> "] gate-drum-kit: unknown hit '"
             <> token <> "'"
         Just hit ->
-          case s.oscClient of
+          case resolveOsc g.router (State s) of
             Nothing ->
               Log.debug $ "✗ [" <> name <> "] gate-drum-kit: no OSC client"
             Just osc -> do
@@ -382,6 +413,29 @@ dispatchPrimAction (State s) name token wallUs delayMs _delayInt params = case _
                 <> " (" <> show hit.durMs <> "ms)"
               sendGateTrigAfter osc hit.gateChannel
                 (Int.toNumber hit.durMs) delayMs
+
+  Dirt d ->
+    -- SuperDirt audio (workstream C). Resolve the binding's alias to its
+    -- OSC client (default `superdirt`), then emit a full `/dirt/play`:
+    -- the token is `s`, `orbit` from the binding, the cps/cycle/delta
+    -- timing comes from the reserved `_cps`/`_cycle`/`_delta` params the
+    -- voice threaded in, and every other numeric param (`n`, `gain`,
+    -- `pan`, `cutoff`, `speed`, `begin`, `end`, `shape`, …) rides through
+    -- as a float entry. Rests skip.
+    when (token /= "~") do
+      case resolveOsc d.alias (State s) of
+        Nothing ->
+          Log.debug $ "✗ [" <> name <> "] dirt: no OSC client for alias '"
+            <> d.alias <> "'"
+        Just osc -> do
+          let cps = lookupNum "_cps" params 0.5
+              cycle = lookupNum "_cycle" params 0.0
+              delta = lookupNum "_delta" params 0.0
+              extras = dirtExtras params
+          Log.debug $ "♬ [" <> name <> "] dirt s=" <> token
+            <> " orbit " <> show d.orbit <> " (" <> show (Array.length extras)
+            <> " params) in " <> show (Int.floor delayMs) <> "ms"
+          sendDirtAfter osc token d.orbit cps cycle delta extras delayMs
 
   Fh2Trigger f ->
     -- FH-2 trigger: resolve the voice's MIDI channel via
@@ -539,7 +593,7 @@ dispatchContEvent { name, value, wallTimeUs } (State s) = do
           Log.debug $ "≈ [" <> name <> "] cc " <> show m.cc <> " = " <> show v7
           scheduleCCAt s.bridgeClient dev.name m.channel m.cc v7 adjustedUs
     Just (ContCV c) ->
-      case s.oscClient of
+      case resolveOsc "es9" (State s) of
         Nothing -> pure unit
         Just osc -> do
           let outValue = applyTransforms c.transforms value
@@ -608,6 +662,41 @@ setLinkTempo bpm (State s) =
 -- |
 -- | Currently only `vel` is a recognised slot, applying to MidiNote
 -- | actions. Extend as more slots become pattern-driven.
+-- | Is this a SuperDirt `Dirt` action? Bindings containing one consume
+-- | their whole param bag in the per-action pass, so the `#`-fanout step
+-- | is skipped for them.
+isDirtAction :: PrimAction -> Boolean
+isDirtAction = case _ of
+  Dirt _ -> true
+  _ -> false
+
+-- | The reserved per-event timing keys the voice threads in for the Dirt
+-- | path (`_cps`, `_cycle`, `_delta`). Stripped from the `/dirt/play`
+-- | param bag and skipped by the `#`-fanout (they name no binding).
+isDirtTimingKey :: String -> Boolean
+isDirtTimingKey k = k == "_cps" || k == "_cycle" || k == "_delta"
+
+-- | Read a numeric param by key, falling back to a default when absent or
+-- | non-numeric. Used to pull the Dirt timing triple out of the param map.
+lookupNum :: String -> Map String String -> Number -> Number
+lookupNum k params dflt = case Map.lookup k params >>= Number.fromString of
+  Just n -> n
+  Nothing -> dflt
+
+-- | Project the per-event param map into the float entries `/dirt/play`
+-- | carries — every numeric param except the reserved timing keys.
+-- | Non-numeric values (and the timing keys) are dropped; `s` is the
+-- | token, not a param, so it never appears here.
+dirtExtras :: Map String String -> Array { key :: String, value :: Number }
+dirtExtras params =
+  Array.mapMaybe toEntry (Map.toUnfoldable params :: Array (Tuple String String))
+  where
+  toEntry (Tuple k v)
+    | isDirtTimingKey k = Nothing
+    | otherwise = case Number.fromString v of
+        Just n -> Just { key: k, value: n }
+        Nothing -> Nothing
+
 isSlotOverride :: String -> Binding -> Boolean
 isSlotOverride paramName binding = case paramName of
   "vel" -> Array.any consumesVel binding
@@ -680,9 +769,7 @@ snapshot (State s) =
   { eventsReceived: s.eventCount
   , bindingCount: Map.size s.bindings
   , midiDeviceCount: Map.size s.midiDevices
-  , oscEnabled: case s.oscClient of
-      Just _ -> true
-      Nothing -> false
+  , oscEnabled: not (Map.isEmpty s.oscClients)
   }
 
 -- | Publisher's view: everything tidal_state_pub needs to render the
@@ -708,9 +795,7 @@ publisherSnapshot (State s) =
   , continuousBindings: s.continuousBindings
   , midiDevices: s.midiDevices
   , fh2VoiceChannels: s.fh2VoiceChannels
-  , gateEnabled: case s.oscClient of
-      Just _ -> true
-      Nothing -> false
+  , gateEnabled: Map.member "es9" s.oscClients
   , gateDurationMs: s.config.gateDuration
   , cvLeadMs: s.config.cvLeadMs
   }

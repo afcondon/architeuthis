@@ -141,6 +141,25 @@ data PrimAction
   --   *Server-only*: built by `tidal_session_walker`'s
   --   `registerGateDrumKit` event from the typed `GateDrumKit`
   --   declaration in Studio.
+  | Dirt { alias :: String, orbit :: Int }
+  -- ^ SuperDirt audio output (workstream C — PR 2c.2). Emits a full
+  --   Dirt-protocol `/dirt/play` message to the OSC client registered
+  --   under `alias` (default `superdirt` → a real SuperCollider/SuperDirt
+  --   instance, see Studio / the `registerCvRouter superdirt …` endpoint).
+  --   The pattern token becomes the `s` (sample/synth name); the
+  --   `#`-joined param bag (`n`, `gain`, `pan`, `cutoff`, `speed`,
+  --   `begin`, `end`, `shape`, …) rides through unchanged; `orbit`
+  --   selects the SuperDirt orbit (output bus / effect chain). cps /
+  --   cycle / delta are sourced from the per-event timing the voice
+  --   threads in (Voice.purs reserved `_cps`/`_cycle`/`_delta` keys).
+  --
+  --   This is the audio counterpart to the CV/MIDI emit kinds: a
+  --   `superdirt`-aliased binding reaches real SuperDirt audio, an
+  --   `es9`-aliased binding reaches the CV/gate rig — same pattern,
+  --   different backend, selected purely by the routed alias.
+  --
+  --   Constructable via `bind <name> dirt <orbit> [<alias>]` so a
+  --   one-shot manual test is `bind sd dirt 0` then `sd "bd*4"`.
   | Fh2Trigger { voice :: Int, defaultNote :: Int }
   -- ^ Fires an FH-2 envelope trigger. The MIDI channel is resolved at
   --   dispatch time from the dispatcher's `fh2VoiceChannels` map
@@ -387,6 +406,15 @@ parseAction s =
     ["gate-drum-kit", router, hitsStr] ->
       parseGateDrumKit router hitsStr
 
+    -- dirt <orbit> [<alias>]  — SuperDirt audio output.  Default alias
+    -- `superdirt`.  `bind sd dirt 0` routes a pattern to orbit 0 on the
+    -- SuperDirt OSC client; `dirt 2 myrig` targets a differently-aliased
+    -- SuperDirt endpoint declared via `registerCvRouter`.
+    ["dirt", orbitStr] ->
+      mkDirt orbitStr "superdirt"
+    ["dirt", orbitStr, alias] ->
+      mkDirt orbitStr alias
+
     other ->
       Left ("unrecognized action: '" <> String.joinWith " " other <> "'")
 
@@ -400,6 +428,17 @@ mkGate chStr latStr =
     Just ch, Just lat -> Right (Gate { channel: ch, latencyMs: lat })
     Nothing, _ -> Left ("gate: expected integer channel, got '" <> chStr <> "'")
     _, Nothing -> Left ("gate: expected integer lat, got '" <> latStr <> "'")
+
+-- | `dirt <orbit> [<alias>]` → a SuperDirt `Dirt` action. Validates the
+-- | orbit as a non-negative Int; the alias is a free string (resolved to
+-- | an OSC client at dispatch time, defaulting to the boot `superdirt`
+-- | endpoint when unregistered).
+mkDirt :: String -> String -> Either String PrimAction
+mkDirt orbitStr alias =
+  case Int.fromString orbitStr of
+    Just orbit | orbit >= 0 -> Right (Dirt { alias, orbit })
+    Just _ -> Left ("dirt: orbit must be non-negative, got '" <> orbitStr <> "'")
+    Nothing -> Left ("dirt: expected integer orbit, got '" <> orbitStr <> "'")
 
 mkESX :: String -> String -> Either String PrimAction
 mkESX slotStr latStr =

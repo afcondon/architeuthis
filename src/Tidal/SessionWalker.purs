@@ -372,7 +372,7 @@ pickDevice { name: alias, value } = do
 
 -- | Classify a `CvRouter` value.  Encoding from purs-backend-erl:
 -- |     data CvRouter = CvRouter String Int
--- | becomes `{cvRouter, <<"127.0.0.1">>, 57120}`.
+-- | becomes `{cvRouter, <<"127.0.0.1">>, 57130}`.
 pickCvRouter
   :: { name :: String, value :: Foreign }
   -> Maybe { alias :: String, host :: String, port :: Int }

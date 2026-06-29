@@ -36,13 +36,14 @@ iac = MidiDevice "IAC Driver Tidal" 30
 -- ---------------------------------------------------------------------------
 
 -- | The local es9-daemon instance — drives ES-9 buses via CoreAudio.
--- | Host:port matches the default es9-daemon boot config.  Today
--- | informational only (the runtime routes all OSC through a
--- | singleton client on these coordinates); PR 2c.2 wires up the
--- | per-alias OSCClient map for multi-router setups (shared jams,
--- | multi-ES-9 rigs).
+-- | Host:port matches the default es9-daemon boot config.  Since
+-- | PR 2c.2 (workstream C) the dispatcher routes per-alias: this is
+-- | the `es9` alias, and it moved off 57120 to **57130** so the
+-- | conventional Dirt port (57120) is free for a real SuperDirt
+-- | instance reached via the `superdirt` alias.  es9-daemon's own
+-- | listen port and link-spike's target were moved to match.
 cvRouter :: CvRouter
-cvRouter = CvRouter "127.0.0.1" 57120
+cvRouter = CvRouter "127.0.0.1" 57130
 
 -- ---------------------------------------------------------------------------
 -- Pitched instruments — routing only.  Per-event vel/dur arrives in

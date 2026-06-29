@@ -36,6 +36,7 @@
          set_fh2_voice_channel/2,
          dispatch_fh2_shape/5,
          set_link_tempo/1,
+         register_osc_router/3,
          get_info/0,
          get_publisher_snapshot/0,
          stop/0]).
@@ -133,6 +134,14 @@ dispatch_fh2_shape(Voice, A, D, S, R) ->
 set_link_tempo(Bpm) ->
     gen_server:cast(?MODULE, {set_link_tempo, Bpm}).
 
+%% Open (or replace) the OSC client for a router alias at runtime.
+%% Called when a session declares a `registerCvRouter <alias> <host>
+%% <port>` endpoint, so the typed Studio `CvRouter` / SuperDirt
+%% declarations open real sockets at the aliases the dispatcher routes
+%% against.  Idempotent — re-registering an alias swaps its socket.
+register_osc_router(Alias, Host, Port) ->
+    gen_server:call(?MODULE, {register_osc_router, Alias, Host, Port}).
+
 get_info() ->
     gen_server:call(?MODULE, get_info).
 
@@ -172,33 +181,55 @@ init([]) ->
     end,
     %% Configurable via the purerl_tidal application env. Defaults
     %% match Main.purs's existing GateConfig.
+    %%
+    %% PR 2c.2 / workstream C: the `es9` alias moved off 57120 to 57130
+    %% so the conventional Dirt port (57120) is free for a real SuperDirt
+    %% instance, reached via the `superdirt` alias.  es9-daemon's own
+    %% listen port and link-spike's ES9_DAEMON_ADDR were moved to match.
     GateEnabled  = application:get_env(purerl_tidal, gateEnabled, true),
     GateHost     = application:get_env(purerl_tidal, gateHost, "127.0.0.1"),
-    GatePort     = application:get_env(purerl_tidal, gatePort, 57120),
+    GatePort     = application:get_env(purerl_tidal, gatePort, 57130),
     GateDuration = application:get_env(purerl_tidal, gateDuration, 50.0),
     CvLeadMs     = application:get_env(purerl_tidal, cvLeadMs, 5.0),
+
+    %% SuperDirt OSC target — the `superdirt` alias.  Enabled by default
+    %% (a UDP send socket is harmless even with no SuperDirt listening);
+    %% override host/port via app-env for a remote/non-default SC server.
+    SuperDirtEnabled = application:get_env(purerl_tidal, superDirtEnabled, true),
+    SuperDirtHost    = application:get_env(purerl_tidal, superDirtHost, "127.0.0.1"),
+    SuperDirtPort    = application:get_env(purerl_tidal, superDirtPort, 57120),
 
     %% Bridge client — always open. Talks to link-spike on UDP 57122.
     BridgeClient = ('tidal_mIDIBridge@foreign':startClient())(),
 
-    %% OSC client — opened only if gate output is enabled. Maybe-typed
-    %% on the PureScript side, encoded as {just, Client} | {nothing}.
-    OscClient = case GateEnabled of
-        true ->
-            Config = #{host => list_to_binary(GateHost),
-                       port => GatePort},
-            Client = ('tidal_oSC@foreign':startClient(Config))(),
-            {just, Client};
-        false ->
-            {nothing}
-    end,
+    %% Per-alias OSC clients.  Built as a list of #{alias, client} so the
+    %% PureScript side (`Dispatcher.initialState`) folds it into a Map
+    %% String OSCClient.  `es9` is the CV/gate path; `superdirt` the audio
+    %% path.  Each entry is gated by its enabled flag.
+    OscClients =
+        [ #{alias => <<"es9">>,
+            client => open_osc(GateHost, GatePort)}
+          || GateEnabled ]
+        ++
+        [ #{alias => <<"superdirt">>,
+            client => open_osc(SuperDirtHost, SuperDirtPort)}
+          || SuperDirtEnabled ],
 
+    %% `oscClients` is a PureScript `Array` on the other side — purs-backend-erl
+    %% represents that as Erlang's `array` module, so wrap the list (mirrors
+    %% tidal_clock's controlPairs handoff).
     InitArgs = #{bridgeClient => BridgeClient,
-                 oscClient    => OscClient,
+                 oscClients   => array:from_list(OscClients),
                  gateDuration => float(GateDuration),
                  cvLeadMs     => float(CvLeadMs)},
     PsState = 'tidal_dispatcher@ps':initialState(InitArgs),
     {ok, PsState}.
+
+%% Open a UDP OSC send socket for {Host, Port}, returning the opaque
+%% OSCClient the PureScript layer threads through unread.
+open_osc(Host, Port) ->
+    Config = #{host => list_to_binary(Host), port => Port},
+    ('tidal_oSC@foreign':startClient(Config))().
 
 handle_call({set_binding, Name, Binding}, _From, PsState) ->
     NewState = 'tidal_dispatcher@ps':setBinding(Name, Binding, PsState),
@@ -235,6 +266,10 @@ handle_call({register_midi_device, Alias, Name, Lat}, _From, PsState) ->
 handle_call({set_fh2_voice_channel, Voice, Channel}, _From, PsState) ->
     NewState = 'tidal_dispatcher@ps':setFh2VoiceChannel(
                  Voice, Channel, PsState),
+    {reply, ok, NewState};
+handle_call({register_osc_router, Alias, Host, Port}, _From, PsState) ->
+    Client = open_osc(binary_to_list(iolist_to_binary(Host)), Port),
+    NewState = 'tidal_dispatcher@ps':registerOscClient(Alias, Client, PsState),
     {reply, ok, NewState};
 handle_call(get_info, _From, PsState) ->
     {reply, 'tidal_dispatcher@ps':snapshot(PsState), PsState};
