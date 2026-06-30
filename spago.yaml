@@ -29,6 +29,7 @@ package:
     - transformers
     - tuples
     - harmonia
+    - reef
 
 workspace:
   extraPackages:
@@ -38,6 +39,10 @@ workspace:
     harmonia:
       git: https://github.com/afcondon/purescript-harmonia.git
       ref: v0.1.1
+    # Portable virtual-module engines. Path-dep during Phase-1 dev; the Odonus
+    # voice will call Reef.Odonus.stepEmit@ps (replacing odonus_engine.erl).
+    reef:
+      path: ../../reef
   packageSet:
     url: https://raw.githubusercontent.com/purerl/package-sets/erl-0.15.3-20220629/packages.json
   backend:
