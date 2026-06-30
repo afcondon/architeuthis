@@ -750,6 +750,9 @@ handle_pattern_message(Text, State) ->
             OdonusPids = odonus_voice_sup:which_voices(),
             lists:foreach(
               fun(Pid) -> gen_server:cast(Pid, hush) end, OdonusPids),
+            %% Also silence the standalone reef voice (reef-odonus). It isn't
+            %% under odonus_voice_sup, so hush_all/which_voices miss it.
+            catch reef_voice:stop(),
             Reply = {text, <<"OK: hush">>},
             {reply, Reply, State};
         {unhush} ->
