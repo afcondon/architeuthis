@@ -58,6 +58,11 @@ try_parse_prefixed(<<"silence ", Rest/binary>>) ->
         <<>> -> {hush};
         Name -> {silence_one, Name}
     end;
+try_parse_prefixed(<<"reef-odonus ", Rest/binary>>) ->
+    %% reef-odonus <json> — a complete Odonus record in the Reef.Protocol wire
+    %% format, to run on the BEAM via the shared reef engine. simple-json emits
+    %% compact JSON (no spaces), so the payload runs to end of line.
+    {reef_odonus, trim_binary(Rest)};
 try_parse_prefixed(<<"log-level ", Rest/binary>>) ->
     try
         N = binary_to_integer(string:trim(Rest, both, "\r \t")),
@@ -770,6 +775,18 @@ handle_pattern_message(Text, State) ->
             NBin = integer_to_binary(N),
             Reply = {text, <<"OK: log-level ", NBin/binary>>},
             {reply, Reply, State};
+        {reef_odonus, Json} ->
+            %% Run a complete Odonus record (built in the frontend, decoded by
+            %% the shared reef codec) as a free-running reef voice on ch15 —
+            %% isolable in Ableton, not yet pull-clock-synced (that's the later
+            %% parity work folding reef into odonus_voice).
+            case reef_voice:start_json(Json, 15, 150) of
+                {ok, _Pid} ->
+                    {reply, {text, <<"OK: reef-odonus (ch15)">>}, State};
+                {error, Reason} ->
+                    RB = list_to_binary(io_lib:format("~p", [Reason])),
+                    {reply, {text, <<"ERR: reef-odonus ", RB/binary>>}, State}
+            end;
         {load, Name} ->
             handle_load_setup(Name, State);
         {midi_device, Alias, DeviceName, Latency} ->
