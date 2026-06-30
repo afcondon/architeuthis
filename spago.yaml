@@ -25,6 +25,8 @@ package:
     - prelude
     - rationals
     - refs
+    - simple-json   # reef's wire codec (Reef.Protocol); transitive via reef but
+                    # declared here so spago pulls it into the purerl build closure
     - strings
     - transformers
     - tuples
