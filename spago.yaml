@@ -32,8 +32,12 @@ package:
 
 workspace:
   extraPackages:
+    # Published library, pulled from the git tag (the legacy purerl package set
+    # can't take a registry-version dep; a git ref builds against this set the
+    # same way the local path-dep did, on both backends).
     harmonia:
-      path: ../../harmonia
+      git: https://github.com/afcondon/purescript-harmonia.git
+      ref: v0.1.1
   packageSet:
     url: https://raw.githubusercontent.com/purerl/package-sets/erl-0.15.3-20220629/packages.json
   backend:
