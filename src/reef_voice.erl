@@ -97,7 +97,7 @@ do_start_sim(Sim, Channel, StepBeats) ->
         {ok, Sock} = gen_udp:open(0, [binary]),
         erlang:send_after(?POLL_MS, self(), poll),
         loop(#{ socket => Sock, channel => Channel, step_beats => StepBeats,
-                sim => Sim, last_step => -1 })
+                sim => Sim, last_step => -1, pending => [] })
     end),
     catch register(reef_voice, Pid),
     {ok, Pid}.
@@ -116,11 +116,24 @@ ensure_bin(L) when is_list(L) -> list_to_binary(L).
 
 %% The clock-locked loop: `poll` self-messages drive the grid walk (scheduled
 %% via send_after so an incoming message can't reset the timer). `stop` closes
-%% the socket. (P4c will add an {apply_input, Tick, Input} clause here.)
+%% the socket. `{apply_input, Tick, Input}` (lockstep, P4c) buffers a tick-tagged
+%% input broadcast from the frontend; `drain` applies it before stepping the
+%% matching model step, so both runtimes evolve identically through the edit.
+%% `Input` is an opaque reef_input@ps term (a decoded Reef.Input.Input) — we never
+%% inspect it, only hand it to reef_input@ps:applyInput when its step arrives.
 loop(St) ->
     receive
         stop ->
             gen_udp:close(maps:get(socket, St));
+        {apply_input, Tick, Input} ->
+            Pending = maps:get(pending, St),
+            loop(St#{pending => Pending ++ [{Tick, Input}]});
+        {set_step_beats, B} when is_number(B), B > 0 ->
+            %% STEP LENGTH sync (lockstep P4c): the frontend's STEP LENGTH divides
+            %% the 1/16 grid; match it so we step at the same rate and share the same
+            %% model-step numbering. Reset last_step so we re-snap to the current step
+            %% in the new grid rather than replaying/skipping under the old numbering.
+            loop(St#{step_beats => B, last_step => -1});
         poll ->
             St2 = tick(St),
             erlang:send_after(?POLL_MS, self(), poll),
@@ -158,8 +171,17 @@ drain(St, Step, Horizon, AnchorUs, BeatAtAnchor, Tempo) ->
         false ->
             St;
         true ->
-            %% (P4c: apply any inputs tick-tagged for `Step` before stepping.)
-            Res = 'reef_engine@ps':stepTick(maps:get(sim, St)),
+            %% LOCKSTEP (P4c): apply any tick-tagged inputs whose step has arrived
+            %% BEFORE stepping — the same order the frontend's Step loop uses, so a
+            %% deferred gesture lands on the same model step on both runtimes. `=<`
+            %% (not `==`) self-heals: an input buffered while no anchor was fresh
+            %% applies on the first step that runs; applied entries drop from Keep.
+            Pending = maps:get(pending, St),
+            {Due, Keep} = lists:partition(fun({T, _I}) -> T =< Step end, Pending),
+            Sim0 = lists:foldl(
+                     fun({_T, I}, S) -> ('reef_input@ps':applyInput(I))(S) end,
+                     maps:get(sim, St), Due),
+            Res = 'reef_engine@ps':stepTick(Sim0),
             Sim1 = maps:get(sim, Res),
             Fired = array:to_list(maps:get(fired, Res)),
             %% Invert the affine map: the wall time at which beat StepBeat occurs.
@@ -168,7 +190,7 @@ drain(St, Step, Horizon, AnchorUs, BeatAtAnchor, Tempo) ->
             Ch = maps:get(channel, St),
             Sock = maps:get(socket, St),
             lists:foreach(fun(F) -> emit(Sock, Ch, F, WallUs, StepMs) end, Fired),
-            drain(St#{sim => Sim1, last_step => Step},
+            drain(St#{sim => Sim1, last_step => Step, pending => Keep},
                   Step + 1, Horizon, AnchorUs, BeatAtAnchor, Tempo)
     end.
 

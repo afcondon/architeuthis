@@ -68,6 +68,19 @@ try_parse_prefixed(<<"reef-sim ", Rest/binary>>) ->
     %% gen config + Marbles pad + seed) in the Reef.Protocol wire format, so the
     %% BEAM voice co-simulates from the frontend's exact state, generation and all.
     {reef_sim, trim_binary(Rest)};
+try_parse_prefixed(<<"reef-input ", Rest/binary>>) ->
+    %% reef-input <json> — a tick-tagged input (lockstep P4c): {tick, input} in the
+    %% Reef.Protocol wire format. Forwarded to the running reef voice, which buffers
+    %% it and applies it on the tagged model step so a live edit stays in lockstep.
+    {reef_input, trim_binary(Rest)};
+try_parse_prefixed(<<"reef-steplen ", Rest/binary>>) ->
+    %% reef-steplen <beats> — the frontend's current model-step length in beats
+    %% (STEP LENGTH × 1/16). Forwarded to the running reef voice so its grid tracks
+    %% the frontend's; without it the BEAM stays at 1/16 and the two desync.
+    case parse_number(trim_binary(Rest)) of
+        {ok, Beats} when Beats > 0 -> {reef_steplen, Beats};
+        _ -> none
+    end;
 try_parse_prefixed(<<"log-level ", Rest/binary>>) ->
     try
         N = binary_to_integer(string:trim(Rest, both, "\r \t")),
@@ -805,6 +818,35 @@ handle_pattern_message(Text, State) ->
                 {error, Reason} ->
                     RB = list_to_binary(io_lib:format("~p", [Reason])),
                     {reply, {text, <<"ERR: reef-sim ", RB/binary>>}, State}
+            end;
+        {reef_input, Json} ->
+            %% Lockstep live edit (P4c): decode the tick-tagged input with the SAME
+            %% codec the frontend encoded it with (reef_protocol@ps:decodeTagged) and
+            %% hand it to the running reef voice, which applies it on the tagged step.
+            %% No-op with a clear reply if no voice is running (nothing to sync yet).
+            case 'reef_protocol@ps':decodeTagged(Json) of
+                {right, Tagged} ->
+                    case whereis(reef_voice) of
+                        undefined ->
+                            {reply, {text, <<"ERR: reef-input (no reef voice)">>}, State};
+                        _ ->
+                            reef_voice ! {apply_input,
+                                          maps:get(tick, Tagged),
+                                          maps:get(input, Tagged)},
+                            {reply, {text, <<"OK: reef-input">>}, State}
+                    end;
+                {left, Errs} ->
+                    RB = list_to_binary(io_lib:format("~p", [Errs])),
+                    {reply, {text, <<"ERR: reef-input decode ", RB/binary>>}, State}
+            end;
+        {reef_steplen, Beats} ->
+            %% Lockstep STEP LENGTH sync (P4c): retune the running reef voice's grid.
+            case whereis(reef_voice) of
+                undefined ->
+                    {reply, {text, <<"ERR: reef-steplen (no reef voice)">>}, State};
+                _ ->
+                    reef_voice ! {set_step_beats, Beats},
+                    {reply, {text, <<"OK: reef-steplen">>}, State}
             end;
         {load, Name} ->
             handle_load_setup(Name, State);
