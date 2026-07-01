@@ -63,10 +63,31 @@ try_parse_prefixed(<<"reef-odonus ", Rest/binary>>) ->
     %% format, to run on the BEAM via the shared reef engine. simple-json emits
     %% compact JSON (no spaces), so the payload runs to end of line.
     {reef_odonus, trim_binary(Rest)};
+try_parse_prefixed(<<"reef-sim-at ", Rest/binary>>) ->
+    %% reef-sim-at <step> <beats> <json> — the phase-aligned lockstep HANDOFF (P5).
+    %% Same SimState payload as reef-sim, but stamped with the absolute model STEP
+    %% the snapshot is the state for (the frontend's nextModelStep) AND the model-step
+    %% LENGTH in beats (0.25 × stepDiv). The voice installs both and holds the state
+    %% until that step, so both runtimes play it on the same absolute step in the same
+    %% grid — no handoff flam, no follow-up reef-steplen. JSON is space-free
+    %% (simple-json compact), so two splits separate step, beats, and payload.
+    case binary:split(trim_binary(Rest), <<" ">>) of
+        [StepBin, Rest2] when StepBin =/= <<>> ->
+            case binary:split(Rest2, <<" ">>) of
+                [BeatsBin, Json] when BeatsBin =/= <<>>, Json =/= <<>> ->
+                    case {parse_number(StepBin), parse_number(BeatsBin)} of
+                        {{ok, N}, {ok, Beats}} -> {reef_sim_at, trunc(N), Beats, Json};
+                        _ -> none
+                    end;
+                _ -> none
+            end;
+        _ -> none
+    end;
 try_parse_prefixed(<<"reef-sim ", Rest/binary>>) ->
     %% reef-sim <json> — the lockstep HANDOFF (P4d): a whole SimState (Odonus +
     %% gen config + Marbles pad + seed) in the Reef.Protocol wire format, so the
     %% BEAM voice co-simulates from the frontend's exact state, generation and all.
+    %% Superseded by reef-sim-at (phase-aligned); kept for manual / legacy use.
     {reef_sim, trim_binary(Rest)};
 try_parse_prefixed(<<"reef-input ", Rest/binary>>) ->
     %% reef-input <json> — a tick-tagged input (lockstep P4c): {tick, input} in the
@@ -820,6 +841,19 @@ handle_pattern_message(Text, State) ->
                 {error, Reason} ->
                     RB = list_to_binary(io_lib:format("~p", [Reason])),
                     {reply, {text, <<"ERR: reef-sim ", RB/binary>>}, State}
+            end;
+        {reef_sim_at, N, Beats, Json} ->
+            %% Phase-aligned handoff (P5): same SimState, but install the model-step
+            %% grid (Beats) and hold the pushed state until absolute model step N (the
+            %% frontend's nextModelStep) so both runtimes emit it on the SAME step in
+            %% the SAME grid — the real flam fix. Heads on ch 12/13/14/15.
+            case reef_voice:start_sim_at_json(Json, 12, Beats, N) of
+                {ok, _Pid} ->
+                    NB = integer_to_binary(N),
+                    {reply, {text, <<"OK: reef-sim-at ", NB/binary, " (ch12-15)">>}, State};
+                {error, Reason} ->
+                    RB = list_to_binary(io_lib:format("~p", [Reason])),
+                    {reply, {text, <<"ERR: reef-sim-at ", RB/binary>>}, State}
             end;
         {reef_input, Json} ->
             %% Lockstep live edit (P4c): decode the tick-tagged input with the SAME

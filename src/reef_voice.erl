@@ -20,7 +20,8 @@
 %% Still started from the WS `reef-odonus <json>` verb (start_json/3). Idles when
 %% no fresh Link anchor is present (standalone has no rig to sync with anyway).
 -module(reef_voice).
--export([start/0, start/2, start_json/3, start_sim_json/3, stop/0, ping/0, loop/1]).
+-export([start/0, start/2, start_json/3, start_sim_json/3, start_sim_at_json/4,
+         stop/0, ping/0, loop/1]).
 
 %% Lead time (us) for the smoke test — schedule far enough ahead that link-spike
 %% can receive + schedule (a 5ms lead gets dropped as already-past).
@@ -85,7 +86,20 @@ start_json(Json, Channel, StepBeats) ->
 %% This is the WS `reef-sim <json>` entry point.
 start_sim_json(Json, Channel, StepBeats) ->
     case 'reef_protocol@ps':decodeSim(ensure_bin(Json)) of
-        {right, Sim}  -> do_start_sim(Sim, Channel, StepBeats);
+        {right, Sim}  -> do_start_sim(Sim, Channel, StepBeats, -1);
+        {left, Errs}  -> {error, {decode, Errs}}
+    end.
+
+%% Phase-aligned handoff (P5): like start_sim_json, but the pushed state is held
+%% until absolute model step N (the frontend's nextModelStep — the step it will
+%% next emit from exactly this state). We seed last_step = N-1 so the voice's first
+%% emitted step is N, playing the pushed state on the SAME absolute step the
+%% frontend does. That removes the old handoff flam, where the voice snapped to ITS
+%% current step (up to a model-step / a beat off the frontend's). The WS
+%% `reef-sim-at <step> <json>` entry point.
+start_sim_at_json(Json, Channel, StepBeats, N) ->
+    case 'reef_protocol@ps':decodeSim(ensure_bin(Json)) of
+        {right, Sim}  -> do_start_sim(Sim, Channel, StepBeats, N - 1);
         {left, Errs}  -> {error, {decode, Errs}}
     end.
 
@@ -98,18 +112,20 @@ do_start(Odo, Channel, StepBeats) ->
              bias => 0.5,
              odo => Odo,
              seed => 'reef_marbles@ps':seedFrom(1) },
-    do_start_sim(Sim, Channel, StepBeats).
+    do_start_sim(Sim, Channel, StepBeats, -1).
 
 %% Replace any running voice, then spawn a fresh clock-locked one from a full
 %% SimState. The UDP socket is opened INSIDE the spawned loop so it's owned by
-%% (and lives as long as) the loop.
-do_start_sim(Sim, Channel, StepBeats) ->
+%% (and lives as long as) the loop. LastStep seeds `last_step`: -1 snaps to the
+%% current clock step on the first poll (the reef-odonus / reef-sim path); N-1
+%% holds the state for absolute step N (the phase-aligned reef-sim-at path).
+do_start_sim(Sim, Channel, StepBeats, LastStep) ->
     stop(),
     Pid = spawn(fun() ->
         {ok, Sock} = gen_udp:open(0, [binary]),
         erlang:send_after(?POLL_MS, self(), poll),
         loop(#{ socket => Sock, channel => Channel, step_beats => StepBeats,
-                sim => Sim, last_step => -1, pending => [] })
+                sim => Sim, last_step => LastStep, pending => [] })
     end),
     catch register(reef_voice, Pid),
     {ok, Pid}.
