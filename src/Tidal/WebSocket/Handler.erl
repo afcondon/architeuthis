@@ -102,6 +102,14 @@ try_parse_prefixed(<<"reef-steplen ", Rest/binary>>) ->
         {ok, Beats} when Beats > 0 -> {reef_steplen, Beats};
         _ -> none
     end;
+try_parse_prefixed(<<"reef-swing ", Rest/binary>>) ->
+    %% reef-swing <fraction> — the frontend's swing amount (0..0.6), the fraction of a
+    %% step the odd model steps lag. Forwarded to the running reef voice so it renders
+    %% the same groove. Timing expression, not model state (never a tick-tagged input).
+    case parse_number(trim_binary(Rest)) of
+        {ok, S} -> {reef_swing, S};
+        _ -> none
+    end;
 try_parse_prefixed(<<"log-level ", Rest/binary>>) ->
     try
         N = binary_to_integer(string:trim(Rest, both, "\r \t")),
@@ -883,6 +891,15 @@ handle_pattern_message(Text, State) ->
                 _ ->
                     reef_voice ! {set_step_beats, Beats},
                     {reply, {text, <<"OK: reef-steplen">>}, State}
+            end;
+        {reef_swing, S} ->
+            %% Lockstep SWING sync (P4f render stage 2): set the running voice's swing.
+            case whereis(reef_voice) of
+                undefined ->
+                    {reply, {text, <<"ERR: reef-swing (no reef voice)">>}, State};
+                _ ->
+                    reef_voice ! {set_swing, S},
+                    {reply, {text, <<"OK: reef-swing">>}, State}
             end;
         {load, Name} ->
             handle_load_setup(Name, State);

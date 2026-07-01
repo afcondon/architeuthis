@@ -125,7 +125,7 @@ do_start_sim(Sim, Channel, StepBeats, LastStep) ->
         {ok, Sock} = gen_udp:open(0, [binary]),
         erlang:send_after(?POLL_MS, self(), poll),
         loop(#{ socket => Sock, channel => Channel, step_beats => StepBeats,
-                sim => Sim, last_step => LastStep, pending => [] })
+                sim => Sim, last_step => LastStep, pending => [], swing => 0.0 })
     end),
     catch register(reef_voice, Pid),
     {ok, Pid}.
@@ -162,6 +162,11 @@ loop(St) ->
             %% model-step numbering. Reset last_step so we re-snap to the current step
             %% in the new grid rather than replaying/skipping under the old numbering.
             loop(St#{step_beats => B, last_step => -1});
+        {set_swing, S} when is_number(S) ->
+            %% SWING sync (lockstep P4f render stage 2): the fraction of a step by which
+            %% odd model steps lag the audible onset. Timing expression only (never
+            %% touches the model), so it just updates the field — no last_step reset.
+            loop(St#{swing => S});
         poll ->
             St2 = tick(St),
             erlang:send_after(?POLL_MS, self(), poll),
@@ -222,8 +227,18 @@ drain(St, Step, Horizon, AnchorUs, BeatAtAnchor, Tempo) ->
             Odo1 = maps:get(odo, Sim1),
             Fired = array:to_list(maps:get(fired, Res)),
             %% Invert the affine map: the wall time at which beat StepBeat occurs.
-            WallUs = round(AnchorUs + (StepBeat - BeatAtAnchor) * 60000000.0 / Tempo),
+            WallUs0 = round(AnchorUs + (StepBeat - BeatAtAnchor) * 60000000.0 / Tempo),
             StepMs = StepBeats * 60000.0 / Tempo,
+            %% SWING (lockstep P4f render stage 2): lag the odd model steps by
+            %% `swing × stepMs` on the audible onset — the SAME shift, on the same
+            %% absolute-step parity, the frontend applies (Grid.purs: swingMs on
+            %% modelStep rem 2 == 1). Shifts the whole step's onset together, so the
+            %% shared renderHits offsets ride along unchanged.
+            SwingUs = case Step rem 2 of
+                          1 -> round(maps:get(swing, St) * StepMs * 1000.0);
+                          _ -> 0
+                      end,
+            WallUs = WallUs0 + SwingUs,
             Ch = maps:get(channel, St),
             Sock = maps:get(socket, St),
             lists:foreach(fun(F) -> emit(Sock, Ch, Odo1, F, WallUs, StepMs) end, Fired),
