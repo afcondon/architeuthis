@@ -38,6 +38,15 @@
 -define(STEP_BEATS, 0.25).
 %% Treat the Link source as offline past this age (mirrors tidal_link_anchor).
 -define(STALE_ANCHOR_US, 2000000).
+%% If the next step to emit is more than this many steps AHEAD of the currently
+%% sounding step, the Link beat must have jumped BACKWARD (transport restart / Link
+%% re-sync) — re-snap to now rather than waiting out the gap in silence. Normal
+%% lead is only the lookahead (~2-3 steps), so this is comfortably clear of it.
+-define(SNAP_AHEAD, 8).
+%% Default base channel: heads emit on BASE_CHANNEL + headIdx → 12/13/14/15, one
+%% MIDI channel per head so they're separable in Ableton (per-voice recording,
+%% frontend-vs-backend comparison, golden capture).
+-define(BASE_CHANNEL, 12).
 
 %% Single-note smoke test: fire middle C (60) on ch 16, +200ms.
 ping() ->
@@ -49,12 +58,15 @@ ping() ->
     gen_udp:close(Sock),
     R.
 
-%% Channel 16 by default so it's trivially isolable in Ableton.
-start() -> start(16, ?STEP_BEATS).
+%% Base channel 12 by default → the four heads land on ch 12/13/14/15, each on its
+%% own MIDI channel (see emit/5) so they're separable in Ableton Session view for
+%% eyeballing + frontend-vs-backend comparison.
+start() -> start(?BASE_CHANNEL, ?STEP_BEATS).
 
-%% Channel (1..16), StepBeats (model step length in beats). Hardcoded defaultOdonus.
-start(Channel, StepBeats) ->
-    do_start('reef_odonus@ps':defaultOdonus(), Channel, StepBeats).
+%% BaseChannel (heads on BaseChannel+headIdx, so keep it ≤ 13 for four heads),
+%% StepBeats (model step length in beats). Hardcoded defaultOdonus.
+start(BaseChannel, StepBeats) ->
+    do_start('reef_odonus@ps':defaultOdonus(), BaseChannel, StepBeats).
 
 %% Start a voice from a JSON-encoded Odonus record — the reef wire format
 %% (Reef.Protocol). Decoding goes through the SAME codec the frontend encodes
@@ -154,7 +166,15 @@ tick(St) ->
             %% forward on free-run -> Link-lock — mirror Scheduler.purs's snap).
             NowStep = trunc(BeatNow / StepBeats),
             Next0 = maps:get(last_step, St) + 1,
-            Next = if Next0 < NowStep -> NowStep; true -> Next0 end,
+            %% Re-snap on ANY clock discontinuity, not just forward. Behind
+            %% (free-run -> Link-lock) we caught already; more than ?SNAP_AHEAD
+            %% steps ahead means the beat jumped BACKWARD (transport restart /
+            %% re-sync) and the voice would otherwise strand itself in silence
+            %% waiting for a far-future step. Either way, snap to the current step.
+            Next = if (Next0 < NowStep) orelse (Next0 > NowStep + ?SNAP_AHEAD) ->
+                          NowStep;
+                      true -> Next0
+                   end,
             LookaheadBeats = ?LOOKAHEAD_MS / 1000.0 * Tempo / 60.0,
             Horizon = BeatNow + LookaheadBeats,
             drain(St, Next, Horizon, AnchorUs, BeatAtAnchor, Tempo);
@@ -183,21 +203,36 @@ drain(St, Step, Horizon, AnchorUs, BeatAtAnchor, Tempo) ->
                      maps:get(sim, St), Due),
             Res = 'reef_engine@ps':stepTick(Sim0),
             Sim1 = maps:get(sim, Res),
+            Odo1 = maps:get(odo, Sim1),
             Fired = array:to_list(maps:get(fired, Res)),
             %% Invert the affine map: the wall time at which beat StepBeat occurs.
             WallUs = round(AnchorUs + (StepBeat - BeatAtAnchor) * 60000000.0 / Tempo),
             StepMs = StepBeats * 60000.0 / Tempo,
             Ch = maps:get(channel, St),
             Sock = maps:get(socket, St),
-            lists:foreach(fun(F) -> emit(Sock, Ch, F, WallUs, StepMs) end, Fired),
+            lists:foreach(fun(F) -> emit(Sock, Ch, Odo1, F, WallUs, StepMs) end, Fired),
             drain(St#{sim => Sim1, last_step => Step, pending => Keep},
                   Step + 1, Horizon, AnchorUs, BeatAtAnchor, Tempo)
     end.
 
-emit(Sock, Ch, F, WallUs, StepMs) ->
-    Note  = maps:get(pitch, F),
-    Vel   = maps:get(vel, F),
-    DurMs = maps:get(dur, F) * StepMs,
-    Thunk = 'tidal_mIDIBridge@foreign':scheduleNoteAt(
-              Sock, <<"IAC Driver Tidal">>, Ch, Note, Vel, DurMs, WallUs),
-    Thunk().
+%% Each head emits on its OWN channel = BaseCh + headIdx (12/13/14/15 by default),
+%% mirroring the frontend's per-head channels (heads I-IV on ch 1-4) so every voice
+%% is separable in Ableton for comparison + golden capture. Note LENGTH and RATCHET
+%% retriggers come from the SHARED renderer (reef_render@ps:renderHits) — the same
+%% code the frontend uses — so gate/ratchet render identically on both runtimes
+%% (lockstep P4f stage 1). Each hit is scheduled at the step onset + its offsetMs.
+emit(Sock, BaseCh, Odo, F, WallUs, StepMs) ->
+    Note = maps:get(pitch, F),
+    Vel  = maps:get(vel, F),
+    Ch   = BaseCh + maps:get(headIdx, F),
+    %% renderHits is a 3-arg PS function → purs-backend-erl emits it uncurried as
+    %% renderHits/3 (there is no renderHits/1), so call it directly, not curried.
+    Hits = array:to_list('reef_render@ps':renderHits(Odo, StepMs, F)),
+    lists:foreach(
+      fun(Hit) ->
+          AtUs  = round(WallUs + maps:get(offsetMs, Hit) * 1000.0),
+          DurMs = maps:get(durMs, Hit),
+          Thunk = 'tidal_mIDIBridge@foreign':scheduleNoteAt(
+                    Sock, <<"IAC Driver Tidal">>, Ch, Note, Vel, DurMs, AtUs),
+          Thunk()
+      end, Hits).
