@@ -63,6 +63,11 @@ try_parse_prefixed(<<"reef-odonus ", Rest/binary>>) ->
     %% format, to run on the BEAM via the shared reef engine. simple-json emits
     %% compact JSON (no spaces), so the payload runs to end of line.
     {reef_odonus, trim_binary(Rest)};
+try_parse_prefixed(<<"reef-sim ", Rest/binary>>) ->
+    %% reef-sim <json> — the lockstep HANDOFF (P4d): a whole SimState (Odonus +
+    %% gen config + Marbles pad + seed) in the Reef.Protocol wire format, so the
+    %% BEAM voice co-simulates from the frontend's exact state, generation and all.
+    {reef_sim, trim_binary(Rest)};
 try_parse_prefixed(<<"log-level ", Rest/binary>>) ->
     try
         N = binary_to_integer(string:trim(Rest, both, "\r \t")),
@@ -780,15 +785,26 @@ handle_pattern_message(Text, State) ->
             {reply, Reply, State};
         {reef_odonus, Json} ->
             %% Run a complete Odonus record (built in the frontend, decoded by
-            %% the shared reef codec) as a free-running reef voice on ch15 —
-            %% isolable in Ableton, not yet pull-clock-synced (that's the later
-            %% parity work folding reef into odonus_voice).
-            case reef_voice:start_json(Json, 15, 150) of
+            %% the shared reef codec) as a reef voice on ch15 — isolable in
+            %% Ableton. Now LINK-CLOCK-LOCKED (P4b): the 3rd arg is the model step
+            %% length in BEATS (0.25 = a 1/16 note), matching the frontend grid so
+            %% the two runtimes agree on tick N.
+            case reef_voice:start_json(Json, 15, 0.25) of
                 {ok, _Pid} ->
                     {reply, {text, <<"OK: reef-odonus (ch15)">>}, State};
                 {error, Reason} ->
                     RB = list_to_binary(io_lib:format("~p", [Reason])),
                     {reply, {text, <<"ERR: reef-odonus ", RB/binary>>}, State}
+            end;
+        {reef_sim, Json} ->
+            %% The lockstep handoff (P4d): start a Link-clock-locked reef voice
+            %% from the frontend's WHOLE SimState (gen + seed), ch15, 1/16 grid.
+            case reef_voice:start_sim_json(Json, 15, 0.25) of
+                {ok, _Pid} ->
+                    {reply, {text, <<"OK: reef-sim (ch15)">>}, State};
+                {error, Reason} ->
+                    RB = list_to_binary(io_lib:format("~p", [Reason])),
+                    {reply, {text, <<"ERR: reef-sim ", RB/binary>>}, State}
             end;
         {load, Name} ->
             handle_load_setup(Name, State);
