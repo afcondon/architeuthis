@@ -75,7 +75,7 @@ do_start_at(Bal, Channel, StepBeats, LastStep) ->
         {ok, Sock} = gen_udp:open(0, [binary]),
         erlang:send_after(?POLL_MS, self(), poll),
         loop(#{ socket => Sock, channel => Channel, step_beats => StepBeats,
-                bal => Bal, last_step => LastStep })
+                bal => Bal, last_step => LastStep, pending => [] })
     end),
     catch register(reef_balistes_voice, Pid),
     {ok, Pid}.
@@ -98,6 +98,13 @@ loop(St) ->
     receive
         stop ->
             gen_udp:close(maps:get(socket, St));
+        {apply_input, Tick, Input} ->
+            %% Lockstep live edit: buffer a tick-tagged BInput broadcast from the
+            %% frontend; drain applies it before stepping the matching model step, so
+            %% both runtimes evolve identically through the edit. `Input` is an opaque
+            %% reef_balistes_input@ps term — we never inspect it, only apply it.
+            Pending = maps:get(pending, St),
+            loop(St#{pending => Pending ++ [{Tick, Input}]});
         poll ->
             St2 = tick(St),
             erlang:send_after(?POLL_MS, self(), poll),
@@ -137,7 +144,16 @@ drain(St, Step, Horizon, AnchorUs, BeatAtAnchor, Tempo) ->
         false ->
             St;
         true ->
-            Bal0 = maps:get(bal, St),
+            %% LOCKSTEP: apply any tick-tagged inputs whose step has arrived BEFORE
+            %% stepping — the same order the frontend applies them, so a deferred knob
+            %% edit lands on the same model step on both runtimes. `=<` (not `==`)
+            %% self-heals inputs buffered while no anchor was fresh; applied entries
+            %% drop from Keep. applyBInput is arity-2 (uncurried under backend-erl).
+            Pending = maps:get(pending, St),
+            {Due, Keep} = lists:partition(fun({T, _I}) -> T =< Step end, Pending),
+            Bal0 = lists:foldl(
+                     fun({_T, I}, B) -> 'reef_balistes_input@ps':applyBInput(I, B) end,
+                     maps:get(bal, St), Due),
             %% renderStep reads the PRE-step state (x/y/open/notes/push/ratchet) at the
             %% step being played, exactly as the frontend Component does (renderStep
             %% bal0 playedStep r.fired). stepBal then advances (incl. the 32-step
@@ -155,7 +171,7 @@ drain(St, Step, Horizon, AnchorUs, BeatAtAnchor, Tempo) ->
             Ch = maps:get(channel, St),
             Sock = maps:get(socket, St),
             lists:foreach(fun(E) -> emit(Sock, Ch, E, WallUs, StepMs) end, Events),
-            drain(St#{bal => Bal1, last_step => Step},
+            drain(St#{bal => Bal1, last_step => Step, pending => Keep},
                   Step + 1, Horizon, AnchorUs, BeatAtAnchor, Tempo)
     end.
 

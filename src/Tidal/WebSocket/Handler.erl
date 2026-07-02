@@ -108,6 +108,11 @@ try_parse_prefixed(<<"reef-sim ", Rest/binary>>) ->
     %% BEAM voice co-simulates from the frontend's exact state, generation and all.
     %% Superseded by reef-sim-at (phase-aligned); kept for manual / legacy use.
     {reef_sim, trim_binary(Rest)};
+try_parse_prefixed(<<"balistes-input ", Rest/binary>>) ->
+    %% balistes-input <json> — a tick-tagged Balistes gesture (live knob sync):
+    %% {tick, input} in the Reef.Balistes.Protocol wire form, applied on the tagged
+    %% model step so browser and rig evolve identically through the edit.
+    {balistes_input, trim_binary(Rest)};
 try_parse_prefixed(<<"reef-input ", Rest/binary>>) ->
     %% reef-input <json> — a tick-tagged input (lockstep P4c): {tick, input} in the
     %% Reef.Protocol wire format. Forwarded to the running reef voice, which buffers
@@ -896,6 +901,25 @@ handle_pattern_message(Text, State) ->
                 {error, Reason} ->
                     RB = list_to_binary(io_lib:format("~p", [Reason])),
                     {reply, {text, <<"ERR: balistes-sim-at ", RB/binary>>}, State}
+            end;
+        {balistes_input, Json} ->
+            %% Balistes live knob sync: decode the tick-tagged BInput with the SAME
+            %% codec the frontend encoded it with (reef_balistes_protocol@ps) and hand
+            %% it to the running Balistes voice, which applies it on the tagged step.
+            case 'reef_balistes_protocol@ps':decodeBTagged(Json) of
+                {right, Tagged} ->
+                    case whereis(reef_balistes_voice) of
+                        undefined ->
+                            {reply, {text, <<"ERR: balistes-input (no balistes voice)">>}, State};
+                        _ ->
+                            reef_balistes_voice ! {apply_input,
+                                                   maps:get(tick, Tagged),
+                                                   maps:get(input, Tagged)},
+                            {reply, {text, <<"OK: balistes-input">>}, State}
+                    end;
+                {left, Errs} ->
+                    RB = list_to_binary(io_lib:format("~p", [Errs])),
+                    {reply, {text, <<"ERR: balistes-input decode ", RB/binary>>}, State}
             end;
         {reef_input, Json} ->
             %% Lockstep live edit (P4c): decode the tick-tagged input with the SAME
