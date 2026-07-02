@@ -83,6 +83,25 @@ try_parse_prefixed(<<"reef-sim-at ", Rest/binary>>) ->
             end;
         _ -> none
     end;
+try_parse_prefixed(<<"balistes-sim-at ", Rest/binary>>) ->
+    %% balistes-sim-at <step> <beats> <json> — the Balistes phase-aligned lockstep
+    %% HANDOFF: a whole BalSim (Reef.Balistes.Protocol) stamped with the absolute
+    %% model step it's the state for and the model-step length in beats. Mirrors
+    %% reef-sim-at; the voice holds the pushed state until step N so the browser
+    %% (ch 10) and the rig (ch 11) play it on the same absolute step. Two splits
+    %% separate step, beats, and the space-free JSON payload.
+    case binary:split(trim_binary(Rest), <<" ">>) of
+        [StepBin, Rest2] when StepBin =/= <<>> ->
+            case binary:split(Rest2, <<" ">>) of
+                [BeatsBin, Json] when BeatsBin =/= <<>>, Json =/= <<>> ->
+                    case {parse_number(StepBin), parse_number(BeatsBin)} of
+                        {{ok, N}, {ok, Beats}} -> {balistes_sim_at, trunc(N), Beats, Json};
+                        _ -> none
+                    end;
+                _ -> none
+            end;
+        _ -> none
+    end;
 try_parse_prefixed(<<"reef-sim ", Rest/binary>>) ->
     %% reef-sim <json> — the lockstep HANDOFF (P4d): a whole SimState (Odonus +
     %% gen config + Marbles pad + seed) in the Reef.Protocol wire format, so the
@@ -800,6 +819,8 @@ handle_pattern_message(Text, State) ->
             %% Also silence the standalone reef voice (reef-odonus). It isn't
             %% under odonus_voice_sup, so hush_all/which_voices miss it.
             catch reef_voice:stop(),
+            %% and the standalone Balistes lockstep voice (balistes-sim-at, ch 11).
+            catch reef_balistes_voice:stop(),
             Reply = {text, <<"OK: hush">>},
             {reply, Reply, State};
         {unhush} ->
@@ -862,6 +883,19 @@ handle_pattern_message(Text, State) ->
                 {error, Reason} ->
                     RB = list_to_binary(io_lib:format("~p", [Reason])),
                     {reply, {text, <<"ERR: reef-sim-at ", RB/binary>>}, State}
+            end;
+        {balistes_sim_at, N, Beats, Json} ->
+            %% Balistes phase-aligned handoff: install the model-step grid (Beats)
+            %% and hold the pushed BalSim until absolute step N (the frontend's
+            %% nextModelStep), so browser (ch 10) and rig (ch 11) emit it on the SAME
+            %% absolute step — the Odonus #57 flam fix, baked in from the start.
+            case reef_balistes_voice:start_sim_at_json(Json, 11, Beats, N) of
+                {ok, _Pid} ->
+                    NB = integer_to_binary(N),
+                    {reply, {text, <<"OK: balistes-sim-at ", NB/binary, " (ch11)">>}, State};
+                {error, Reason} ->
+                    RB = list_to_binary(io_lib:format("~p", [Reason])),
+                    {reply, {text, <<"ERR: balistes-sim-at ", RB/binary>>}, State}
             end;
         {reef_input, Json} ->
             %% Lockstep live edit (P4c): decode the tick-tagged input with the SAME
