@@ -118,6 +118,13 @@ try_parse_prefixed(<<"balistes-input ", Rest/binary>>) ->
     %% {tick, input} in the Reef.Balistes.Protocol wire form, applied on the tagged
     %% model step so browser and rig evolve identically through the edit.
     {balistes_input, trim_binary(Rest)};
+try_parse_prefixed(<<"vetula-perf ", Rest/binary>>) ->
+    %% vetula-perf <json> — the Vetula "Performance" handoff: a whole Perf (a saved
+    %% chord progression + voices, Reef.Vetula.Protocol wire form) to run on the rig.
+    %% The scheduler is a pure function of the absolute pulse, so no step tag /
+    %% phase-hold is needed; the → odo voice conducts reef_voice's chord overlay. A
+    %% second push swaps the performance in place (live edit). Start Odonus first.
+    {vetula_perf, trim_binary(Rest)};
 try_parse_prefixed(<<"reef-input ", Rest/binary>>) ->
     %% reef-input <json> — a tick-tagged input (lockstep P4c): {tick, input} in the
     %% Reef.Protocol wire format. Forwarded to the running reef voice, which buffers
@@ -831,6 +838,9 @@ handle_pattern_message(Text, State) ->
             catch reef_voice:stop(),
             %% and the standalone Balistes lockstep voice (balistes-sim-at, ch 11).
             catch reef_balistes_voice:stop(),
+            %% and the Vetula performance conductor (vetula-perf). It emits no MIDI,
+            %% but stop it so a hushed rig isn't still re-conducting a revived Odonus.
+            catch reef_vetula_voice:stop(),
             Reply = {text, <<"OK: hush">>},
             {reply, Reply, State};
         {unhush} ->
@@ -936,6 +946,18 @@ handle_pattern_message(Text, State) ->
                 {left, Errs} ->
                     RB = list_to_binary(io_lib:format("~p", [Errs])),
                     {reply, {text, <<"ERR: balistes-input decode ", RB/binary>>}, State}
+            end;
+        {vetula_perf, Json} ->
+            %% Vetula performance handoff: run (or live-swap) the pushed Perf on the
+            %% rig. The → odo voice conducts reef_voice — reproducing the browser's
+            %% "Vetula chord progressions quantising Odonus output" entirely in the
+            %% backend. Push Odonus (reef-sim-at) FIRST so the first chord lands.
+            case reef_vetula_voice:start_perf_json(Json, 0.25) of
+                {ok, _Pid} ->
+                    {reply, {text, <<"OK: vetula-perf (conducts reef_voice)">>}, State};
+                {error, Reason} ->
+                    RB = list_to_binary(io_lib:format("~p", [Reason])),
+                    {reply, {text, <<"ERR: vetula-perf ", RB/binary>>}, State}
             end;
         {reef_input, Json} ->
             %% Lockstep live edit (P4c): decode the tick-tagged input with the SAME
