@@ -76,8 +76,6 @@ erl-quick:
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_yarns_state.erl
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_session_walker.erl
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_conductor.erl
-	@erlc -disable-feature maybe_expr -o ebin src/balistes_tables.erl
-	@erlc -disable-feature maybe_expr -o ebin src/balistes_engine.erl
 	@erlc -disable-feature maybe_expr -o ebin src/balistes_voice_sup.erl
 	@erlc -disable-feature maybe_expr -o ebin src/balistes_voice.erl
 	@erlc -disable-feature maybe_expr -o ebin src/repetitor_library_zr_african.erl

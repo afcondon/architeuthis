@@ -23,7 +23,8 @@
 -- | the Erlang shell, which spawns a `balistes_voice` gen_server.  Per
 -- | step (32 steps per cycle), the voice calls back into PureScript
 -- | via `evaluateParamsAt` to query each pattern at the step's cycle
--- | position, then hands the seven Ints to `balistes_engine:evaluate_step`.
+-- | position, then hands the seven Ints to `reef_balistes_engine@ps:evaluateStep`
+-- | (the shared reef Grids engine).
 -- |
 -- | Live mutation = refire the cell with a new BalistesConfig.  The
 -- | walker registers the new config under the same alias; the voice's

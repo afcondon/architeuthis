@@ -12,7 +12,7 @@
 %%     Erlang:     balistes_voice gen_server holds the Foreign BalistesConfig
 %%                 + step state.  Per step: FFI call to PS-side
 %%                 `Tidal.Balistes.evaluateParamsAt(cfg, cyclePos)` → 7 Ints
-%%                 → balistes_engine:evaluate_step → MIDI events.
+%%                 → reef_balistes_engine@ps:evaluateStep → MIDI events.
 %%
 %% Phase 2 (this commit): params are a static tuple, no Pattern queries
 %% yet.  Phase 3 swaps in the PS-side FFI call.  The voice's outer
@@ -49,7 +49,7 @@
     cfg            :: term(),
     %% Engine running state.
     last_step      :: integer(),    % -1 before first emit
-    perturbations  :: [integer()],  % [Pb, Ps, Ph]
+    perturbations  :: array:array(integer()),  % reef array [Pb, Ps, Ph]
     rng_state      :: integer(),
     %% Output socket — shared by all calls from this voice.
     midi_socket    :: gen_udp:socket() | undefined,
@@ -121,7 +121,9 @@ init({Name, Config}) ->
         cfg         = maps:get(cfg,        Config,
                                                 undefined),
         last_step   = -1,
-        perturbations = [0, 0, 0],
+        %% a reef array (not a list): it feeds reef_balistes_engine@ps:evaluateStep
+        %% on the first tick if that tick is not a pattern start.
+        perturbations = array:from_list([0, 0, 0]),
         rng_state   = Seed0 band 16#FFFFFFFF,
         midi_socket = Sock,
         latency_us  = round(maps:get(latency_ms, Config, 0.0) * 1000),
@@ -139,7 +141,7 @@ handle_call(get_state, _From, State) ->
         port_name     => State#st.port_name,
         channel       => State#st.channel,
         last_step     => State#st.last_step,
-        perturbations => State#st.perturbations
+        perturbations => array:to_list(State#st.perturbations)
     },
     {reply, Snap, State}.
 
@@ -239,24 +241,36 @@ emit_step(S, Controls, CurrentCycle, CycleDurMs, NowUs, State0) ->
     Random  = maps:get(randomness, Snap),
     State1 =
         if StepInPat =:= 0 ->
-               {Perts, RngNext} =
-                   balistes_engine:fresh_perturbations(Random, State0#st.rng_state),
+               %% reef's freshPerturbations returns a PureScript record, i.e. an
+               %% Erlang map #{perts => [...], rng => _}. This is the SINGLE shared
+               %% Grids engine (reef_balistes_engine@ps), byte-identical to the
+               %% Triggerfish frontend (Reef.Conformance.balistesRun) — it replaces
+               %% the hand-written balistes_engine.erl, whose unmasked xorshift
+               %% silently disagreed with the frontend RNG.
+               #{perts := Perts, rng := RngNext} =
+                   'reef_balistes_engine@ps':freshPerturbations(Random, State0#st.rng_state),
                State0#st{perturbations = Perts, rng_state = RngNext};
            true ->
                State0
         end,
-    Triggers = balistes_engine:evaluate_step(
+    %% reef's Array Int / Array Trigger cross the boundary as Erlang `array`
+    %% records, not lists (reference_purerl_array_is_erlang_array_module): the
+    %% densities go in via array:from_list, the fired triggers come back as an
+    %% array and are drained via array:to_list. `perturbations` is already a reef
+    %% array (from freshPerturbations above), so it passes through untouched.
+    Triggers = 'reef_balistes_engine@ps':evaluateStep(
                  StepInPat, X, Y,
-                 [FBd, FSd, FHh],
+                 array:from_list([FBd, FSd, FHh]),
                  State1#st.perturbations),
     %% F-LAT — subtract device latency so link-spike / CoreMIDI have
     %% lead time to schedule precisely.
     WallUs = round(NowUs + (StepCycle - CurrentCycle) * CycleDurMs * 1000)
              - State1#st.latency_us,
-    lists:foreach(fun(T) -> emit_trigger(T, WallUs, State1) end, Triggers),
+    lists:foreach(fun(T) -> emit_trigger(T, WallUs, State1) end,
+                  array:to_list(Triggers)),
     State1.
 
-emit_trigger({Inst, Accent}, WallUs, State) ->
+emit_trigger(#{inst := Inst, accent := Accent}, WallUs, State) ->
     Note = note_for(Inst, State),
     Vel = if Accent -> State#st.vel_accent;
              true   -> State#st.vel
