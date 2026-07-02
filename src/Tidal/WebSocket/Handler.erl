@@ -108,6 +108,11 @@ try_parse_prefixed(<<"reef-sim ", Rest/binary>>) ->
     %% BEAM voice co-simulates from the frontend's exact state, generation and all.
     %% Superseded by reef-sim-at (phase-aligned); kept for manual / legacy use.
     {reef_sim, trim_binary(Rest)};
+try_parse_prefixed(<<"balistes-fixed ", Rest/binary>>) ->
+    %% balistes-fixed <json> — the fixed-rhythm handoff: a whole FixedPattern
+    %% (Reef.Balistes.Fixed, wire-flat) to play on the rig (ch 11). Stateless (a pure
+    %% function of the absolute step), so no step tag / phase-hold needed.
+    {balistes_fixed, trim_binary(Rest)};
 try_parse_prefixed(<<"balistes-input ", Rest/binary>>) ->
     %% balistes-input <json> — a tick-tagged Balistes gesture (live knob sync):
     %% {tick, input} in the Reef.Balistes.Protocol wire form, applied on the tagged
@@ -901,6 +906,17 @@ handle_pattern_message(Text, State) ->
                 {error, Reason} ->
                     RB = list_to_binary(io_lib:format("~p", [Reason])),
                     {reply, {text, <<"ERR: balistes-sim-at ", RB/binary>>}, State}
+            end;
+        {balistes_fixed, Json} ->
+            %% Fixed-rhythm handoff: play a pushed FixedPattern on ch 11. Stateless, so
+            %% the voice just evals renderFixed per absolute step — in lockstep with the
+            %% frontend's AFixed branch, which reads the same Link step.
+            case reef_balistes_voice:start_fixed_json(Json, 11, 0.25) of
+                {ok, _Pid} ->
+                    {reply, {text, <<"OK: balistes-fixed (ch11)">>}, State};
+                {error, Reason} ->
+                    RB = list_to_binary(io_lib:format("~p", [Reason])),
+                    {reply, {text, <<"ERR: balistes-fixed ", RB/binary>>}, State}
             end;
         {balistes_input, Json} ->
             %% Balistes live knob sync: decode the tick-tagged BInput with the SAME

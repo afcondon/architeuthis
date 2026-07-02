@@ -20,7 +20,7 @@
 %% as the frontend's emitHit does.
 -module(reef_balistes_voice).
 -export([start/0, start/2, start_sim_json/3, start_sim_at_json/4,
-         stop/0, loop/1]).
+         start_fixed_json/3, stop/0, loop/1]).
 
 %% Scheduler poll interval (ms). Timing is absolute (WallUs from the anchor), so
 %% poll jitter only affects lookahead slack.
@@ -75,10 +75,37 @@ do_start_at(Bal, Channel, StepBeats, LastStep) ->
         {ok, Sock} = gen_udp:open(0, [binary]),
         erlang:send_after(?POLL_MS, self(), poll),
         loop(#{ socket => Sock, channel => Channel, step_beats => StepBeats,
-                bal => Bal, last_step => LastStep, pending => [] })
+                mode => grids, bal => Bal, last_step => LastStep, pending => [] })
     end),
     catch register(reef_balistes_voice, Pid),
     {ok, Pid}.
+
+%% Start from a JSON-encoded FixedPattern — the fixed-rhythm handoff (AFixed mode).
+%% A fixed rhythm is a pure function of the absolute step (no state, no seed), so it
+%% snaps to the current clock step and needs no phase-hold: both runtimes read the
+%% same Link step and agree. The WS `balistes-fixed <json>` verb.
+start_fixed_json(Json, Channel, StepBeats) ->
+    case 'reef_balistes_protocol@ps':decodeFixed(ensure_bin(Json)) of
+        {right, Pat} ->
+            case whereis(reef_balistes_voice) of
+                Pid when is_pid(Pid) ->
+                    %% A voice is already running (fixed OR grids): swap the pattern in
+                    %% place — cheap, seamless, and this is the live-edit path (every
+                    %% cell/velocity/condition edit re-pushes).
+                    Pid ! {set_pattern, Pat},
+                    {ok, Pid};
+                _ ->
+                    NewPid = spawn(fun() ->
+                        {ok, Sock} = gen_udp:open(0, [binary]),
+                        erlang:send_after(?POLL_MS, self(), poll),
+                        loop(#{ socket => Sock, channel => Channel, step_beats => StepBeats,
+                                mode => fixed, pattern => Pat, last_step => -1, pending => [] })
+                    end),
+                    catch register(reef_balistes_voice, NewPid),
+                    {ok, NewPid}
+            end;
+        {left, Errs} -> {error, {decode, Errs}}
+    end.
 
 stop() ->
     case whereis(reef_balistes_voice) of
@@ -105,6 +132,12 @@ loop(St) ->
             %% reef_balistes_input@ps term — we never inspect it, only apply it.
             Pending = maps:get(pending, St),
             loop(St#{pending => Pending ++ [{Tick, Input}]});
+        {set_pattern, Pat} ->
+            %% Live fixed-rhythm edit: swap the pattern IN PLACE (keeping the socket +
+            %% last_step, so no restart / audio gap). Also switches a running Grids
+            %% voice to fixed mode — a fixed rhythm is a pure function of the absolute
+            %% step, so it picks up seamlessly on the next step.
+            loop(St#{mode => fixed, pattern => Pat});
         poll ->
             St2 = tick(St),
             erlang:send_after(?POLL_MS, self(), poll),
@@ -144,35 +177,42 @@ drain(St, Step, Horizon, AnchorUs, BeatAtAnchor, Tempo) ->
         false ->
             St;
         true ->
-            %% LOCKSTEP: apply any tick-tagged inputs whose step has arrived BEFORE
-            %% stepping — the same order the frontend applies them, so a deferred knob
-            %% edit lands on the same model step on both runtimes. `=<` (not `==`)
-            %% self-heals inputs buffered while no anchor was fresh; applied entries
-            %% drop from Keep. applyBInput is arity-2 (uncurried under backend-erl).
-            Pending = maps:get(pending, St),
-            {Due, Keep} = lists:partition(fun({T, _I}) -> T =< Step end, Pending),
-            Bal0 = lists:foldl(
-                     fun({_T, I}, B) -> 'reef_balistes_input@ps':applyBInput(I, B) end,
-                     maps:get(bal, St), Due),
-            %% renderStep reads the PRE-step state (x/y/open/notes/push/ratchet) at the
-            %% step being played, exactly as the frontend Component does (renderStep
-            %% bal0 playedStep r.fired). stepBal then advances (incl. the 32-step
-            %% perturbation resample via reef_bits xorshift32).
-            PlayedStep = maps:get(step, Bal0),
-            Res = 'reef_balistes_sim@ps':stepBal(Bal0),
-            Bal1 = maps:get(bal, Res),
-            Fired = maps:get(fired, Res),
-            %% renderStep/3 is uncurried (3-arg PS fn → arity-3 erl); call directly.
-            Events = array:to_list(
-                       'reef_balistes_sim@ps':renderStep(Bal0, PlayedStep, Fired)),
             %% Invert the affine map: the wall time at which beat StepBeat occurs.
             WallUs = round(AnchorUs + (StepBeat - BeatAtAnchor) * 60000000.0 / Tempo),
             StepMs = StepBeats * 60000.0 / Tempo,
             Ch = maps:get(channel, St),
             Sock = maps:get(socket, St),
-            lists:foreach(fun(E) -> emit(Sock, Ch, E, WallUs, StepMs) end, Events),
-            drain(St#{bal => Bal1, last_step => Step, pending => Keep},
-                  Step + 1, Horizon, AnchorUs, BeatAtAnchor, Tempo)
+            St2 = case maps:get(mode, St) of
+                fixed ->
+                    %% Fixed rhythm: a pure function of the ABSOLUTE Step (no state, no
+                    %% inputs, no seed) — the shared renderFixed decides every hit, so
+                    %% both runtimes reading the same Link step agree with no handoff.
+                    FEvents = array:to_list(
+                                'reef_balistes_fixed@ps':renderFixed(maps:get(pattern, St), Step)),
+                    lists:foreach(fun(E) -> emit(Sock, Ch, E, WallUs, StepMs) end, FEvents),
+                    St#{last_step => Step};
+                _ ->
+                    %% Grids: apply any tick-tagged inputs whose step has arrived BEFORE
+                    %% stepping — the same order the frontend applies them, so a deferred
+                    %% edit lands on the same model step on both runtimes. `=<` self-heals
+                    %% inputs buffered while no anchor was fresh. applyBInput is arity-2.
+                    Pending = maps:get(pending, St),
+                    {Due, Keep} = lists:partition(fun({T, _I}) -> T =< Step end, Pending),
+                    Bal0 = lists:foldl(
+                             fun({_T, I}, B) -> 'reef_balistes_input@ps':applyBInput(I, B) end,
+                             maps:get(bal, St), Due),
+                    %% renderStep reads the PRE-step state; stepBal then advances (incl.
+                    %% the 32-step perturbation resample via reef_bits xorshift32).
+                    PlayedStep = maps:get(step, Bal0),
+                    Res = 'reef_balistes_sim@ps':stepBal(Bal0),
+                    Bal1 = maps:get(bal, Res),
+                    Fired = maps:get(fired, Res),
+                    GEvents = array:to_list(
+                                'reef_balistes_sim@ps':renderStep(Bal0, PlayedStep, Fired)),
+                    lists:foreach(fun(E) -> emit(Sock, Ch, E, WallUs, StepMs) end, GEvents),
+                    St#{bal => Bal1, last_step => Step, pending => Keep}
+            end,
+            drain(St2, Step + 1, Horizon, AnchorUs, BeatAtAnchor, Tempo)
     end.
 
 %% One rendered event → scheduled MIDI. Mirrors the frontend's emitHit: the signed
