@@ -423,6 +423,16 @@ try_parse_prefixed(<<"stop-piece">>) ->
     {stop_piece};
 try_parse_prefixed(<<"stop-piece ", _/binary>>) ->
     {stop_piece};
+%% Per-voice stops for the reef family (Triggerfish ATLANTIS per-tab transport):
+%% stop ONE reef voice, not the global hush.  Restart is the voice's own handoff
+%% verb (reef-sim-at / balistes-sim-at / vetula-voicings).  Idempotent — stopping
+%% an absent voice is a no-op (the :stop() call is wrapped in `catch`).
+try_parse_prefixed(<<"reef-stop">>) -> {reef_stop};
+try_parse_prefixed(<<"reef-stop ", _/binary>>) -> {reef_stop};
+try_parse_prefixed(<<"balistes-stop">>) -> {balistes_stop};
+try_parse_prefixed(<<"balistes-stop ", _/binary>>) -> {balistes_stop};
+try_parse_prefixed(<<"vetula-stop">>) -> {vetula_stop};
+try_parse_prefixed(<<"vetula-stop ", _/binary>>) -> {vetula_stop};
 try_parse_prefixed(<<"play-armed ", Rest/binary>>) ->
     %% play-armed <mvoiceName> <cueName> — install a typeful cue's body
     %% into the named voice.  Resolves the cue by calling
@@ -884,6 +894,18 @@ handle_pattern_message(Text, State) ->
             tidal_voice_sup:silence_voice(Name),
             Reply = {text, <<"OK: silence ", Name/binary>>},
             {reply, Reply, State};
+        {reef_stop} ->
+            %% Per-tab ATLANTIS stop: silence just the reef-odonus voice.
+            catch reef_voice:stop(),
+            {reply, {text, <<"OK: reef-stop">>}, State};
+        {balistes_stop} ->
+            %% Per-tab ATLANTIS stop: silence just the Balistes lockstep voice.
+            catch reef_balistes_voice:stop(),
+            {reply, {text, <<"OK: balistes-stop">>}, State};
+        {vetula_stop} ->
+            %% Per-tab ATLANTIS stop: silence just the Vetula brush voice.
+            catch reef_vetula_brush:stop(),
+            {reply, {text, <<"OK: vetula-stop">>}, State};
         {log_level, N} ->
             tidal_log:set_level(N),
             NBin = integer_to_binary(N),
