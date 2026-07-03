@@ -125,6 +125,26 @@ try_parse_prefixed(<<"vetula-perf ", Rest/binary>>) ->
     %% phase-hold is needed; the → odo voice conducts reef_voice's chord overlay. A
     %% second push swaps the performance in place (live edit). Start Odonus first.
     {vetula_perf, trim_binary(Rest)};
+try_parse_prefixed(<<"vetula-voicings ", Rest/binary>>) ->
+    %% vetula-voicings <channel> <renderer> <json> — the palette→brush handoff
+    %% (Option B). Plays a Vetula progression's HAND-PICKED voicings (JSON `Array
+    %% (Array Int)`, each inner array one voiced chord's ascending MIDI) as a real
+    %% Tidal Pattern via reef_vetula_brush — a self-contained reef-family voice on
+    %% Odonus's Link 1/16 grid (no Calypso, no dispatcher). channel = 1..16 MIDI
+    %% channel the frontend is claiming; renderer ∈ {block, arp, held}. One chord
+    %% per cycle for now; dwell/skip → mininotation weighting later. A re-push live
+    %% re-voices in place.
+    case binary:split(trim_binary(Rest), <<" ">>) of
+        [ChBin, Rest2] when ChBin =/= <<>> ->
+            case binary:split(trim_binary(Rest2), <<" ">>) of
+                [Renderer, Json] when Renderer =/= <<>>, Json =/= <<>> ->
+                    try binary_to_integer(ChBin) of
+                        Ch -> {vetula_voicings, Ch, Renderer, trim_binary(Json)}
+                    catch _:_ -> none end;
+                _ -> none
+            end;
+        _ -> none
+    end;
 try_parse_prefixed(<<"reef-input ", Rest/binary>>) ->
     %% reef-input <json> — a tick-tagged input (lockstep P4c): {tick, input} in the
     %% Reef.Protocol wire format. Forwarded to the running reef voice, which buffers
@@ -841,6 +861,9 @@ handle_pattern_message(Text, State) ->
             %% and the Vetula performance conductor (vetula-perf). It emits no MIDI,
             %% but stop it so a hushed rig isn't still re-conducting a revived Odonus.
             catch reef_vetula_voice:stop(),
+            %% and the Vetula brush voice (vetula-voicings, Option B) — a real MIDI
+            %% emitter, so hush must silence it.
+            catch reef_vetula_brush:stop(),
             Reply = {text, <<"OK: hush">>},
             {reply, Reply, State};
         {unhush} ->
@@ -958,6 +981,21 @@ handle_pattern_message(Text, State) ->
                 {error, Reason} ->
                     RB = list_to_binary(io_lib:format("~p", [Reason])),
                     {reply, {text, <<"ERR: vetula-perf ", RB/binary>>}, State}
+            end;
+        {vetula_voicings, Ch, Renderer, Json} ->
+            %% Palette→brush handoff (Option B): build a real Tidal Pattern from the
+            %% pushed voicings (Tidal.Vetula.Bridge: JSON → Voicings → renderer) and
+            %% play it on the claimed channel via reef_vetula_brush — a self-contained
+            %% reef-family voice on Odonus's Link grid, queried per pulse. A re-push
+            %% swaps the pattern in place (live re-voice). No Calypso/dispatcher.
+            case reef_vetula_brush:start_json(Ch, Renderer, Json) of
+                {ok, _Pid} ->
+                    {reply, {text, <<"OK: vetula-voicings ch",
+                                     (integer_to_binary(Ch))/binary, " ",
+                                     Renderer/binary>>}, State};
+                {error, Reason} ->
+                    RB = list_to_binary(io_lib:format("~p", [Reason])),
+                    {reply, {text, <<"ERR: vetula-voicings ", RB/binary>>}, State}
             end;
         {reef_input, Json} ->
             %% Lockstep live edit (P4c): decode the tick-tagged input with the SAME

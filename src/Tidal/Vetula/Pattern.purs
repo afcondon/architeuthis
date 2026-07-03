@@ -32,6 +32,10 @@ module Tidal.Vetula.Pattern
   , vetulaArp
   , vetulaEuclid
   , vetulaHeld
+  , fromVoicings
+  , fromVoicingsArp
+  , fromVoicingsEuclid
+  , fromVoicingsHeld
   , voicingAsStack
   , voicingAsArp
   , voicingAsStabs
@@ -193,6 +197,65 @@ voicingAsStabs k n v =
   in
     fastCat (map slot pattern)
 
+-- ---------------------------------------------------------------------------
+-- fromVoicings — the palette→brush bridge builders
+-- ---------------------------------------------------------------------------
+--
+-- These take an ALREADY-CHOSEN sequence of voicings (the browser palette's
+-- hand-picked voice-led chords, pushed over the wire) and build a Pattern
+-- directly, skipping the `voiceLead`-from-`closeVoicing` derivation the
+-- `vetula*` entry points do. The palette owns the voice-leading; the brush just
+-- sequences the material. `vetula*` = derive-then-build; `fromVoicings*` =
+-- build-from-given.
+
+-- | Play a given sequence of voicings as BLOCKS (each chord a stack, one per
+-- | cycle). Concrete-voicing sibling of `vetulaPattern`.
+fromVoicings :: Array Voicing -> Pattern PitchedNote12
+fromVoicings voicings = case voicings of
+  [] -> silence
+  _  -> cat (map voicingAsStack voicings)
+
+-- | As `fromVoicings`, but each chord ascends as an arp within its cycle slot.
+-- | Concrete-voicing sibling of `vetulaArp`.
+fromVoicingsArp :: Array Voicing -> Pattern PitchedNote12
+fromVoicingsArp voicings = case voicings of
+  [] -> silence
+  _  -> cat (map voicingAsArp voicings)
+
+-- | As `fromVoicings`, but each chord fires Euclidean(k, n) stabs in its slot.
+-- | Concrete-voicing sibling of `vetulaEuclid`.
+fromVoicingsEuclid :: Int -> Int -> Array Voicing -> Pattern PitchedNote12
+fromVoicingsEuclid k n voicings = case voicings of
+  [] -> silence
+  _  -> cat (map (voicingAsStabs k n) voicings)
+
+-- | Play a given sequence of voicings as the LEGATO / common-tone reading: a
+-- | MIDI note present in two adjacent voicings sounds as ONE event, not
+-- | retriggered; only the moving voices re-attack. This is the horizontal /
+-- | contrapuntal projection of the progression — the audible form of the
+-- | voice-leading, and the correct home for what the palette called "strum".
+-- | Concrete-voicing sibling of `vetulaHeld` (which derives, then calls this).
+fromVoicingsHeld :: Array Voicing -> Pattern PitchedNote12
+fromVoicingsHeld voicings = case voicings of
+  [] -> silence
+  _ ->
+    let
+      -- Every MIDI number that appears anywhere in the progression.
+      allMidis :: Array Int
+      allMidis = Set.toUnfoldable
+        (Set.fromFoldable (Array.concatMap (\(Voicing xs) -> xs) voicings))
+      -- For each MIDI, collapse presence-across-cycles into runs and build one
+      -- Pattern event per run.
+      runsForMidi :: Int -> Array { midi :: Int, startCycle :: Int, runLen :: Int }
+      runsForMidi m = collapseRuns m
+        (Array.mapWithIndex
+          (\i (Voicing xs) -> if Array.elem m xs then Just i else Nothing)
+          voicings)
+      allRuns = Array.concatMap runsForMidi allMidis
+      progLen = Array.length voicings
+    in
+      sustainedPattern progLen allRuns
+
 -- | Like `vetulaPattern` but with **common-tone sustain**: a MIDI note
 -- | that appears in two adjacent voicings is emitted as a single
 -- | Pattern event whose whole-arc spans both cycles, instead of being
@@ -219,27 +282,11 @@ vetulaHeld (VetulaPart r) =
     Just { head: firstDc, tail: rest } ->
       let
         firstV = r.voicing (closeVoicing { centre: r.octave } (realize r.key firstDc))
-        voicings :: Array Voicing
         voicings = cons firstV
           (Array.scanl (\prev dc -> voiceLead prev (realize r.key dc))
                        firstV rest)
-        -- Every MIDI number that appears anywhere in the progression.
-        allMidis :: Array Int
-        allMidis = Set.toUnfoldable
-          (Set.fromFoldable
-            (Array.concatMap (\(Voicing xs) -> xs) voicings))
-        -- For each MIDI, collapse presence-across-cycles into runs and
-        -- build one Pattern event per run.
-        runsForMidi :: Int -> Array { midi :: Int, startCycle :: Int, runLen :: Int }
-        runsForMidi m = collapseRuns m
-          (Array.mapWithIndex
-            (\i (Voicing xs) -> if Array.elem m xs then Just i else Nothing)
-            voicings)
-        allRuns :: Array { midi :: Int, startCycle :: Int, runLen :: Int }
-        allRuns = Array.concatMap runsForMidi allMidis
-        progLen = Array.length voicings
       in
-        sustainedPattern progLen allRuns
+        fromVoicingsHeld voicings
 
 -- | Collapse an Array (Maybe Int) of per-cycle presence indices into
 -- | runs of consecutive present cycles.  Each Just i means "this MIDI
