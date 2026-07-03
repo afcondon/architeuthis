@@ -21,8 +21,10 @@
 
 %% Scheduler poll interval (ms).
 -define(POLL_MS, 25).
-%% Schedule this far ahead so link-spike has lead time (mirrors the other voices).
--define(LOOKAHEAD_MS, 200.0).
+%% Schedule this far ahead so link-spike has lead time. Also covers the → odo
+%% pre-send margin (FollowChord must reach reef_voice's `pending` before reef_voice —
+%% 200ms lookahead — consumes that pulse), matching reef_vetula_voice.
+-define(LOOKAHEAD_MS, 450.0).
 %% Model step length in beats. 0.25 = a 1/16 note (the shared grid). The Bridge query
 %% assumes this step when it builds the per-pulse cycle arc (cyclesPerStep = 1/(4·Q)).
 -define(STEP_BEATS, 0.25).
@@ -37,16 +39,20 @@
 %% once (Bridge) and holds it; a second push swaps it in place (live re-voice, phase
 %% preserved because the voice is a pure function of the absolute pulse).
 start_json(Ch, Renderer, Json) ->
-    Pat = 'tidal_vetula_bridge@ps':buildVoicingsPattern(ensure_bin(Renderer), ensure_bin(Json)),
+    JsonB = ensure_bin(Json),
+    Pat = 'tidal_vetula_bridge@ps':buildVoicingsPattern(ensure_bin(Renderer), JsonB),
+    Pcs = 'tidal_vetula_bridge@ps':chordPcs(JsonB),
+    NChords = array:size(Pcs),
     case whereis(reef_vetula_brush) of
         Pid when is_pid(Pid) ->
-            Pid ! {set_pattern, Ch, Pat},
+            Pid ! {set_pattern, Ch, Pat, Pcs, NChords},
             {ok, Pid};
         _ ->
             NewPid = spawn(fun() ->
                 {ok, Sock} = gen_udp:open(0, [binary]),
                 erlang:send_after(?POLL_MS, self(), poll),
-                loop(#{ socket => Sock, pattern => Pat, channel => Ch, last_step => -1 })
+                loop(#{ socket => Sock, pattern => Pat, channel => Ch,
+                        pcs => Pcs, nchords => NChords, last_step => -1, cursor => -1 })
             end),
             catch register(reef_vetula_brush, NewPid),
             {ok, NewPid}
@@ -70,8 +76,11 @@ loop(St) ->
     receive
         stop ->
             gen_udp:close(maps:get(socket, St));
-        {set_pattern, Ch, Pat} ->
-            loop(St#{pattern => Pat, channel => Ch});
+        {set_pattern, Ch, Pat, Pcs, NChords} ->
+            %% Live re-voice: swap pattern + chord-clock, reset cursor so the next
+            %% drained pulse ALWAYS re-conducts the → odo overlay onto the new chord.
+            loop(St#{pattern => Pat, channel => Ch, pcs => Pcs,
+                     nchords => NChords, cursor => -1});
         poll ->
             St2 = tick(St),
             erlang:send_after(?POLL_MS, self(), poll),
@@ -117,12 +126,43 @@ drain(St, Step, Horizon, AnchorUs, BeatAtAnchor, Tempo, Quantum) ->
             %% reduce a non-integer via gcd/rem and crash. Round to the integer
             %% beats-per-cycle it always is.
             QInt = round(Quantum),
+            %% (1) Odonus conduct. The chord clock is the SAME progression the MIDI
+            %% pattern rides (chord i in cycle i), so the active chord index is just
+            %% which cycle this pulse sits in (16 pulses = 1 cycle at quantum 4). On a
+            %% change, pre-send reef_voice a tick-tagged FollowChord of that chord's
+            %% pitch classes — it applies it on the tagged pulse, so the Odonus
+            %% quantise-target and the pads below move on ONE pulse. Dormant unless a
+            %% chord actually changes AND reef_voice (Odonus) is running.
+            NewCursor = conduct(St, Step, QInt),
+            %% (2) MIDI emit.
             Notes = array:to_list('tidal_vetula_bridge@ps':queryNotes(Pat, Step, QInt)),
             lists:foreach(
               fun(N) -> emit(Sock, Ch, N, AnchorUs, BeatAtAnchor, Tempo, Quantum, CycleDurMs) end,
               Notes),
-            drain(St#{last_step => Step}, Step + 1, Horizon,
+            drain(St#{last_step => Step, cursor => NewCursor}, Step + 1, Horizon,
                   AnchorUs, BeatAtAnchor, Tempo, Quantum)
+    end.
+
+%% The chord index this pulse sits on, sending reef_voice a FollowChord when it
+%% changes. Returns the (possibly unchanged) cursor. cursor advances even when
+%% reef_voice is down, so a revived Odonus is conducted at the next real change.
+conduct(St, Step, QInt) ->
+    NChords = maps:get(nchords, St),
+    Cursor = maps:get(cursor, St),
+    case NChords > 0 of
+        false ->
+            Cursor;
+        true ->
+            PulsesPerCycle = 4 * QInt,
+            ChordIdx = (Step div PulsesPerCycle) rem NChords,
+            case (ChordIdx =/= Cursor) andalso is_pid(whereis(reef_voice)) of
+                true ->
+                    Pcs = array:get(ChordIdx, maps:get(pcs, St)),
+                    reef_voice ! {apply_input, Step, 'reef_input@ps':mkFollowChord(Pcs)};
+                false ->
+                    ok
+            end,
+            ChordIdx
     end.
 
 %% One WireNote → scheduled MIDI. `startCycle`/`stopCycle` are fractional cycle

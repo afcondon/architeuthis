@@ -28,13 +28,14 @@
 -- | approximation. `quantum` (beats per cycle, from the Link anchor) is passed in.
 module Tidal.Vetula.Bridge
   ( buildVoicingsPattern
+  , chordPcs
   , WireNote
   , queryNotes
   ) where
 
 import Prelude
 
-import Data.Array (mapMaybe)
+import Data.Array (mapMaybe, nub, sort)
 import Data.Either (Either(..))
 import Data.Maybe (Maybe(..))
 import Data.Rational (fromInt, toNumber)
@@ -69,6 +70,17 @@ buildVoicingsPattern renderer json =
       "held" -> fromVoicingsHeld voicings
       "legato" -> fromVoicingsHeld voicings
       _ -> fromVoicings voicings
+
+-- | The chord-clock the Odonus conduct follows: each pushed voicing reduced to its
+-- | sorted, unique PITCH CLASSES (0..11). Same JSON, same cat timeline as the MIDI
+-- | pattern (chord i in cycle i), so the `FollowChord` conduct and the pads move on
+-- | one pulse — aligned by construction. The reef voice holds this and indexes it by
+-- | the active chord each pulse, handing chord i's pcs to `Reef.Input.mkFollowChord`.
+chordPcs :: String -> Array (Array Int)
+chordPcs json =
+  case (readJSON json :: Either _ (Array (Array Int))) of
+    Right vss -> map (nub <<< sort <<< map (\n -> mod n 12)) vss
+    Left _ -> []
 
 -- | One note-onset the reef voice will schedule: the absolute MIDI note plus the
 -- | event's start/stop as fractional CYCLE positions (Numbers). The voice converts
