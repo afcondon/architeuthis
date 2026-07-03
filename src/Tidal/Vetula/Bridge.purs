@@ -35,7 +35,7 @@ module Tidal.Vetula.Bridge
 
 import Prelude
 
-import Data.Array (mapMaybe, nub, sort)
+import Data.Array (concat, length, mapMaybe, nub, replicate, sort, take, zipWith)
 import Data.Either (Either(..))
 import Data.Maybe (Maybe(..))
 import Data.Rational (fromInt, toNumber)
@@ -57,13 +57,34 @@ import Simple.JSON (readJSON)
 -- | now; the palette's bars-per-chord dwell and skips become mininotation weighting
 -- | later, and the brush's own combinators (fast, every, euclid, …) compose on top.
 -- | Empty / unparseable input yields `silence` (via fromVoicings []).
+-- | The pushed progression: hand-picked voicings `v` and a per-chord dwell `d`
+-- | (bars-per-chord, 0 = skip). Decoded from `{"v":[[..]],"d":[..]}`; a bare
+-- | `[[..]]` (no dwell) is still accepted and treated as one bar per chord.
+type PushData = { v :: Array (Array Int), d :: Array Int }
+
+-- | Decode the push and DWELL-EXPAND it: each voicing repeated `d` times (0 =
+-- | dropped), so the one-chord-per-cycle machinery (pattern build + chord-clock +
+-- | conduct's `cycle mod nChords`) yields bars-per-chord and skips for free, all
+-- | aligned by construction. `d` is padded/truncated to the voicing count (missing
+-- | dwell = 1 bar). Both the MIDI pattern and the conduct's pcs run through this, so
+-- | they share the identical expanded timeline.
+decodeExpanded :: String -> Array (Array Int)
+decodeExpanded json =
+  case (readJSON json :: Either _ PushData) of
+    Right pd -> expand pd.d pd.v
+    Left _ -> case (readJSON json :: Either _ (Array (Array Int))) of
+      Right vs -> vs
+      Left _ -> []
+  where
+  expand ds vs =
+    let ds' = take (length vs) (ds <> replicate (length vs) 1)
+    in concat (zipWith (\d v -> replicate (max 0 d) v) ds' vs)
+
 buildVoicingsPattern :: String -> String -> Pattern PitchedNote12
 buildVoicingsPattern renderer json =
   let
     voicings :: Array Voicing
-    voicings = case (readJSON json :: Either _ (Array (Array Int))) of
-      Right vss -> map Voicing vss
-      Left _ -> []
+    voicings = map Voicing (decodeExpanded json)
   in
     case renderer of
       "arp" -> fromVoicingsArp voicings
@@ -77,10 +98,7 @@ buildVoicingsPattern renderer json =
 -- | one pulse — aligned by construction. The reef voice holds this and indexes it by
 -- | the active chord each pulse, handing chord i's pcs to `Reef.Input.mkFollowChord`.
 chordPcs :: String -> Array (Array Int)
-chordPcs json =
-  case (readJSON json :: Either _ (Array (Array Int))) of
-    Right vss -> map (nub <<< sort <<< map (\n -> mod n 12)) vss
-    Left _ -> []
+chordPcs json = map (nub <<< sort <<< map (\n -> mod n 12)) (decodeExpanded json)
 
 -- | One note-onset the reef voice will schedule: the absolute MIDI note plus the
 -- | event's start/stop as fractional CYCLE positions (Numbers). The voice converts
