@@ -145,6 +145,15 @@ try_parse_prefixed(<<"vetula-voicings ", Rest/binary>>) ->
             end;
         _ -> none
     end;
+try_parse_prefixed(<<"stellatus-scene ", Rest/binary>>) ->
+    %% stellatus-scene <json> — the Stellatus handoff: a whole resolved Scene (ring
+    %% of slots + glitch rules + jump table + seed, Reef.Stellatus.Protocol wire
+    %% form) to run on the rig. reef_stellatus_voice precomputes the /dirt/play loop
+    %% once and emits it Link-locked to SuperDirt (:57120). The walk is a pure
+    %% function of the scene, so no step tag is needed; a second push swaps in place.
+    {stellatus_scene, trim_binary(Rest)};
+try_parse_prefixed(<<"stellatus-stop">>) -> {stellatus_stop};
+try_parse_prefixed(<<"stellatus-stop ", _/binary>>) -> {stellatus_stop};
 try_parse_prefixed(<<"reef-input ", Rest/binary>>) ->
     %% reef-input <json> — a tick-tagged input (lockstep P4c): {tick, input} in the
     %% Reef.Protocol wire format. Forwarded to the running reef voice, which buffers
@@ -874,6 +883,9 @@ handle_pattern_message(Text, State) ->
             %% and the Vetula brush voice (vetula-voicings, Option B) — a real MIDI
             %% emitter, so hush must silence it.
             catch reef_vetula_brush:stop(),
+            %% and the Stellatus sample voice (stellatus-scene) — emits /dirt/play
+            %% OSC to SuperDirt, so hush must silence it.
+            catch reef_stellatus_voice:stop(),
             Reply = {text, <<"OK: hush">>},
             {reply, Reply, State};
         {unhush} ->
@@ -1019,6 +1031,23 @@ handle_pattern_message(Text, State) ->
                     RB = list_to_binary(io_lib:format("~p", [Reason])),
                     {reply, {text, <<"ERR: vetula-voicings ", RB/binary>>}, State}
             end;
+        {stellatus_scene, Json} ->
+            %% Stellatus handoff: run (or live-swap) the pushed Scene on the rig.
+            %% reef_stellatus_voice precomputes the /dirt/play loop and emits it
+            %% Link-locked to SuperDirt (:57120). The BEAM is the sole audio
+            %% authority — the browser is a pure visualizer, so backgrounding it
+            %% has no effect on the sound.
+            case reef_stellatus_voice:start_json(Json, 0.25) of
+                {ok, _Pid} ->
+                    {reply, {text, <<"OK: stellatus-scene (SuperDirt :57120)">>}, State};
+                {error, Reason} ->
+                    RB = list_to_binary(io_lib:format("~p", [Reason])),
+                    {reply, {text, <<"ERR: stellatus-scene ", RB/binary>>}, State}
+            end;
+        {stellatus_stop} ->
+            %% Per-tab stop: silence just the Stellatus voice.
+            catch reef_stellatus_voice:stop(),
+            {reply, {text, <<"OK: stellatus-stop">>}, State};
         {reef_input, Json} ->
             %% Lockstep live edit (P4c): decode the tick-tagged input with the SAME
             %% codec the frontend encoded it with (reef_protocol@ps:decodeTagged) and
