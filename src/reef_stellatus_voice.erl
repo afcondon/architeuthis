@@ -151,7 +151,7 @@ drain(St, Step, Horizon, AnchorUs, BeatAtAnchor, Tempo) ->
 %% did (s n begin end speed gain orbit cps) — proven audible.
 
 encode_dirt_play(Ev, Cps) ->
-    Args =
+    Base =
         [ {<<"s">>, {s, maps:get(s, Ev)}}
         , {<<"n">>, {f, num(maps:get(n, Ev))}}
         , {<<"begin">>, {f, num(maps:get('begin', Ev))}}
@@ -161,7 +161,29 @@ encode_dirt_play(Ev, Cps) ->
         , {<<"orbit">>, {f, 0.0}}
         , {<<"cps">>, {f, num(Cps)}}
         ],
-    encode_msg(<<"/dirt/play">>, Args).
+    %% Optional slice-surgery tranche, each gated on its off-sentinel so a scene
+    %% that sets none of them emits exactly the proven base bag. pan off = -1.0
+    %% (valid pan is 0..1); everything else off = 0.0.
+    Gt = fun(V) -> V > 0.0 end,
+    Opt =
+        opt(<<"cut">>, maps:get(cut, Ev), Gt)
+        ++ opt(<<"legato">>, maps:get(legato, Ev), Gt)
+        ++ opt(<<"accelerate">>, maps:get(accelerate, Ev), fun(V) -> V < 0.0 orelse V > 0.0 end)
+        ++ opt(<<"pan">>, maps:get(pan, Ev), fun(V) -> V >= 0.0 end)
+        ++ opt(<<"crush">>, maps:get(crush, Ev), Gt)
+        ++ opt(<<"coarse">>, maps:get(coarse, Ev), Gt)
+        ++ opt(<<"cutoff">>, maps:get(cutoff, Ev), Gt)
+        ++ opt(<<"resonance">>, maps:get(resonance, Ev), Gt),
+    encode_msg(<<"/dirt/play">>, Base ++ Opt).
+
+%% Emit one OSC arg (as a float) only when the value passes its gate; off-sentinel
+%% values drop out so unset slice params never reach SuperDirt.
+opt(Key, Val, Gate) ->
+    F = num(Val),
+    case Gate(F) of
+        true -> [{Key, {f, F}}];
+        false -> []
+    end.
 
 %% Build an OSC message: padded address, a ",…" type-tag string (an "s" for each
 %% key plus each value's tag), then the concatenated key+value bytes.
