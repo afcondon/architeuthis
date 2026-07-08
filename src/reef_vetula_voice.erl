@@ -32,16 +32,16 @@
 %% Re-snap if the next step is more than this many steps ahead (backward Link jump).
 -define(SNAP_AHEAD, 8).
 
-%% The rig's Vetula MIDI channels, assigned to → midi voices in performance order (the
-%% i-th → midi voice sounds on the i-th channel here). Kept OFF the channels the other
-%% instruments use — Odonus (1..4, 12..15) and Balistes (10,11) — so the rig's Vetula
-%% (8,9,16) A/Bs alongside the browser's (5,6,7) with no collisions. Edit here to
-%% re-map; per-instrument channel config is a later cleanup.
-rig_channels() -> [8, 9, 16].
-
-rig_ch(Ord) ->
-    Chs = rig_channels(),
-    lists:nth((Ord rem length(Chs)) + 1, Chs).
+%% The MIDI channel for a → midi voice ordinal. Channels now come from the browser's
+%% pushed Perf (Reef.Vetula.Perf:midiChannels, in the same order renderMidiAt assigns
+%% voiceOrd), so both runtimes honour ONE routing map instead of a rig-local list —
+%% Vetula's default is channel 5, named voices climb from there (see
+%% Triggerfish.Midi.Routing). Falls back to 5 if the pushed list is somehow empty.
+ord_ch(Ord, Chs) ->
+    case Chs of
+        [] -> 5;
+        _  -> lists:nth((Ord rem length(Chs)) + 1, Chs)
+    end.
 
 %% Start (or live-swap) from a JSON-encoded Perf — the Vetula handoff
 %% (Reef.Vetula.Protocol). Snaps to the current clock (a pure function of the pulse, so
@@ -146,21 +146,24 @@ drain(St, Step, Horizon, AnchorUs, BeatAtAnchor, Tempo) ->
             WallUs = round(AnchorUs + (StepBeat - BeatAtAnchor) * 60000000.0 / Tempo),
             StepMs = StepBeats * 60000.0 / Tempo,
             Sock = maps:get(socket, St),
+            %% The pushed → midi channels, indexed by voiceOrd (one routing map,
+            %% both runtimes) — see ord_ch/2.
+            Chs = array:to_list('reef_vetula_perf@ps':midiChannels(Perf)),
             Evs = array:to_list('reef_vetula_perf@ps':renderMidiAt(Perf, Step)),
-            lists:foreach(fun(E) -> emit_midi(Sock, E, WallUs, StepMs) end, Evs),
+            lists:foreach(fun(E) -> emit_midi(Sock, E, WallUs, StepMs, Chs) end, Evs),
             drain(St#{cursor => Cur, last_step => Step}, Step + 1, Horizon,
                   AnchorUs, BeatAtAnchor, Tempo)
     end.
 
 %% One rendered → midi note → scheduled MIDI. `durPulses` is the gate in pulses (1
 %% pulse = one 1/16 step), so DurMs = durPulses × the step's ms. Channel comes from the
-%% voice's ordinal via the rig channel list.
-emit_midi(Sock, E, WallUs, StepMs) ->
+%% pushed routing map, indexed by the voice's ordinal (ord_ch/2).
+emit_midi(Sock, E, WallUs, StepMs, Chs) ->
     Ord   = maps:get(voiceOrd, E),
     Note  = maps:get(note, E),
     Vel   = maps:get(velocity, E),
     DurMs = maps:get(durPulses, E) * StepMs,
-    Ch    = rig_ch(Ord),
+    Ch    = ord_ch(Ord, Chs),
     Thunk = 'tidal_mIDIBridge@foreign':scheduleNoteAt(
               Sock, <<"IAC Driver Tidal">>, Ch, Note, Vel, DurMs, WallUs),
     Thunk().
