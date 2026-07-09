@@ -521,6 +521,23 @@ try_parse_prefixed(<<"selene ", Rest/binary>>) ->
     %% form `polysignal <json>`, where the JSON envelope is exactly
     %% what fh2-config's `--apply-polysignal` reads on stdin.
     {selene, Rest};
+try_parse_prefixed(<<"selene-apply ", Rest/binary>>) ->
+    %% Triggerfish's Selene rack (#142) pushes each CV/gate destination
+    %% as `selene-apply <socket> <bank> <json>`: socket ∈ es9 | fh2 picks
+    %% the daemon control.sock, bank is the target token (main/cv0/gt0/…),
+    %% and json is the apply-polysignal envelope. socket+bank echo back in
+    %% the reply so the browser can correlate the OK/ERR per destination.
+    %% JSON is compact (space-free simple-json), so two splits separate
+    %% socket, bank, and payload.
+    case binary:split(trim_binary(Rest), <<" ">>) of
+        [Socket, Rest2] when Socket =/= <<>> ->
+            case binary:split(Rest2, <<" ">>) of
+                [Bank, Json] when Bank =/= <<>>, Json =/= <<>> ->
+                    {selene_apply, Socket, Bank, Json};
+                _ -> none
+            end;
+        _ -> none
+    end;
 try_parse_prefixed(<<"balistes ", Rest/binary>>) ->
     %% Calypso ships a balistes cell as a single line `balistes <json>`
     %% where the JSON envelope has alias / deviceName / channel +
@@ -1132,6 +1149,24 @@ handle_pattern_message(Text, State) ->
                     spawn(fun() -> fh2_apply_selene_standalone(Json) end),
                     {text, <<"OK: selene apply in flight (daemon "
                              "unreachable; spago shell-out, ~7s)">>}
+            end,
+            {reply, Reply, State};
+        {selene_apply, Socket, Bank, Json} ->
+            %% Triggerfish Selene → modular (#142). Relay one CV/gate
+            %% destination's apply-polysignal envelope to the right daemon
+            %% control socket (es9-daemon or fh2-config daemon), both of
+            %% which speak the identical line protocol. The reply echoes
+            %% socket+bank so the browser can show OK / claim-eviction /
+            %% ERR against the exact destination row. Purely a config
+            %% relay — no scheduled voice, so no conformance surface.
+            SockPath = selene_socket_path(Socket),
+            Reply = case daemon_call(SockPath, <<"apply-polysignal ", Json/binary>>) of
+                {ok, ReplyBin} ->
+                    {text, <<"selene-reply ", Socket/binary, " ", Bank/binary, " ", ReplyBin/binary>>};
+                {error, Reason} ->
+                    ReasonBin = list_to_binary(io_lib:format("~p", [Reason])),
+                    {text, <<"selene-reply ", Socket/binary, " ", Bank/binary,
+                             " ERR daemon-unreachable: ", ReasonBin/binary>>}
             end,
             {reply, Reply, State};
         {balistes, Json} ->
@@ -3278,6 +3313,19 @@ fh2_daemon_socket_path() ->
         Home -> Home ++ "/.fh2/control.sock"
     end.
 
+es9_daemon_socket_path() ->
+    case os:getenv("HOME") of
+        false -> "/tmp/es9-control.sock";
+        Home -> Home ++ "/.es9/control.sock"
+    end.
+
+%% Map a Selene push socket id (es9 | fh2) to its daemon control.sock.
+%% Both daemons speak the identical apply-polysignal line protocol; the
+%% only difference is which unix socket (and which physical rack) it hits.
+selene_socket_path(<<"es9">>) -> es9_daemon_socket_path();
+selene_socket_path(<<"fh2">>) -> fh2_daemon_socket_path();
+selene_socket_path(_) -> es9_daemon_socket_path().
+
 %% Resolve a typeful cue's body Pattern from the loaded Session module.
 %% Returns {ok, Pat} or {error, ErrBin}. The Calypso server's
 %% /session-source path arranges for calypso_generated_session@ps to be
@@ -3334,7 +3382,12 @@ coerce_body_for_dispatch(_Dest, Pat) ->
     Pat.
 
 fh2_daemon_call(Command) ->
-    SockPath = fh2_daemon_socket_path(),
+    daemon_call(fh2_daemon_socket_path(), Command).
+
+%% Generic unix-socket line-protocol call: connect, send `<Command>\n`,
+%% read one line, strip the trailing newline. Shared by the fh2-config
+%% daemon and es9-daemon (both speak the same apply-polysignal grammar).
+daemon_call(SockPath, Command) ->
     Opts = [{active, false}, binary, {packet, line}],
     case gen_tcp:connect({local, SockPath}, 0, Opts, 1000) of
         {ok, Sock} ->
