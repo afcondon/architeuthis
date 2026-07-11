@@ -49,6 +49,17 @@
 %% frontend-vs-backend comparison, golden capture).
 -define(BASE_CHANNEL, 12).
 
+%% FIRST-LIGHT CV out (task #190, 2026-07-11): in addition to the MIDI emit,
+%% fork each fired head to an ES-9 CV bus — headIdx K → bus ?CV_BASE_BUS + K —
+%% with that voice's Saïch calibration table (from Amphora) applied by the
+%% es9_cv realiser, so an intended note lands in tune on the analog VCO. This is
+%% the BEAM half of "calibrate the output, not the module" (CALIBRATION.md).
+%% `true` also drives the modular; flip to `false` for MIDI-only. Heads 0-3 map
+%% to buses 8-11 and to the four Saïch voices (labels saich-1..4).
+-define(ODONUS_CV_FIRST_LIGHT, true).
+-define(CV_BASE_BUS, 8).
+-define(CV_LABELS, [<<"saich-1">>, <<"saich-2">>, <<"saich-3">>, <<"saich-4">>]).
+
 %% Single-note smoke test: fire middle C (60) on ch 16, +200ms.
 ping() ->
     {ok, Sock} = gen_udp:open(0, [binary]),
@@ -121,14 +132,39 @@ do_start(Odo, Channel, StepBeats) ->
 %% holds the state for absolute step N (the phase-aligned reef-sim-at path).
 do_start_sim(Sim, Channel, StepBeats, LastStep) ->
     stop(),
+    Cv = init_cv(),
     Pid = spawn(fun() ->
         {ok, Sock} = gen_udp:open(0, [binary]),
         erlang:send_after(?POLL_MS, self(), poll),
         loop(#{ socket => Sock, channel => Channel, step_beats => StepBeats,
-                sim => Sim, last_step => LastStep, pending => [], swing => 0.0 })
+                sim => Sim, last_step => LastStep, pending => [], swing => 0.0,
+                cv => Cv })
     end),
     catch register(reef_voice, Pid),
     {ok, Pid}.
+
+%% Load the per-head Saïch calibration tables from Amphora once at voice start
+%% (never on the hot path). Returns `undefined` when CV-out is off or the fetch
+%% fails — the voice then runs MIDI-only, so a down Amphora never silences the
+%% rig. See es9_cv + CALIBRATION.md.
+init_cv() ->
+    case ?ODONUS_CV_FIRST_LIGHT of
+        false -> undefined;
+        true ->
+            case es9_cv:fetch_tables(?CV_LABELS) of
+                {ok, Tables} ->
+                    Have = length([T || T <- Tables, T =/= undefined]),
+                    tidal_log:info(
+                      "reef_voice CV-out ON: base bus ~B, ~B/~B tables from Amphora~n",
+                      [?CV_BASE_BUS, Have, length(?CV_LABELS)]),
+                    #{base_bus => ?CV_BASE_BUS, tables => Tables};
+                {error, Why} ->
+                    tidal_log:err(
+                      "reef_voice CV-out OFF (Amphora fetch failed: ~p) — MIDI only~n",
+                      [Why]),
+                    undefined
+            end
+    end.
 
 stop() ->
     case whereis(reef_voice) of
@@ -167,6 +203,12 @@ loop(St) ->
             %% odd model steps lag the audible onset. Timing expression only (never
             %% touches the model), so it just updates the field — no last_step reset.
             loop(St#{swing => S});
+        {emit_cv, Bus, Value} ->
+            %% Scheduled pitch-CV send (task #190): emit/7 defers each head's
+            %% `/cv` to its step onset via send_after so the analog VCO's pitch
+            %% lands ON the beat, not up to a lookahead early. Fire-and-continue.
+            es9_cv:send_cv(maps:get(socket, St), Bus, Value),
+            loop(St);
         poll ->
             St2 = tick(St),
             erlang:send_after(?POLL_MS, self(), poll),
@@ -241,7 +283,8 @@ drain(St, Step, Horizon, AnchorUs, BeatAtAnchor, Tempo) ->
             WallUs = WallUs0 + SwingUs,
             Ch = maps:get(channel, St),
             Sock = maps:get(socket, St),
-            lists:foreach(fun(F) -> emit(Sock, Ch, Odo1, F, WallUs, StepMs) end, Fired),
+            Cv = maps:get(cv, St, undefined),
+            lists:foreach(fun(F) -> emit(Sock, Ch, Cv, Odo1, F, WallUs, StepMs) end, Fired),
             drain(St#{sim => Sim1, last_step => Step, pending => Keep},
                   Step + 1, Horizon, AnchorUs, BeatAtAnchor, Tempo)
     end.
@@ -252,10 +295,15 @@ drain(St, Step, Horizon, AnchorUs, BeatAtAnchor, Tempo) ->
 %% retriggers come from the SHARED renderer (reef_render@ps:renderHits) — the same
 %% code the frontend uses — so gate/ratchet render identically on both runtimes
 %% (lockstep P4f stage 1). Each hit is scheduled at the step onset + its offsetMs.
-emit(Sock, BaseCh, Odo, F, WallUs, StepMs) ->
-    Note = maps:get(pitch, F),
-    Vel  = maps:get(vel, F),
-    Ch   = BaseCh + maps:get(headIdx, F),
+emit(Sock, BaseCh, Cv, Odo, F, WallUs, StepMs) ->
+    Note    = maps:get(pitch, F),
+    Vel     = maps:get(vel, F),
+    HeadIdx = maps:get(headIdx, F),
+    Ch      = BaseCh + HeadIdx,
+    %% CV fork (task #190): schedule this head's pitch CV to land at the step
+    %% onset. Independent of MIDI (Saïch has no MIDI in); the note still goes out
+    %% for browser/Ableton comparison.
+    maybe_schedule_cv(Cv, HeadIdx, Note, WallUs),
     %% renderHits is a 3-arg PS function → purs-backend-erl emits it uncurried as
     %% renderHits/3 (there is no renderHits/1), so call it directly, not curried.
     Hits = array:to_list('reef_render@ps':renderHits(Odo, StepMs, F)),
@@ -267,3 +315,23 @@ emit(Sock, BaseCh, Odo, F, WallUs, StepMs) ->
                     Sock, <<"IAC Driver Tidal">>, Ch, Note, Vel, DurMs, AtUs),
           Thunk()
       end, Hits).
+
+%% One CV send per fired head: realise the note through this head's calibration
+%% table (headIdx K → table K, bus ?CV_BASE_BUS + K), then defer the send to the
+%% step's wall time so it's on-beat. No table for this head (or CV off) → no-op.
+maybe_schedule_cv(undefined, _HeadIdx, _Note, _WallUs) -> ok;
+maybe_schedule_cv(#{base_bus := BaseBus, tables := Tables}, HeadIdx, Note, WallUs) ->
+    case nth0(HeadIdx, Tables) of
+        undefined -> ok;
+        Points ->
+            Hz    = es9_cv:note_to_hz(Note),
+            Volts = es9_cv:realise(Points, Hz),
+            Value = Volts / 10.0,
+            DelayMs = max(0, (WallUs - erlang:system_time(microsecond)) div 1000),
+            erlang:send_after(DelayMs, self(), {emit_cv, BaseBus + HeadIdx, Value}),
+            ok
+    end.
+
+%% 0-indexed list access with an `undefined` default for out-of-range.
+nth0(I, L) when is_integer(I), I >= 0, I < length(L) -> lists:nth(I + 1, L);
+nth0(_, _) -> undefined.
