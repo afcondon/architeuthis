@@ -49,16 +49,18 @@
 %% frontend-vs-backend comparison, golden capture).
 -define(BASE_CHANNEL, 12).
 
-%% FIRST-LIGHT CV out (task #190, 2026-07-11): in addition to the MIDI emit,
-%% fork each fired head to an ES-9 CV bus — headIdx K → bus ?CV_BASE_BUS + K —
-%% with that voice's Saïch calibration table (from Amphora) applied by the
-%% es9_cv realiser, so an intended note lands in tune on the analog VCO. This is
-%% the BEAM half of "calibrate the output, not the module" (CALIBRATION.md).
-%% `true` also drives the modular; flip to `false` for MIDI-only. Heads 0-3 map
-%% to buses 8-11 and to the four Saïch voices (labels saich-1..4).
--define(ODONUS_CV_FIRST_LIGHT, true).
--define(CV_BASE_BUS, 8).
--define(CV_LABELS, [<<"saich-1">>, <<"saich-2">>, <<"saich-3">>, <<"saich-4">>]).
+%% CV out (task #190, 2026-07-11): in addition to the MIDI emit, fork each fired
+%% head to an ES-9 CV bus — headIdx K → bus base_bus+K — with that head's
+%% calibration table (from Amphora) applied by the es9_cv realiser, so an
+%% intended note lands in tune on the analog VCO. The BEAM half of "calibrate the
+%% output, not the module" (CALIBRATION.md). The head→bus→table mapping is a fact
+%% about the RIG PATCH, not the music, so it's read from the `odonus_cv` app env
+%% (see purerl_tidal.app.src) rather than the pushed pattern; this is the compiled
+%% fallback used when that env isn't set.
+-define(DEFAULT_ODONUS_CV,
+        #{enabled  => true,
+          base_bus => 8,
+          labels   => [<<"saich-1">>, <<"saich-2">>, <<"saich-3">>, <<"saich-4">>]}).
 
 %% Single-note smoke test: fire middle C (60) on ch 16, +200ms.
 ping() ->
@@ -148,22 +150,23 @@ do_start_sim(Sim, Channel, StepBeats, LastStep) ->
 %% fails — the voice then runs MIDI-only, so a down Amphora never silences the
 %% rig. See es9_cv + CALIBRATION.md.
 init_cv() ->
-    case ?ODONUS_CV_FIRST_LIGHT of
-        false -> undefined;
-        true ->
-            case es9_cv:fetch_tables(?CV_LABELS) of
+    case application:get_env(purerl_tidal, odonus_cv, ?DEFAULT_ODONUS_CV) of
+        #{enabled := true, base_bus := BaseBus, labels := Labels} ->
+            case es9_cv:fetch_tables(Labels) of
                 {ok, Tables} ->
                     Have = length([T || T <- Tables, T =/= undefined]),
                     tidal_log:info(
                       "reef_voice CV-out ON: base bus ~B, ~B/~B tables from Amphora~n",
-                      [?CV_BASE_BUS, Have, length(?CV_LABELS)]),
-                    #{base_bus => ?CV_BASE_BUS, tables => Tables};
+                      [BaseBus, Have, length(Labels)]),
+                    #{base_bus => BaseBus, tables => Tables};
                 {error, Why} ->
                     tidal_log:err(
                       "reef_voice CV-out OFF (Amphora fetch failed: ~p) — MIDI only~n",
                       [Why]),
                     undefined
-            end
+            end;
+        _ ->
+            undefined
     end.
 
 stop() ->

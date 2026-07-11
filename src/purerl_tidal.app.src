@@ -5,4 +5,14 @@
   {registered, [purerl_tidal_sup]},
   {applications, [kernel, stdlib, cowboy, ranch]},
   {mod, {purerl_tidal_app, []}},
-  {env, []}]}.
+  %% Rig-side config. `odonus_cv` maps the reef_voice (rig Odonus) heads onto
+  %% ES-9 CV buses + per-head calibration tables (from Amphora), so the four
+  %% playheads drive four in-tune analog VCOs. Which VCO is patched to which bus
+  %% is a fact about the RIG, not the music — so it lives here, not in the pushed
+  %% Odonus pattern (the frontend can't know the patch). Head K → bus base_bus+K,
+  %% table = Kth label. Edit + restart to re-patch; set enabled=false for MIDI
+  %% only. See es9_cv + deepstar/docs/CALIBRATION.md.
+  {env, [{odonus_cv,
+          #{enabled  => true,
+            base_bus => 8,
+            labels   => [<<"saich-1">>, <<"saich-2">>, <<"saich-3">>, <<"saich-4">>]}}]}]}.
