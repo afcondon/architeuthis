@@ -981,23 +981,24 @@ handle_pattern_message(Text, State) ->
         {balistes_sim_at, N, Beats, Json} ->
             %% Balistes phase-aligned handoff: install the model-step grid (Beats)
             %% and hold the pushed BalSim until absolute step N (the frontend's
-            %% nextModelStep), so browser (ch 10) and rig (ch 11) emit it on the SAME
-            %% absolute step — the Odonus #57 flam fix, baked in from the start.
-            case reef_balistes_voice:start_sim_at_json(Json, 11, Beats, N) of
+            %% nextModelStep), so browser and rig both emit it on the SAME absolute
+            %% step — the Odonus #57 flam fix, baked in from the start. Drums-always-
+            %% ch-10 convention (2026-07-12): rig plays ch 10, matching the frontend.
+            case reef_balistes_voice:start_sim_at_json(Json, 10, Beats, N) of
                 {ok, _Pid} ->
                     NB = integer_to_binary(N),
-                    {reply, {text, <<"OK: balistes-sim-at ", NB/binary, " (ch11)">>}, State};
+                    {reply, {text, <<"OK: balistes-sim-at ", NB/binary, " (ch10)">>}, State};
                 {error, Reason} ->
                     RB = list_to_binary(io_lib:format("~p", [Reason])),
                     {reply, {text, <<"ERR: balistes-sim-at ", RB/binary>>}, State}
             end;
         {balistes_fixed, Json} ->
-            %% Fixed-rhythm handoff: play a pushed FixedPattern on ch 11. Stateless, so
+            %% Fixed-rhythm handoff: play a pushed FixedPattern on ch 10. Stateless, so
             %% the voice just evals renderFixed per absolute step — in lockstep with the
             %% frontend's AFixed branch, which reads the same Link step.
-            case reef_balistes_voice:start_fixed_json(Json, 11, 0.25) of
+            case reef_balistes_voice:start_fixed_json(Json, 10, 0.25) of
                 {ok, _Pid} ->
-                    {reply, {text, <<"OK: balistes-fixed (ch11)">>}, State};
+                    {reply, {text, <<"OK: balistes-fixed (ch10)">>}, State};
                 {error, Reason} ->
                     RB = list_to_binary(io_lib:format("~p", [Reason])),
                     {reply, {text, <<"ERR: balistes-fixed ", RB/binary>>}, State}

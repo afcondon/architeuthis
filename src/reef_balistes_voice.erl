@@ -34,9 +34,9 @@
 %% Re-snap if the next step is more than this many steps ahead (a backward Link
 %% jump — transport restart / re-sync — would otherwise strand us in silence).
 -define(SNAP_AHEAD, 8).
-%% Balistes emits on ONE channel. Default 11: the frontend Balistes plays ch 10, so
-%% the rig on ch 11 sits alongside it for A/B in Ableton (per-channel config later).
--define(DEFAULT_CHANNEL, 11).
+%% Balistes emits on ONE channel. Drums-always-ch-10 convention (2026-07-12):
+%% frontend and rig both play ch 10, matching Triggerfish.Midi.Routing drumsChannel.
+-define(DEFAULT_CHANNEL, 10).
 
 start() -> start(?DEFAULT_CHANNEL, ?STEP_BEATS).
 
@@ -237,7 +237,11 @@ emit(Sock, Ch, E, WallUs, StepMs) ->
               end, lists:seq(0, N - 1))
     end.
 
+%% QuadDrum test routing (2026-07-12, #197): rig Balistes drums go to the CoreMIDI
+%% "FH-2" port (not IAC), so the FH-2's note-filtered trigger MCVs (set-drum-trig,
+%% ch 10) fan bd/sn/cp/hh out to FHX-8GT gate jacks → the vpme.de QuadDrum. Revert
+%% to <<"IAC Driver Tidal">> to send drums back to Ableton.
 fire(Sock, Ch, Note, Vel, DurMs, AtUs) ->
     Thunk = 'tidal_mIDIBridge@foreign':scheduleNoteAt(
-              Sock, <<"IAC Driver Tidal">>, Ch, Note, Vel, DurMs, AtUs),
+              Sock, <<"FH-2">>, Ch, Note, Vel, DurMs, AtUs),
     Thunk().
