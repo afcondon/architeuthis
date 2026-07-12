@@ -5,14 +5,26 @@
   {registered, [purerl_tidal_sup]},
   {applications, [kernel, stdlib, cowboy, ranch]},
   {mod, {purerl_tidal_app, []}},
-  %% Rig-side config. `odonus_cv` maps the reef_voice (rig Odonus) heads onto
-  %% ES-9 CV buses + per-head calibration tables (from Amphora), so the four
-  %% playheads drive four in-tune analog VCOs. Which VCO is patched to which bus
-  %% is a fact about the RIG, not the music — so it lives here, not in the pushed
-  %% Odonus pattern (the frontend can't know the patch). Head K → bus base_bus+K,
-  %% table = Kth label. Edit + restart to re-patch; set enabled=false for MIDI
-  %% only. See es9_cv + deepstar/docs/CALIBRATION.md.
+  %% Rig-side config. `odonus_cv` is a list of ROUTES binding reef_voice (rig
+  %% Odonus) heads onto ES-9 CV buses + calibration tables (from Amphora), so the
+  %% playheads drive in-tune analog VCOs. Which VCO is on which bus is a fact about
+  %% the RIG PATCH, not the music — so it lives here, not in the pushed Odonus
+  %% pattern (the frontend can't know the patch). A route: head, pitch_bus, label
+  %% (Amphora calibration label); optional trig_bus (+ trig_v / trig_ms) for a
+  %% note-gate pulse and pitch_lead_ms (pitch settle-ahead). Edit + restart to
+  %% re-patch; set enabled=false for MIDI only. See es9_cv + CALIBRATION.md.
+  %%
+  %% Today (2026-07-12): Cursus Iteritas Percido as a single self-contained voice —
+  %% head 0 → CIP pitch on out 1 (bus 8) + a trigger firing CIP's Percido envelope
+  %% on out 2 (bus 9).
   {env, [{odonus_cv,
-          #{enabled  => true,
-            base_bus => 8,
-            labels   => [<<"saich-1">>, <<"saich-2">>, <<"saich-3">>, <<"saich-4">>]}}]}]}.
+          #{enabled => true,
+            routes  =>
+              [#{head => 0, pitch_bus => 8, trig_bus => 9,
+                 label => <<"cursus-iteritas-percido">>,
+                 trig_v => 5.0, trig_ms => 10.0, pitch_lead_ms => 5}]}}]}]}.
+  %% To restore the four-Saïch pitch-only patch (2026-07-11), swap `routes` for:
+  %%   [#{head => 0, pitch_bus => 8,  label => <<"saich-1">>},
+  %%    #{head => 1, pitch_bus => 9,  label => <<"saich-2">>},
+  %%    #{head => 2, pitch_bus => 10, label => <<"saich-3">>},
+  %%    #{head => 3, pitch_bus => 11, label => <<"saich-4">>}]

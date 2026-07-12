@@ -49,18 +49,27 @@
 %% frontend-vs-backend comparison, golden capture).
 -define(BASE_CHANNEL, 12).
 
-%% CV out (task #190, 2026-07-11): in addition to the MIDI emit, fork each fired
-%% head to an ES-9 CV bus — headIdx K → bus base_bus+K — with that head's
-%% calibration table (from Amphora) applied by the es9_cv realiser, so an
-%% intended note lands in tune on the analog VCO. The BEAM half of "calibrate the
-%% output, not the module" (CALIBRATION.md). The head→bus→table mapping is a fact
-%% about the RIG PATCH, not the music, so it's read from the `odonus_cv` app env
-%% (see purerl_tidal.app.src) rather than the pushed pattern; this is the compiled
-%% fallback used when that env isn't set.
+%% CV out (task #190/#192): in addition to the MIDI emit, fork fired heads to the
+%% ES-9 as analog CV. Each ROUTE binds one head to an ES-9 pitch bus + calibration
+%% table (from Amphora), applied by the es9_cv realiser so an intended note lands
+%% in tune on the VCO; a route may also carry a `trig_bus` for a note-gate/trigger
+%% pulse (the modular-voice facet, Triggerfish #240). The BEAM half of "calibrate
+%% the output, not the module" (CALIBRATION.md). head→bus→table is a fact about the
+%% RIG PATCH, not the music, so it's read from the `odonus_cv` app env (see
+%% purerl_tidal.app.src) rather than the pushed pattern; this compiled fallback is
+%% used only when that env isn't set.
+%%
+%% Route keys: head (0-3), pitch_bus, label (Amphora calibration label), and
+%% optionally trig_bus (+ trig_v volts / trig_ms width) and pitch_lead_ms (how far
+%% ahead of the strike to land the pitch DC so the VCO is settled). No trig_bus =>
+%% pitch only (the Saïch shape). The default below is today's CIP single-voice
+%% patch: head 0 → CIP pitch on bus 8, trigger on bus 9.
 -define(DEFAULT_ODONUS_CV,
-        #{enabled  => true,
-          base_bus => 8,
-          labels   => [<<"saich-1">>, <<"saich-2">>, <<"saich-3">>, <<"saich-4">>]}).
+        #{enabled => true,
+          routes  =>
+            [#{head => 0, pitch_bus => 8, trig_bus => 9,
+               label => <<"cursus-iteritas-percido">>,
+               trig_v => 5.0, trig_ms => 10.0, pitch_lead_ms => 5}]}).
 
 %% Single-note smoke test: fire middle C (60) on ch 16, +200ms.
 ping() ->
@@ -145,20 +154,25 @@ do_start_sim(Sim, Channel, StepBeats, LastStep) ->
     catch register(reef_voice, Pid),
     {ok, Pid}.
 
-%% Load the per-head Saïch calibration tables from Amphora once at voice start
-%% (never on the hot path). Returns `undefined` when CV-out is off or the fetch
-%% fails — the voice then runs MIDI-only, so a down Amphora never silences the
-%% rig. See es9_cv + CALIBRATION.md.
+%% Load each route's calibration table from Amphora once at voice start (never on
+%% the hot path) and return a `head => route-with-table` map. Returns `undefined`
+%% when CV-out is off, no route's table loads, or the fetch fails — the voice then
+%% runs MIDI-only, so a down Amphora never silences the rig. See es9_cv +
+%% CALIBRATION.md.
 init_cv() ->
     case application:get_env(purerl_tidal, odonus_cv, ?DEFAULT_ODONUS_CV) of
-        #{enabled := true, base_bus := BaseBus, labels := Labels} ->
+        #{enabled := true, routes := Routes} when is_list(Routes) ->
+            Labels = [maps:get(label, R) || R <- Routes],
             case es9_cv:fetch_tables(Labels) of
                 {ok, Tables} ->
-                    Have = length([T || T <- Tables, T =/= undefined]),
+                    ByHead = build_routes(Routes, Tables),
                     tidal_log:info(
-                      "reef_voice CV-out ON: base bus ~B, ~B/~B tables from Amphora~n",
-                      [BaseBus, Have, length(Labels)]),
-                    #{base_bus => BaseBus, tables => Tables};
+                      "reef_voice CV-out ON: ~B/~B route(s) have tables (heads ~p)~n",
+                      [maps:size(ByHead), length(Routes), lists:sort(maps:keys(ByHead))]),
+                    case maps:size(ByHead) of
+                        0 -> undefined;
+                        _ -> ByHead
+                    end;
                 {error, Why} ->
                     tidal_log:err(
                       "reef_voice CV-out OFF (Amphora fetch failed: ~p) — MIDI only~n",
@@ -168,6 +182,16 @@ init_cv() ->
         _ ->
             undefined
     end.
+
+%% Zip routes with their fetched tables (same order, one per label) into a
+%% head => route#{points => Table} map, dropping any route whose table didn't
+%% load (missing label in Amphora).
+build_routes(Routes, Tables) ->
+    lists:foldl(
+      fun({_Route, undefined}, Acc) -> Acc;
+         ({Route, Points}, Acc) ->
+              Acc#{maps:get(head, Route) => Route#{points => Points}}
+      end, #{}, lists:zip(Routes, Tables)).
 
 stop() ->
     case whereis(reef_voice) of
@@ -303,10 +327,10 @@ emit(Sock, BaseCh, Cv, Odo, F, WallUs, StepMs) ->
     Vel     = maps:get(vel, F),
     HeadIdx = maps:get(headIdx, F),
     Ch      = BaseCh + HeadIdx,
-    %% CV fork (task #190): schedule this head's pitch CV to land at the step
-    %% onset. Independent of MIDI (Saïch has no MIDI in); the note still goes out
-    %% for browser/Ableton comparison.
-    maybe_schedule_cv(Cv, HeadIdx, Note, WallUs),
+    %% CV fork (task #190/#192): schedule this head's pitch CV (and gate, if the
+    %% route has one) to land at the step onset. Independent of MIDI (the VCO has
+    %% no MIDI in); the note still goes out for browser/Ableton comparison.
+    maybe_schedule_cv(Sock, Cv, HeadIdx, Note, WallUs),
     %% renderHits is a 3-arg PS function → purs-backend-erl emits it uncurried as
     %% renderHits/3 (there is no renderHits/1), so call it directly, not curried.
     Hits = array:to_list('reef_render@ps':renderHits(Odo, StepMs, F)),
@@ -319,22 +343,36 @@ emit(Sock, BaseCh, Cv, Odo, F, WallUs, StepMs) ->
           Thunk()
       end, Hits).
 
-%% One CV send per fired head: realise the note through this head's calibration
-%% table (headIdx K → table K, bus ?CV_BASE_BUS + K), then defer the send to the
-%% step's wall time so it's on-beat. No table for this head (or CV off) → no-op.
-maybe_schedule_cv(undefined, _HeadIdx, _Note, _WallUs) -> ok;
-maybe_schedule_cv(#{base_bus := BaseBus, tables := Tables}, HeadIdx, Note, WallUs) ->
-    case nth0(HeadIdx, Tables) of
+%% Route this fired head's note to its ES-9 CV bus(es). Looks up the head's route
+%% (from init_cv's head => route map); no route for this head (or CV off) → no-op.
+%%   PITCH: realise the note through the route's calibration table, then defer the
+%%     `/cv` DC send via send_after so it lands `pitch_lead_ms` BEFORE the strike —
+%%     the VCO is settled when the envelope fires. (There's no scheduled `/cv/at`.)
+%%   GATE (optional): a sample-accurate `/cv/trig/at` sent NOW, carrying the full
+%%     time-to-beat as delay_ms; the daemon fires the pulse on the exact frame.
+maybe_schedule_cv(_Sock, undefined, _HeadIdx, _Note, _WallUs) -> ok;
+maybe_schedule_cv(Sock, ByHead, HeadIdx, Note, WallUs) when is_map(ByHead) ->
+    case maps:get(HeadIdx, ByHead, undefined) of
         undefined -> ok;
-        Points ->
-            Hz    = es9_cv:note_to_hz(Note),
-            Volts = es9_cv:realise(Points, Hz),
-            Value = Volts / 10.0,
-            DelayMs = max(0, (WallUs - erlang:system_time(microsecond)) div 1000),
-            erlang:send_after(DelayMs, self(), {emit_cv, BaseBus + HeadIdx, Value}),
+        Route ->
+            Points   = maps:get(points, Route),
+            PitchBus = maps:get(pitch_bus, Route),
+            Hz       = es9_cv:note_to_hz(Note),
+            Volts    = es9_cv:realise(Points, Hz),
+            Value    = Volts / 10.0,
+            DelayMs  = max(0, (WallUs - erlang:system_time(microsecond)) div 1000),
+            LeadMs   = maps:get(pitch_lead_ms, Route, 5),
+            erlang:send_after(max(0, DelayMs - LeadMs), self(),
+                              {emit_cv, PitchBus, Value}),
+            maybe_send_trig(Sock, Route, DelayMs),
             ok
     end.
 
-%% 0-indexed list access with an `undefined` default for out-of-range.
-nth0(I, L) when is_integer(I), I >= 0, I < length(L) -> lists:nth(I + 1, L);
-nth0(_, _) -> undefined.
+%% Fire the gate for a route that has a trig_bus (+5 V / 10 ms defaults). Sent
+%% immediately with the time-to-beat as delay_ms so the daemon schedules it
+%% sample-accurately. No trig_bus → pitch-only route (the Saïch shape) → no-op.
+maybe_send_trig(Sock, #{trig_bus := TrigBus} = Route, DelayMs) ->
+    TrigV  = maps:get(trig_v, Route, 5.0),
+    TrigMs = maps:get(trig_ms, Route, 10.0),
+    es9_cv:send_trig_at(Sock, TrigBus, TrigV / 10.0, TrigMs, DelayMs);
+maybe_send_trig(_Sock, _Route, _DelayMs) -> ok.
