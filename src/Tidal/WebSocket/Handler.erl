@@ -113,6 +113,13 @@ try_parse_prefixed(<<"balistes-fixed ", Rest/binary>>) ->
     %% (Reef.Balistes.Fixed, wire-flat) to play on the rig (ch 11). Stateless (a pure
     %% function of the absolute step), so no step tag / phase-hold needed.
     {balistes_fixed, trim_binary(Rest)};
+try_parse_prefixed(<<"balistes-trig ", Rest/binary>>) ->
+    %% balistes-trig <json> — the POLYTRIG (TIDAL tab) handoff: a whole resolved
+    %% TrigKit (Reef.Balistes.Trig, an array of {note, onsets}) to play on the rig
+    %% (ch 10). Like the fixed rhythm it's a pure function of the absolute step, so
+    %% no step tag / phase-hold needed; the frontend resolves the mini-notation to
+    %% onset fractions before pushing (reef has no Tidal parser).
+    {balistes_trig, trim_binary(Rest)};
 try_parse_prefixed(<<"balistes-input ", Rest/binary>>) ->
     %% balistes-input <json> — a tick-tagged Balistes gesture (live knob sync):
     %% {tick, input} in the Reef.Balistes.Protocol wire form, applied on the tagged
@@ -1002,6 +1009,18 @@ handle_pattern_message(Text, State) ->
                 {error, Reason} ->
                     RB = list_to_binary(io_lib:format("~p", [Reason])),
                     {reply, {text, <<"ERR: balistes-fixed ", RB/binary>>}, State}
+            end;
+        {balistes_trig, Json} ->
+            %% POLYTRIG handoff: play a pushed resolved TrigKit on ch 10. Stateless
+            %% (a pure function of the absolute step off the cycle-0 onsets), so the
+            %% voice just evals renderTrigStep per step — in lockstep with the
+            %% frontend's ASelene branch, which reads the same Link step.
+            case reef_balistes_voice:start_trig_json(Json, 10, 0.25) of
+                {ok, _Pid} ->
+                    {reply, {text, <<"OK: balistes-trig (ch10)">>}, State};
+                {error, Reason} ->
+                    RB = list_to_binary(io_lib:format("~p", [Reason])),
+                    {reply, {text, <<"ERR: balistes-trig ", RB/binary>>}, State}
             end;
         {balistes_input, Json} ->
             %% Balistes live knob sync: decode the tick-tagged BInput with the SAME

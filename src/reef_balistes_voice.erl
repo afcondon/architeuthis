@@ -20,7 +20,7 @@
 %% as the frontend's emitHit does.
 -module(reef_balistes_voice).
 -export([start/0, start/2, start_sim_json/3, start_sim_at_json/4,
-         start_fixed_json/3, stop/0, loop/1]).
+         start_fixed_json/3, start_trig_json/3, stop/0, loop/1]).
 
 %% Scheduler poll interval (ms). Timing is absolute (WallUs from the anchor), so
 %% poll jitter only affects lookahead slack.
@@ -37,6 +37,15 @@
 %% Balistes emits on ONE channel. Drums-always-ch-10 convention (2026-07-12):
 %% frontend and rig both play ch 10, matching Triggerfish.Midi.Routing drumsChannel.
 -define(DEFAULT_CHANNEL, 10).
+%% The CoreMIDI port drums go to. <<"FH-2">> fans the note-filtered trigger MCVs
+%% out to the FHX-8GT → QuadDrum; <<"IAC Driver Tidal">> sends drums to Ableton.
+%% Un-hardcoded from fire/N (2026-07-12, #198): every start seeds this into St, so
+%% it's one place to change and structurally ready for a per-voice runtime setter.
+-define(DEFAULT_PORT, <<"FH-2">>).
+%% POLYTRIG grid resolution: one Tidal cycle == this many steps. MUST match the
+%% frontend's Triggerfish.Balistes.Component cycleSteps (16) so both slice the
+%% resolved onsets into the same windows.
+-define(CYCLE_STEPS, 16).
 
 start() -> start(?DEFAULT_CHANNEL, ?STEP_BEATS).
 
@@ -75,6 +84,7 @@ do_start_at(Bal, Channel, StepBeats, LastStep) ->
         {ok, Sock} = gen_udp:open(0, [binary]),
         erlang:send_after(?POLL_MS, self(), poll),
         loop(#{ socket => Sock, channel => Channel, step_beats => StepBeats,
+                port => ?DEFAULT_PORT,
                 mode => grids, bal => Bal, last_step => LastStep, pending => [] })
     end),
     catch register(reef_balistes_voice, Pid),
@@ -99,7 +109,34 @@ start_fixed_json(Json, Channel, StepBeats) ->
                         {ok, Sock} = gen_udp:open(0, [binary]),
                         erlang:send_after(?POLL_MS, self(), poll),
                         loop(#{ socket => Sock, channel => Channel, step_beats => StepBeats,
+                                port => ?DEFAULT_PORT,
                                 mode => fixed, pattern => Pat, last_step => -1, pending => [] })
+                    end),
+                    catch register(reef_balistes_voice, NewPid),
+                    {ok, NewPid}
+            end;
+        {left, Errs} -> {error, {decode, Errs}}
+    end.
+
+%% Start from a JSON-encoded TrigKit — the POLYTRIG handoff (ASelene mode). Like a
+%% fixed rhythm, a resolved rack is a pure function of the absolute step (the onsets
+%% are cycle-0 fractions), so it snaps to the current clock step with no phase-hold.
+%% If a voice is already running (any mode), swap the kit IN PLACE — the live-edit
+%% path (every jack/route edit re-pushes). The WS `balistes-trig <json>` verb.
+start_trig_json(Json, Channel, StepBeats) ->
+    case 'reef_balistes_protocol@ps':decodeTrigKit(ensure_bin(Json)) of
+        {right, Kit} ->
+            case whereis(reef_balistes_voice) of
+                Pid when is_pid(Pid) ->
+                    Pid ! {set_kit, Kit},
+                    {ok, Pid};
+                _ ->
+                    NewPid = spawn(fun() ->
+                        {ok, Sock} = gen_udp:open(0, [binary]),
+                        erlang:send_after(?POLL_MS, self(), poll),
+                        loop(#{ socket => Sock, channel => Channel, step_beats => StepBeats,
+                                port => ?DEFAULT_PORT,
+                                mode => trig, kit => Kit, last_step => -1, pending => [] })
                     end),
                     catch register(reef_balistes_voice, NewPid),
                     {ok, NewPid}
@@ -138,6 +175,11 @@ loop(St) ->
             %% voice to fixed mode — a fixed rhythm is a pure function of the absolute
             %% step, so it picks up seamlessly on the next step.
             loop(St#{mode => fixed, pattern => Pat});
+        {set_kit, Kit} ->
+            %% Live POLYTRIG edit: swap the resolved kit IN PLACE (same discipline as
+            %% set_pattern). Also switches a running Grids/fixed voice to trig mode —
+            %% a rack is a pure function of the absolute step, seamless on the next.
+            loop(St#{mode => trig, kit => Kit});
         poll ->
             St2 = tick(St),
             erlang:send_after(?POLL_MS, self(), poll),
@@ -182,6 +224,7 @@ drain(St, Step, Horizon, AnchorUs, BeatAtAnchor, Tempo) ->
             StepMs = StepBeats * 60000.0 / Tempo,
             Ch = maps:get(channel, St),
             Sock = maps:get(socket, St),
+            Port = maps:get(port, St),
             St2 = case maps:get(mode, St) of
                 fixed ->
                     %% Fixed rhythm: a pure function of the ABSOLUTE Step (no state, no
@@ -189,7 +232,22 @@ drain(St, Step, Horizon, AnchorUs, BeatAtAnchor, Tempo) ->
                     %% both runtimes reading the same Link step agree with no handoff.
                     FEvents = array:to_list(
                                 'reef_balistes_fixed@ps':renderFixed(maps:get(pattern, St), Step)),
-                    lists:foreach(fun(E) -> emit(Sock, Ch, E, WallUs, StepMs) end, FEvents),
+                    lists:foreach(fun(E) -> emit(Sock, Ch, Port, E, WallUs, StepMs) end, FEvents),
+                    St#{last_step => Step};
+                trig ->
+                    %% POLYTRIG rack: like a fixed rhythm, a pure function of the ABSOLUTE
+                    %% Step off the resolved kit. The shared renderTrigStep slices the
+                    %% cycle-0 onsets into this step's window; each fires at its fractional
+                    %% sub-step time (Frac * StepMs), the same slice the frontend plays.
+                    Fires = array:to_list(
+                              'reef_balistes_trig@ps':renderTrigStep(maps:get(kit, St), Step, ?CYCLE_STEPS)),
+                    Vel = 'reef_balistes_trig@ps':trigVelocity(),
+                    Gate = 'reef_balistes_trig@ps':trigGateMs(),
+                    lists:foreach(
+                      fun(F) ->
+                          AtUs = WallUs + round(maps:get(frac, F) * StepMs * 1000.0),
+                          fire(Sock, Ch, Port, maps:get(note, F), Vel, Gate, AtUs)
+                      end, Fires),
                     St#{last_step => Step};
                 _ ->
                     %% Grids: apply any tick-tagged inputs whose step has arrived BEFORE
@@ -209,7 +267,7 @@ drain(St, Step, Horizon, AnchorUs, BeatAtAnchor, Tempo) ->
                     Fired = maps:get(fired, Res),
                     GEvents = array:to_list(
                                 'reef_balistes_sim@ps':renderStep(Bal0, PlayedStep, Fired)),
-                    lists:foreach(fun(E) -> emit(Sock, Ch, E, WallUs, StepMs) end, GEvents),
+                    lists:foreach(fun(E) -> emit(Sock, Ch, Port, E, WallUs, StepMs) end, GEvents),
                     St#{bal => Bal1, last_step => Step, pending => Keep}
             end,
             drain(St2, Step + 1, Horizon, AnchorUs, BeatAtAnchor, Tempo)
@@ -218,7 +276,7 @@ drain(St, Step, Horizon, AnchorUs, BeatAtAnchor, Tempo) ->
 %% One rendered event → scheduled MIDI. Mirrors the frontend's emitHit: the signed
 %% Dilla push (pushMs) offsets the onset; a ratchet count > 1 subdivides the step
 %% into N retriggers of ~90% gate each. Single channel (drums).
-emit(Sock, Ch, E, WallUs, StepMs) ->
+emit(Sock, Ch, Port, E, WallUs, StepMs) ->
     Note   = maps:get(note, E),
     Vel    = maps:get(velocity, E),
     PushMs = maps:get(pushMs, E),
@@ -227,21 +285,21 @@ emit(Sock, Ch, E, WallUs, StepMs) ->
     Onset  = WallUs + round(PushMs * 1000.0),
     case N =< 1 of
         true ->
-            fire(Sock, Ch, Note, Vel, DurMs, Onset);
+            fire(Sock, Ch, Port, Note, Vel, DurMs, Onset);
         false ->
             Sub = StepMs / N,
             lists:foreach(
               fun(K) ->
                   AtUs = Onset + round(K * Sub * 1000.0),
-                  fire(Sock, Ch, Note, Vel, Sub * 0.9, AtUs)
+                  fire(Sock, Ch, Port, Note, Vel, Sub * 0.9, AtUs)
               end, lists:seq(0, N - 1))
     end.
 
-%% QuadDrum test routing (2026-07-12, #197): rig Balistes drums go to the CoreMIDI
-%% "FH-2" port (not IAC), so the FH-2's note-filtered trigger MCVs (set-drum-trig,
-%% ch 10) fan bd/sn/cp/hh out to FHX-8GT gate jacks → the vpme.de QuadDrum. Revert
-%% to <<"IAC Driver Tidal">> to send drums back to Ableton.
-fire(Sock, Ch, Note, Vel, DurMs, AtUs) ->
+%% Schedule one note to the drums CoreMIDI Port (from St, default ?DEFAULT_PORT).
+%% QuadDrum routing (2026-07-12, #197/#198): the default <<"FH-2">> fans the FH-2's
+%% note-filtered trigger MCVs (set-drum-trig, ch 10) out to FHX-8GT gate jacks → the
+%% vpme.de QuadDrum. <<"IAC Driver Tidal">> would send drums to Ableton instead.
+fire(Sock, Ch, Port, Note, Vel, DurMs, AtUs) ->
     Thunk = 'tidal_mIDIBridge@foreign':scheduleNoteAt(
-              Sock, <<"FH-2">>, Ch, Note, Vel, DurMs, AtUs),
+              Sock, Port, Ch, Note, Vel, DurMs, AtUs),
     Thunk().
