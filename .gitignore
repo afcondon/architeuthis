@@ -41,3 +41,4 @@ src/Tidal/Generated/M[0-9a-f]*.purs
 # Python caches
 __pycache__/
 *.pyc
+.direnv/
