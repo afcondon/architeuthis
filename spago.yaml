@@ -40,7 +40,7 @@ workspace:
     # same way the local path-dep did, on both backends).
     harmonia:
       git: https://github.com/afcondon/purescript-harmonia.git
-      ref: v0.1.1
+      ref: v0.2.0
     # Portable virtual-module engines. Path-dep during Phase-1 dev; the Odonus
     # voice will call Reef.Odonus.stepEmit@ps (replacing odonus_engine.erl).
     reef:
