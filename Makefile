@@ -102,6 +102,17 @@ test: erl
 		-eval 'F = test_main@ps:main(), F()' \
 		-s init stop
 
+# EUnit tests for the hand-written Erlang modules (the PureScript suite
+# above cannot reach them). Currently the step-window clamp, whose
+# thresholds misfire silently in both directions if they drift.
+test-erl:
+	@echo "==> Running Erlang (eunit) tests..."
+	@mkdir -p ebin
+	@erlc -o ebin src/tidal_step_window.erl src/tidal_anchor_log.erl
+	@erlc -o ebin test/tidal_step_window_tests.erl
+	@erl -noshell -pa ebin \
+		-eval 'case eunit:test(tidal_step_window_tests, []) of ok -> init:stop(0); _ -> init:stop(1) end'
+
 # Run the Branched guided tour (test/Test/BranchedTour.purs)
 tour: erl
 	@echo "==> Running Branched tour..."
