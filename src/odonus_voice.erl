@@ -269,10 +269,7 @@ process_window(Window, State) ->
         end,
     StepsPerCycle = State1#st.steps_per_cycle,
     LastStep = State1#st.last_step,
-    StartStep =
-        if LastStep =:= -1 -> trunc(CurrentCycle * StepsPerCycle);
-           true            -> LastStep + 1
-        end,
+    NowStep = trunc(CurrentCycle * StepsPerCycle),
     %% F-FUTURE — discover each step one ahead of `trunc(lookAhead*sp)`.
     %% Without this, a step at cycle-position StepCycle was only emitted
     %% once `lookAhead` crossed StepCycle + 1/sp, by which point currentCycle
@@ -283,6 +280,14 @@ process_window(Window, State) ->
     %% integer-cycle window and never falls behind).  See
     %% tools/timing-data/phase-4-diagnostic-f1/ for the discovery I made.
     EndStepExcl = trunc(LookAhead * StepsPerCycle) + 1,
+    %% Resume point, CLAMPED to the clock. `LastStep + 1' alone replays the
+    %% whole backlog after a bpm change or a Link-sync transition moves
+    %% currentCycle by hours of cycles — thousands of past-dated steps in one
+    %% cast, each spawning a process in Tidal.OSC. See tidal_step_window.
+    StartStep = tidal_step_window:start_step(
+                  LastStep, NowStep, EndStepExcl,
+                  #{name => State1#st.name, cycle => CurrentCycle,
+                    spc => StepsPerCycle}),
     StepCount = EndStepExcl - StartStep,
     %% Anchor-log ghost trap: forward clock jump signature.  Normal
     %% cast emits 0-1 steps at typical lookAhead/step ratios; >8 means

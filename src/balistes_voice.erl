@@ -184,14 +184,19 @@ process_window(Window, State) ->
                                  cached_controls = Built}}
         end,
     LastStep = State1#st.last_step,
-    StartStep =
-        if LastStep =:= -1 -> trunc(CurrentCycle * ?STEPS_PER_CYCLE);
-           true            -> LastStep + 1
-        end,
+    NowStep = trunc(CurrentCycle * ?STEPS_PER_CYCLE),
     %% F-FUTURE — discover step S as soon as lookAhead reaches StepCycle,
     %% rather than waiting for trunc to advance past StepCycle + 1/sp.
     %% Lands WallUs ~lookAheadMs in the future instead of in the past.
     EndStepExcl = trunc(LookAhead * ?STEPS_PER_CYCLE) + 1,
+    %% Resume point, CLAMPED to the clock. `LastStep + 1' alone replays the
+    %% whole backlog after a bpm change or a Link-sync transition moves
+    %% currentCycle by hours of cycles — thousands of past-dated steps in one
+    %% cast, each spawning a process in Tidal.OSC. See tidal_step_window.
+    StartStep = tidal_step_window:start_step(
+                  LastStep, NowStep, EndStepExcl,
+                  #{name => State1#st.name, cycle => CurrentCycle,
+                    spc => ?STEPS_PER_CYCLE}),
     case EndStepExcl - StartStep > 8 of
         true ->
             tidal_anchor_log:record({voice_step_burst, State1#st.name,
