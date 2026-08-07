@@ -910,6 +910,31 @@ handle_pattern_message(Text, State) ->
             %% and the Stellatus sample voice (stellatus-scene) — emits /dirt/play
             %% OSC to SuperDirt, so hush must silence it.
             catch reef_stellatus_voice:stop(),
+            %% and the four PER-MACHINE voice trees. Until 2026-08-07 hush missed
+            %% all of these: a voice under one of them was unreachable by every UI
+            %% action AND invisible to `state` (which samples only tidal_clock +
+            %% tidal_dispatcher), so it emitted until the BEAM was restarted. That
+            %% is the fault this arm exists to close — see
+            %% triggerfish/docs/RIG-ISSUES-2026-08-07.md #1.
+            %%
+            %% These voices handle no hush cast, so the only stop available is
+            %% TERMINATION — unlike Odonus above, which keeps advancing behind a
+            %% flag. Consequence: {unhush} does NOT revive them; re-publish to
+            %% restore. That matches the reef_* singletons above, which hush also
+            %% stops outright.
+            lists:foreach(fun stop_voice_tree/1, voice_trees()),
+            %% and the ES-9's autonomous generators. Selene polysignals are NOT
+            %% voices — once applied they run inside es9-daemon's audio callback
+            %% with nothing driving them, so stopping every BEAM voice above
+            %% leaves the modular still playing. `panic` is the daemon's
+            %% sweep-everything verb (added 2026-08-07 for exactly this).
+            %%
+            %% Best-effort and non-fatal: if the daemon is down there is nothing
+            %% to silence there anyway, and a hush that stopped every voice must
+            %% still report OK. The FH-2 has no equivalent yet — its
+            %% release-claim is bookkeeping-only and --silent leaves the LFOs
+            %% running (RIG-ISSUES-2026-08-07 #3/#4/#5).
+            _ = daemon_call(es9_daemon_socket_path(), <<"panic">>),
             Reply = {text, <<"OK: hush">>},
             {reply, Reply, State};
         {unhush} ->
@@ -935,8 +960,13 @@ handle_pattern_message(Text, State) ->
             catch reef_voice:stop(),
             {reply, {text, <<"OK: reef-stop">>}, State};
         {balistes_stop} ->
-            %% Per-tab ATLANTIS stop: silence just the Balistes lockstep voice.
+            %% Per-tab ATLANTIS stop: BOTH kinds of Balistes voice. The lockstep
+            %% singleton (balistes-sim-at / -fixed / -trig) AND the named voices
+            %% under balistes_voice_sup that the `balistes <json>` verb starts.
+            %% Before 2026-08-07 this stopped only the singleton, so pressing stop
+            %% on a named voice reported OK and changed nothing.
             catch reef_balistes_voice:stop(),
+            stop_voice_tree(balistes_voice_sup),
             {reply, {text, <<"OK: balistes-stop">>}, State};
         {vetula_stop} ->
             %% Per-tab ATLANTIS stop: silence just the Vetula brush voice.
@@ -3462,3 +3492,45 @@ reload_voice_wrappers() ->
     end, Mods),
     tidal_log:info("reload_voice_wrappers: ~p~n", [Results]),
     ok.
+
+%% =========================================================================
+%% Per-machine voice trees
+%% =========================================================================
+%%
+%% The six voice supervisors started by purerl_tidal_sup fall into two
+%% groups. `tidal_voice_sup` (patterns, cleared by hush_all) and
+%% `odonus_voice_sup` (engines that keep advancing behind a hush flag) each
+%% have their own semantics and are handled inline. The remaining four share
+%% one interface — start_voice/2, stop_voice/1, which_voices/0,
+%% lookup_voice/1 — and one lifecycle, so they sweep uniformly.
+%%
+%% Added 2026-08-07: hush previously missed all four. A voice under any of
+%% them was unreachable by `hush`, unreachable by the per-tab stop verbs, and
+%% invisible to `state`, so it played until the BEAM was restarted. See
+%% triggerfish/docs/RIG-ISSUES-2026-08-07.md #1.
+voice_trees() ->
+    [balistes_voice_sup,
+     repetitor_voice_sup,
+     virtual_selene_voice_sup,
+     selene_pattern_voice_sup].
+
+%% Terminate every voice under one tree.
+%%
+%% which_voices/0 returns Pids, and all four supervisors are
+%% simple_one_for_one, for which terminate_child/2 takes a Pid (not a child
+%% id) — the same call stop_voice/1 makes internally after its name lookup.
+%% Their children are `restart => temporary`, so a terminated voice stays
+%% dead rather than being brought back by the supervisor.
+%%
+%% Everything is wrapped in catch, deliberately: this is the panic path, and
+%% one unstarted or wedged supervisor must not abort the sweep of the others.
+%% A silence that stops three of four things is worth more than an exception.
+stop_voice_tree(Sup) ->
+    case catch Sup:which_voices() of
+        Pids when is_list(Pids) ->
+            lists:foreach(
+              fun(Pid) -> catch supervisor:terminate_child(Sup, Pid) end,
+              Pids);
+        _ ->
+            ok
+    end.
