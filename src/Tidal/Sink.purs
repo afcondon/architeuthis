@@ -142,6 +142,16 @@ data SinkType
       --   underlying PrimAction.  Surfaces in the Voices pane as e.g.
       --   "drum-kit fh2qd ch 14 (5 hits)".
       }
+  | SinkRample
+      { device :: String
+      , channel :: Int
+      , voice :: Int
+      , slots :: Int
+      , pitchOfSlot0 :: Int
+      -- ^ Enough for the Voices pane to say what the binding reaches: e.g.
+      --   "rample audio4c ch 1 v1 (64 slices from 36)". The card's index
+      --   holds the rest.
+      }
   | SinkGateDrumKit
       { router :: String
       , hits :: Int
@@ -246,6 +256,14 @@ inferPrimSinkType = case _ of
   MidiDrumKit r ->
     SinkMidiDrumKit
       { device: r.device, channel: r.channel, hits: Map.size r.hits }
+  MidiRample r ->
+    SinkRample
+      { device: r.device
+      , channel: r.channel
+      , voice: r.voice
+      , slots: r.slots
+      , pitchOfSlot0: r.pitchOfSlot0
+      }
   GateDrumKit r ->
     SinkGateDrumKit { router: r.router, hits: Map.size r.hits }
   Fh2Trigger r -> SinkFh2Trigger r
@@ -281,6 +299,10 @@ sinkElement = case _ of
   SinkMidiNote _ -> SampleOrNote
   SinkMidiCC _ -> Number
   SinkMidiDrumKit _ -> Sample
+  -- A note, despite ending up as a control change: what the pattern carries
+  -- is a pitch, and it is the sink's job rather than the pattern's to know
+  -- that this module hears one as a slice.
+  SinkRample _ -> Note
   SinkGateDrumKit _ -> Sample
   SinkGate _ -> Trigger
   SinkCVLiteral _ -> Number
@@ -302,6 +324,7 @@ sinkDestKind = case _ of
   SinkMidiNote _ -> ToMidi
   SinkMidiCC _ -> ToMidi
   SinkMidiDrumKit _ -> ToMidi
+  SinkRample _ -> ToMidi
   SinkGateDrumKit _ -> ToGate
   SinkContMidiCC _ -> ToMidi
   SinkGate _ -> ToGate
@@ -474,6 +497,12 @@ checkPattern sink pat = case sink of
              \(did you mean to send this to a midi-cc-cont voice?)"
     PatString _ -> Right unit  -- permissive: defaultNote fallback handles unknowns
 
+  SinkRample _ -> case pat of
+    PatNumber ->
+      Left $ "rample voice expects note tokens (e.g., \"c4 e4 g4\"), got a numeric \
+             \pattern — on this module a pitch becomes a start point, not a CC value"
+    PatString _ -> Right unit  -- note names and bare MIDI numbers both resolve
+
   SinkMidiCC _ -> case pat of
     PatNumber -> Right unit  -- continuous numeric works (sampled per token? no — discrete CC)
     PatString ContentNumeric -> Right unit
@@ -615,6 +644,12 @@ renderSinkType st =
         "ToMidi drum-kit device=" <> show r.device
           <> " ch=" <> show r.channel
           <> " hits=" <> show r.hits
+      SinkRample r ->
+        "ToMidi rample device=" <> show r.device
+          <> " ch=" <> show r.channel
+          <> " v" <> show r.voice
+          <> " slices=" <> show r.slots
+          <> " from=" <> show r.pitchOfSlot0
       SinkGateDrumKit r ->
         "ToGate drum-kit router=" <> show r.router
           <> " hits=" <> show r.hits
@@ -683,6 +718,12 @@ renderSinkTypeJSON st =
         "{\"device\":" <> jsStr r.device
           <> ",\"channel\":" <> show r.channel
           <> ",\"hits\":" <> show r.hits <> "}"
+      SinkRample r ->
+        "{\"device\":" <> jsStr r.device
+          <> ",\"channel\":" <> show r.channel
+          <> ",\"voice\":" <> show r.voice
+          <> ",\"slots\":" <> show r.slots
+          <> ",\"pitchOfSlot0\":" <> show r.pitchOfSlot0 <> "}"
       SinkGateDrumKit r ->
         "{\"router\":" <> jsStr r.router
           <> ",\"hits\":" <> show r.hits <> "}"

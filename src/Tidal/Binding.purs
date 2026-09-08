@@ -125,6 +125,40 @@ data PrimAction
   --   text verb at the WS layer (the spec is reserved for
   --   `tidal_session_walker`'s `registerMidiDrumKit` event, which
   --   builds it from the typed `DrumKit` declaration in Studio).
+  | MidiRample
+      { device :: String
+      , channel :: Int
+      , voice :: Int
+      , trigger :: Int
+      , slots :: Int
+      , pitchOfSlot0 :: Int
+      , settleMs :: Int
+      , velocity :: Int
+      , durationMs :: Int
+      }
+  -- ^ A Squarp Rample playing a *sliced* card, where a pitch is not a note.
+  --
+  --   A MIDI note reaching a Rample selects a voice and a layer, never a
+  --   pitch, so a melody sent to it as notes arrives as rhythm with the tune
+  --   discarded. Pitch on this module is the START POINT — which slice of a
+  --   concatenated file to play — so an event becomes two messages in a fixed
+  --   order: `CC(voice*10 + 4)` naming the slice, then the trigger note
+  --   `settleMs` later. The order is load-bearing; a trigger that arrives
+  --   first plays the PREVIOUS slice, which sounds like a wrong note rather
+  --   than like a fault.
+  --
+  --   `slots` and `pitchOfSlot0` come from the card's own index
+  --   (`_msm/index.json`, written by `msm kit build`), because nothing about a
+  --   card says what its slices mean — a voice holding one six-minute file
+  --   might be a field recording or sixty-four piano notes. `trigger` is the
+  --   note set in `SETTINGS > SPx` on the module, which the card cannot hold
+  --   either.
+  --
+  --   **One voice per binding.** Four bindings address the four voices; a
+  --   binding whose stream is polyphonic will cut itself off, because a Rample
+  --   voice is monophonic. Spreading one stream across voices is allocation,
+  --   it needs state the dispatcher does not yet keep per binding, and
+  --   `Reef.Voices.rample` is the profile it will use when it does.
   | GateDrumKit
       { router :: String
       , hits :: Map String { gateChannel :: Int, durMs :: Int }

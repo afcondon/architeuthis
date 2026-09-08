@@ -61,6 +61,7 @@ import Data.Either (Either(..))
 import Data.Foldable (for_)
 import Data.Tuple (Tuple(..))
 import Data.Int as Int
+import Reef.Rample as Rample
 import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
@@ -391,6 +392,37 @@ dispatchPrimAction (State s) name token wallUs delayMs _delayInt params = case _
               scheduleNoteAt s.bridgeClient dev.name m.channel hit.note
                 velocity hit.durationMs adjustedUnixUs
 
+  MidiRample m ->
+    -- A pitch, said the way this module hears one: the slice first, then the
+    -- trigger. `Reef.Rample` owns the arithmetic so that the figures here are
+    -- the ones its tests hold against the reference realiser.
+    when (token /= "~") do
+      case Map.lookup m.device s.midiDevices of
+        Nothing ->
+          Log.debug $ "✗ [" <> name <> "] rample: unknown device alias '" <> m.device <> "'"
+        Just dev -> do
+          let pitch = resolveTokenMidi token m.pitchOfSlot0
+          let slot = pitch - m.pitchOfSlot0
+          if slot < 0 || slot >= m.slots then
+            -- Refused rather than clamped. A pitch this card does not hold has
+            -- no nearest neighbour worth playing, and a silently transposed
+            -- note is harder to notice than a missing one.
+            Log.debug $ "  · [" <> name <> "] rample: " <> show pitch
+              <> " is outside the card (slots 0.." <> show (m.slots - 1)
+              <> " from " <> show m.pitchOfSlot0 <> ")"
+          else do
+            let velocity = velFromParams params m.velocity
+            let cc = Rample.ccForSlot slot m.slots
+            let adjustedUnixUs = wallUs - dev.latencyMs * 1000.0
+            Log.debug $ "♪ [" <> name <> "] rample " <> dev.name
+              <> " v" <> show m.voice <> " note " <> show pitch
+              <> " → slot " <> show slot <> " cc" <> show (Rample.startCC m.voice)
+              <> "=" <> show cc <> " vel " <> show velocity
+            scheduleCCAt s.bridgeClient dev.name m.channel (Rample.startCC m.voice) cc
+              (adjustedUnixUs - Int.toNumber m.settleMs * 1000.0)
+            scheduleNoteAt s.bridgeClient dev.name m.channel m.trigger velocity
+              m.durationMs adjustedUnixUs
+
   GateDrumKit g ->
     -- PR 2c: gate-drum-kit (es9-daemon gate dispatch, parallel to
     -- MidiDrumKit).  Token = hit name; look up in hits map → fire
@@ -706,6 +738,7 @@ isSlotOverride paramName binding = case paramName of
   consumesVel = case _ of
     MidiNote _ -> true
     MidiDrumKit _ -> true
+    MidiRample _ -> true
     _ -> false
 
 -- | Resolve a note velocity from per-event `#` params. An absolute `vel`
