@@ -9,6 +9,7 @@ import Test.BranchedSpec (runBranchedTests)
 import Test.ControlSpec (runControlTests)
 import Test.DejaVuSpec (runDejaVuTests)
 import Test.FugueSpec (runFugueTests)
+import Test.GranularSpec (runGranularTests)
 import Test.MiniNumberSpec (runMiniNumberTests)
 import Test.LawSpec (runLawTests)
 import Test.MidiClaimSpec (runMidiClaimTests)
@@ -166,6 +167,8 @@ main = do
   runControlTests
 
   -- Run the granular read-head vocabulary tests (C0, Conspicillum)
+  runGranularTests
+
   -- Run mini-notation signed-literal tests (the -0.5 tokenisation bug)
   runMiniNumberTests
 

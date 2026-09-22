@@ -53,6 +53,15 @@ module Tidal.Sound
   , end
   , cutoff
   , shape
+  -- Granular / read-head control verbs (the SuperDirt vocabulary
+  -- Conspicillum needs; see docs/CONSPICILLUM-DESIGN.md in triggerfish)
+  , sustain
+  , accelerate
+  , tilt
+  , plat
+  , curve
+  , timescale
+  , timescalewin
   -- Typed merge
   , mergeSound
   , merge
@@ -150,6 +159,17 @@ type Sound =
   , end    :: Maybe Number    -- sample end 0..1
   , cutoff :: Maybe Number
   , shape  :: Maybe Number
+  -- The granular read-head vocabulary.  Every field here maps to a
+  -- verified SuperDirt synth argument (quark checked 2026-09-22); the
+  -- semantics in the comments are SuperDirt's own arithmetic, not a
+  -- paraphrase, because getting them wrong is silent.
+  , sustain      :: Maybe Number -- grain/event duration, seconds
+  , accelerate   :: Maybe Number -- RATIO: endSpeed = speed * (1 + accelerate)
+  , tilt         :: Maybe Number -- 0..1 grain-window attack/release balance
+  , plat         :: Maybe Number -- 0..1 plateau: 0 triangular, 1 rectangular
+  , curve        :: Maybe Number -- window curve, SuperDirt default -3
+  , timescale    :: Maybe Number -- time-stretch factor, pitch unchanged
+  , timescalewin :: Maybe Number -- stretch analysis-window multiplier
   }
 
 -- | A pattern of typed `Sound` payloads — the single carrier the whole
@@ -170,6 +190,13 @@ emptySound =
   , end: Nothing
   , cutoff: Nothing
   , shape: Nothing
+  , sustain: Nothing
+  , accelerate: Nothing
+  , tilt: Nothing
+  , plat: Nothing
+  , curve: Nothing
+  , timescale: Nothing
+  , timescalewin: Nothing
   }
 
 -- ---------------------------------------------------------------------------
@@ -289,6 +316,78 @@ shape :: String -> SoundPattern
 shape = numControl \v -> emptySound { shape = Just v }
 
 -- ---------------------------------------------------------------------------
+-- The granular read-head verbs
+-- ---------------------------------------------------------------------------
+--
+-- SuperDirt has no granular synth: `~dirt.addModule('sound', …)` plays ONE
+-- buffer window per event, whose entire argument list is `bufnum, sustain,
+-- speed, freq, endSpeed, begin, end, pan, out`.  A grain cloud is therefore
+-- not a synth setting but an EVENT RATE — one `/dirt/play` per grain — and
+-- these verbs are what shapes an individual grain once the scheduler has
+-- decided to spawn it.  Design: `triggerfish/docs/CONSPICILLUM-DESIGN.md`.
+--
+-- Every semantic note below is SuperDirt's own arithmetic, read out of the
+-- installed quark rather than recalled.
+
+-- | Grain (or event) duration in seconds — the `sustain` arg of the `sound`
+-- | module, and the `timeScale` of the grain envelope.  Unset means
+-- | SuperDirt derives it from the event's `delta`, which for a dense cloud
+-- | is almost never what you want: a grain is short regardless of how often
+-- | grains arrive, so set this explicitly.
+sustain :: String -> SoundPattern
+sustain = numControl \v -> emptySound { sustain = Just v }
+
+-- | Pitch glide WITHIN one grain — a **ratio**, not an absolute rate:
+-- | `endSpeed = speed * (1.0 + accelerate)` (`DirtEvent.sc:84`).  So
+-- | `accelerate 0.0` is no glide, `1.0` ends an octave up, `-0.5` ends an
+-- | octave down.  No hardware granulator has this; Arbhar's grains are
+-- | fixed-rate for their whole life.
+accelerate :: String -> SoundPattern
+accelerate = numControl \v -> emptySound { accelerate = Just v }
+
+-- | Grain-window attack/release balance, 0..1 — and **the gate for the whole
+-- | grain envelope**: `grenvelo` is registered with the guard `{ ~tilt.notNil }`
+-- | (`core-modules.scd:196`), so `plat` and `curve` do NOTHING unless `tilt`
+-- | is also set.  0.5 is symmetric, 0 is all release (a reverse ramp), 1 is
+-- | all attack.
+-- |
+-- | NB this is envelope skew.  Quadrat's `tilt` measurement on a sample is
+-- | SPECTRAL tilt — a different axis entirely, and the two meet inside a
+-- | grain instrument.  See the design doc.
+tilt :: String -> SoundPattern
+tilt = numControl \v -> emptySound { tilt = Just v }
+
+-- | Grain-window plateau fraction, 0..1: the share of the window spent at
+-- | full level.  0 is a pure triangle (`Env.linen` with no hold), 1 is
+-- | rectangular.  Requires `tilt` to be set.
+plat :: String -> SoundPattern
+plat = numControl \v -> emptySound { plat = Just v }
+
+-- | Grain-window curve, SuperDirt's `Env.linen` curve argument (its default
+-- | is -3; 0 is linear, negative is exponential-ish).  Requires `tilt`.
+curve :: String -> SoundPattern
+curve = numControl \v -> emptySound { curve = Just v }
+
+-- | Time-stretch factor with pitch unchanged.  Setting it swaps the whole
+-- | instrument for `~stretchInstrument` (`core-modules.scd:55`) — a phase-
+-- | vocoder-ish reader — and multiplies `sustain` by the same factor
+-- | (`DirtEvent.sc:121`).  Morphagene cannot do this at all: its varispeed
+-- | always drags pitch with it.
+-- |
+-- | Caveat measured from the synthdef: the analysis window is
+-- | `timescale.clip(0.1,2) * 0.05 * sampleRate * timescalewin`, i.e. **50 ms
+-- | at the defaults**, and the source comments say it is "designed for
+-- | timescale > 1".  A 30 ms grain is shorter than one window, so grain-scale
+-- | stretching needs `timescalewin` well below 1 or it will not behave.
+timescale :: String -> SoundPattern
+timescale = numControl \v -> emptySound { timescale = Just v }
+
+-- | Multiplier on the stretch analysis window (see `timescale`).  The escape
+-- | hatch for making `timescale` usable at grain durations.
+timescalewin :: String -> SoundPattern
+timescalewin = numControl \v -> emptySound { timescalewin = Just v }
+
+-- ---------------------------------------------------------------------------
 -- The typed merge — `#`
 -- ---------------------------------------------------------------------------
 
@@ -308,6 +407,13 @@ mergeSound l r =
   , end:    r.end    <|> l.end
   , cutoff: r.cutoff <|> l.cutoff
   , shape:  r.shape  <|> l.shape
+  , sustain:      r.sustain      <|> l.sustain
+  , accelerate:   r.accelerate   <|> l.accelerate
+  , tilt:         r.tilt         <|> l.tilt
+  , plat:         r.plat         <|> l.plat
+  , curve:        r.curve        <|> l.curve
+  , timescale:    r.timescale    <|> l.timescale
+  , timescalewin: r.timescalewin <|> l.timescalewin
   }
 
 -- | Combine two `SoundPattern`s: structure from the left, each left
@@ -385,6 +491,13 @@ soundParams snd = Map.fromFoldable $ Array.catMaybes
   , numEntry "end" snd.end
   , numEntry "cutoff" snd.cutoff
   , numEntry "shape" snd.shape
+  , numEntry "sustain" snd.sustain
+  , numEntry "accelerate" snd.accelerate
+  , numEntry "tilt" snd.tilt
+  , numEntry "plat" snd.plat
+  , numEntry "curve" snd.curve
+  , numEntry "timescale" snd.timescale
+  , numEntry "timescalewin" snd.timescalewin
   , map (\i -> Tuple "n" (show i)) snd.index
   ]
   where
@@ -407,6 +520,13 @@ controlVerb = case _ of
   "end"    -> Just end
   "cutoff" -> Just cutoff
   "shape"  -> Just shape
+  "sustain"      -> Just sustain
+  "accelerate"   -> Just accelerate
+  "tilt"         -> Just tilt
+  "plat"         -> Just plat
+  "curve"        -> Just curve
+  "timescale"    -> Just timescale
+  "timescalewin" -> Just timescalewin
   "n"      -> Just n
   "degree" -> Just degree
   "note"   -> Just note
