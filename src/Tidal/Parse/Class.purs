@@ -134,13 +134,28 @@ instance AtomParseable String where
 -- |      as a single atom; the runtime's noteNameMidi map carries
 -- |      both `#` and `s` spellings).
 stringAtom :: TidalParser String
-stringAtom = signedIntAtom <|> regularAtom
+stringAtom = signedNumAtom <|> regularAtom
   where
-    signedIntAtom = liftP $ PC.try do
+    -- A leading `-` puts us on the signed-number path, and `regularAtom`
+    -- cannot rescue us from it: that one must START with an alphanumeric,
+    -- so the `.` in `-0.5` matches nothing and is dropped.  Until this
+    -- parser took a fraction, `speed "-0.5"` therefore tokenised as
+    -- `["-0", "5"]` — a TWO-step pattern playing backwards at 0x and then
+    -- forwards at 5x.  No error, no warning, and the wrong thing is close
+    -- enough to "the minus didn't take" to be blamed on the module.
+    -- Positive fractions were always fine (`regularAtom` accepts `.`),
+    -- which is why this survived: it only bit the signed half.
+    signedNumAtom = liftP $ PC.try do
       minus <- char '-'
       d0 <- digit
       ds <- Array.many digit
-      pure $ SCU.fromCharArray (Array.cons minus (Array.cons d0 ds))
+      frac <- PC.option [] $ PC.try do
+        dot <- char '.'
+        f0 <- digit
+        fs <- Array.many digit
+        pure $ Array.cons dot (Array.cons f0 fs)
+      pure $ SCU.fromCharArray
+        (Array.cons minus (Array.cons d0 ds) <> frac)
 
     regularAtom = do
       first <- liftP alphaNum
