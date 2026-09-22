@@ -159,6 +159,17 @@ try_parse_prefixed(<<"stellatus-scene ", Rest/binary>>) ->
     %% once and emits it Link-locked to SuperDirt (:57120). The walk is a pure
     %% function of the scene, so no step tag is needed; a second push swaps in place.
     {stellatus_scene, trim_binary(Rest)};
+try_parse_prefixed(<<"conspicillum-scene ", Rest/binary>>) ->
+    %% conspicillum-scene <json> — the Conspicillum handoff: a whole resolved
+    %% Scene (corpus + query + cloud spec + seed, Reef.Conspicillum.Protocol wire
+    %% form). reef_conspicillum_voice computes ONE CYCLE AT A TIME — a cloud is
+    %% cycle-addressed rather than a precomputed loop, so any cycle is a pure
+    %% function of the scene and its number — and emits one timetagged
+    %% /dirt/play bundle per grain to SuperDirt (:57120). A second push swaps
+    %% the scene in place and lands on the next cycle boundary.
+    {conspicillum_scene, trim_binary(Rest)};
+try_parse_prefixed(<<"conspicillum-stop">>) -> {conspicillum_stop};
+try_parse_prefixed(<<"conspicillum-stop ", _/binary>>) -> {conspicillum_stop};
 try_parse_prefixed(<<"stellatus-stop">>) -> {stellatus_stop};
 try_parse_prefixed(<<"stellatus-stop ", _/binary>>) -> {stellatus_stop};
 try_parse_prefixed(<<"reef-input ", Rest/binary>>) ->
@@ -910,6 +921,10 @@ handle_pattern_message(Text, State) ->
             %% and the Stellatus sample voice (stellatus-scene) — emits /dirt/play
             %% OSC to SuperDirt, so hush must silence it.
             catch reef_stellatus_voice:stop(),
+            %% and the Conspicillum grain cloud (conspicillum-scene) — also a
+            %% /dirt/play emitter, and the densest one on the rig, so hush must
+            %% reach it too.
+            catch reef_conspicillum_voice:stop(),
             %% and the four PER-MACHINE voice trees. Until 2026-08-07 hush missed
             %% all of these: a voice under one of them was unreachable by every UI
             %% action AND invisible to `state` (which samples only tidal_clock +
@@ -1111,6 +1126,18 @@ handle_pattern_message(Text, State) ->
                     RB = list_to_binary(io_lib:format("~p", [Reason])),
                     {reply, {text, <<"ERR: stellatus-scene ", RB/binary>>}, State}
             end;
+        {conspicillum_scene, Json} ->
+            %% Conspicillum handoff: run (or live-swap) the pushed cloud.
+            case reef_conspicillum_voice:start_json(Json) of
+                {ok, _Pid} ->
+                    {reply, {text, <<"OK: conspicillum-scene (SuperDirt :57120)">>}, State};
+                {error, Reason} ->
+                    RB = list_to_binary(io_lib:format("~p", [Reason])),
+                    {reply, {text, <<"ERR: conspicillum-scene ", RB/binary>>}, State}
+            end;
+        {conspicillum_stop} ->
+            catch reef_conspicillum_voice:stop(),
+            {reply, {text, <<"OK: conspicillum-stop">>}, State};
         {stellatus_stop} ->
             %% Per-tab stop: silence just the Stellatus voice.
             catch reef_stellatus_voice:stop(),
