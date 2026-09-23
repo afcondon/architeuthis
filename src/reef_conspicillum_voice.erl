@@ -244,6 +244,13 @@ chain_args(Ch) ->
     , <<"leslie">>,        float(maps:get(leslie, Ch))
     , <<"lrate">>,         float(maps:get(lrate, Ch))
     , <<"lsize">>,         float(maps:get(lsize, Ch))
+      %% The global resonator (dirt_rsn_global, ours). Sent like the rest of
+      %% the chain rather than gated, for the same reason: a GlobalDirtEffect
+      %% only ever resumes, so `grsn 0` is how it is silenced.
+    , <<"grsn">>,          float(maps:get(grsn, Ch))
+    , <<"grsnpitch">>,     float(maps:get(grsnpitch, Ch))
+    , <<"grsndecay">>,     float(maps:get(grsndecay, Ch))
+    , <<"grsnbright">>,    float(maps:get(grsnbright, Ch))
     ].
 
 %% The per-event effects — sent ONLY when engaged, which is the opposite rule
@@ -287,6 +294,29 @@ fx_args(Fx) ->
                                <<"tremolodepth">>, float(G(tremdepth))])
       , on(G(phaser) > 0.0,   [<<"phaserrate">>, float(G(phaser)),
                                <<"phaserdepth">>, float(G(phdepth))])
+        %% The grain's own amplitude envelope, which is not its window: the
+        %% window says WHICH audio, the envelope says how it arrives and
+        %% leaves. `grenvelo` is gated on `tilt`, and tilt 0 is a perfectly
+        %% good value (peak at the very start), so zero-is-off cannot live on
+        %% the shape here — `genv` is the switch and tilt/plat the shape, the
+        %% same amount-gates-shape split the chain uses.
+      , on(G(genv) > 0.0,     [<<"tilt">>, float(G(gtilt)),
+                               <<"plat">>, float(G(gplat))])
+      , on(G(atk) > 0.0 orelse G(rel) > 0.0,
+                              [<<"attack">>, float(G(atk)),
+                               <<"hold">>, float(G(hold)),
+                               <<"release">>, float(G(rel))])
+        %% `curve` is read by BOTH envelope modules and 0 means linear, so it
+        %% cannot gate on its own value — it rides whenever either runs.
+      , on(G(genv) > 0.0 orelse G(atk) > 0.0 orelse G(rel) > 0.0,
+                              [<<"curve">>, float(G(curve))])
+        %% The resonator, which is ours (superdirt-daemon.scd). rsnpitch is a
+        %% MIDI note, so 0 is 8.2 Hz and unusable, and zero-is-off holds.
+      , on(G(rsnpitch) > 0.0, [<<"rsnpitch">>, float(G(rsnpitch)),
+                               <<"rsndecay">>, float(G(rsndecay)),
+                               <<"rsnbright">>, float(G(rsnbright)),
+                               <<"rsnmix">>, float(G(rsnmix)),
+                               <<"rsnmodel">>, float(G(rsnmodel))])
       ]).
 
 on(true, Args) -> Args;
