@@ -25,7 +25,11 @@
 %% and opens a fresh UDP socket per event; a cloud must never use it.
 -module(reef_conspicillum_voice).
 
--export([start_json/1, stop/0, loop/1, audition/3]).
+%% `encode_dirt_play/3` is exported for inspection, not for callers. What goes
+%% on the wire for a given grain is now conditional — thirteen effects that are
+%% each present or absent — and a rule about ABSENCE cannot be checked by
+%% listening. This makes the bytes readable from a shell.
+-export([start_json/1, stop/0, loop/1, audition/3, encode_dirt_play/3]).
 
 %% Scheduler poll interval (ms).
 -define(POLL_MS, 25).
@@ -195,8 +199,10 @@ drain(St, Cycle, Horizon, AnchorUs, BeatAtAnchor, Tempo) ->
 %% default: a grain is short whatever the rate grains arrive at, and the
 %% default would make a dense cloud's grains shorter than a sparse one's.
 encode_dirt_play(Name, Ev, Cps) ->
+    Fx = maps:get(fx, Ev),
+    Ch = maps:get(chain, Ev),
     Args = [ <<"s">>, Name
-           , <<"orbit">>, 0
+           , <<"orbit">>, maps:get(orbit, Ch)
            , <<"cps">>, float(Cps)
            , <<"cycle">>, float(0.0)
            , <<"delta">>, float(maps:get(sustain, Ev))
@@ -209,7 +215,95 @@ encode_dirt_play(Name, Ev, Cps) ->
            , <<"pan">>, float(maps:get(pan, Ev))
            , <<"accelerate">>, float(maps:get(accelerate, Ev))
            ],
-    encode_msg(<<"/dirt/play">>, Args).
+    encode_msg(<<"/dirt/play">>, Args ++ chain_args(Ch) ++ fx_args(Fx)).
+
+%% =========================================================================
+%% Effects
+%% =========================================================================
+
+%% The per-orbit chain, sent with EVERY grain — and that is not the waste it
+%% looks like.
+%%
+%% `GlobalDirtEffect:set/1` diffs each parameter against its own state and only
+%% sends OSC to the running synth when a value actually changed, so a steady
+%% chain costs one comparison per grain and no traffic at all. What it buys is
+%% the ability to turn an effect OFF: that class only ever resumes, never
+%% pauses, so a reverb once told `room 0.6` keeps reverberating for the life of
+%% the orbit. Ceasing to send `room` does not stop it; sending `room 0` does.
+%% Omitting these when they are zero would therefore make "dry" unreachable
+%% from the moment anything had been wet — a bug audible only as "the reverb
+%% won't go away", which is exactly the kind nobody attributes to the encoder.
+chain_args(Ch) ->
+    [ <<"room">>,          float(maps:get(room, Ch))
+    , <<"size">>,          float(maps:get(size, Ch))
+    , <<"dry">>,           float(maps:get(dry, Ch))
+    , <<"delay">>,         float(maps:get(delay, Ch))
+    , <<"delaytime">>,     float(maps:get(delaytime, Ch))
+    , <<"delayfeedback">>, float(maps:get(delayfeedback, Ch))
+    , <<"lock">>,          float(maps:get(lock, Ch))
+    , <<"leslie">>,        float(maps:get(leslie, Ch))
+    , <<"lrate">>,         float(maps:get(lrate, Ch))
+    , <<"lsize">>,         float(maps:get(lsize, Ch))
+    ].
+
+%% The per-event effects — sent ONLY when engaged, which is the opposite rule
+%% to the chain above and for a reason that comes straight from SuperDirt.
+%%
+%% Every per-event module in `core-modules.scd` is gated on its parameter being
+%% PRESENT in the event rather than on its value: `{ ~cutoff.notNil }`,
+%% `{ ~crush.notNil }`, and so on. There is no neutral number to send — an
+%% `lpf` of 0 is a filter at 0 Hz, which is silence, not "no filter". So the
+%% only way to say "no filter" is to leave the key out, and `Reef.Conspicillum.
+%% Cloud`'s zero-is-off convention is what tells us when to.
+%%
+%% This is also what keeps the cost honest. A grain no effect rule selected
+%% encodes exactly the thirteen parameters it always did, and instantiates no
+%% synth on scsynth — so the 12,800 grains/sec measured in C1 is still the
+%% ceiling for a dry cloud.
+fx_args(Fx) ->
+    G = fun(K) -> maps:get(K, Fx, 0.0) end,
+    Res = G(res),
+    lists:append(
+      [ on(G(shape) > 0.0,    [<<"shape">>, float(G(shape))])
+        %% The module itself ignores coarse =< 1 ("full rate"), so the gate
+        %% here matches rather than merely being > 0.
+      , on(G(coarse) > 1.0,   [<<"coarse">>, float(G(coarse))])
+      , on(G(crush) > 0.0,    [<<"crush">>, float(G(crush))])
+      , on(G(lpf) > 0.0,      [<<"cutoff">>, float(G(lpf))])
+      , on(G(hpf) > 0.0,      [<<"hcutoff">>, float(G(hpf))])
+      , on(G(bpf) > 0.0,      [<<"bandf">>, float(G(bpf))])
+        %% One `res` knob reaching two SuperDirt keys. `resonance` is read by
+        %% the lpf AND vowel modules, `hresonance` by hpf; sending both when
+        %% neither module runs is inert, because a parameter alone instantiates
+        %% nothing.
+      , on(Res > 0.0,         [<<"resonance">>, float(Res),
+                               <<"hresonance">>, float(Res)])
+      , on(vowel_of(G(vowel)) =/= none,
+                              [<<"vowel">>, vowel_of(G(vowel))])
+        %% A pitch RATIO, and the reason this one is worth having: it moves the
+        %% grain in pitch without moving it in time, which `speed` cannot do.
+      , on(G(pshift) > 0.0,   [<<"psrate">>, float(G(pshift))])
+      , on(G(tremolo) > 0.0,  [<<"tremolorate">>, float(G(tremolo)),
+                               <<"tremolodepth">>, float(G(tremdepth))])
+      , on(G(phaser) > 0.0,   [<<"phaserrate">>, float(G(phaser)),
+                               <<"phaserdepth">>, float(G(phdepth))])
+      ]).
+
+on(true, Args) -> Args;
+on(false, _)   -> [].
+
+%% An index rather than a string, so a rule's payload stays one Number. The
+%% order is SuperDirt's own (`initVowels`, [a e i o u]); 0 is off.
+%%
+%% sclang decodes OSC string arguments as SYMBOLS, which is what makes this
+%% work at all: `~dirt.vowels` is keyed by symbols and an actual String would
+%% miss every one of them and silently do nothing.
+vowel_of(X) when X >= 0.5, X < 1.5 -> <<"a">>;
+vowel_of(X) when X >= 1.5, X < 2.5 -> <<"e">>;
+vowel_of(X) when X >= 2.5, X < 3.5 -> <<"i">>;
+vowel_of(X) when X >= 3.5, X < 4.5 -> <<"o">>;
+vowel_of(X) when X >= 4.5, X < 5.5 -> <<"u">>;
+vowel_of(_) -> none.
 
 encode_msg(Addr, Args) ->
     AddrBin = pad_string(Addr),
