@@ -92,8 +92,9 @@ audition(Json, Cycles, Bpm) ->
                             maps:get(corpus, Scene), maps:get(query, Scene),
                             maps:get(spec, Scene), maps:get(seed, Scene), C)),
                 CycleUs = Start + C * CycleDurUs,
-                lists:foreach(fun(Ev) ->
-                    WallUs = round(CycleUs + maps:get(at, Ev) * CycleDurUs),
+                lists:foreach(fun(Ev0) ->
+                    {LeadUs, Ev} = lead_in(Ev0),
+                    WallUs = round(CycleUs + maps:get(at, Ev) * CycleDurUs) - LeadUs,
                     Msg = encode_dirt_play(Name, Ev, Cps),
                     gen_udp:send(Sock, ?SUPERDIRT_HOST, ?SUPERDIRT_PORT,
                                  osc_bundle(WallUs, Msg))
@@ -176,13 +177,60 @@ drain(St, Cycle, Horizon, AnchorUs, BeatAtAnchor, Tempo) ->
             CycleUs = AnchorUs + (CycleBeat - BeatAtAnchor) * 60000000.0 / Tempo,
             CycleDurUs = ?BEATS_PER_CYCLE * 60000000.0 / Tempo,
             Sock = maps:get(socket, St),
-            lists:foreach(fun(Ev) ->
-                WallUs = round(CycleUs + maps:get(at, Ev) * CycleDurUs),
+            lists:foreach(fun(Ev0) ->
+                {LeadUs, Ev} = lead_in(Ev0),
+                WallUs = round(CycleUs + maps:get(at, Ev) * CycleDurUs) - LeadUs,
                 Msg = encode_dirt_play(Name, Ev, Cps),
                 gen_udp:send(Sock, ?SUPERDIRT_HOST, ?SUPERDIRT_PORT,
                              osc_bundle(WallUs, Msg))
             end, Emits),
             drain(St#{last_cycle => Cycle}, Cycle + 1, Horizon, AnchorUs, BeatAtAnchor, Tempo)
+    end.
+
+%% =========================================================================
+%% The lead-in: grains that butt together must crossfade, not dip
+%% =========================================================================
+
+%% SuperDirt fades every grain out over its last `fadeTime` (1 ms), and in over
+%% its first when `begin` is not 0 (`DirtEvent.sc`). Grains placed end to end
+%% therefore meet in a 1 ms hole: sixteen slices of a bar played in order came
+%% back with a dip to silence on every sixteenth — an 8 Hz flutter on anything
+%% sustained, measured at -0.2 dB of error within 10 samples of each boundary.
+%%
+%% The fades are `\sin`-shaped, which sum to exactly one when they overlap on
+%% the same audio. So each grain starts one fade EARLY, reading one fade's worth
+%% earlier in the source, and runs one fade longer: its fade-in then lies under
+%% its predecessor's fade-out and the tape is seamless. A grain whose onset is
+%% the head of the source (forwards from 0, or backwards from 1) has nothing
+%% earlier to read and SuperDirt gives it no fade-in anyway, so it is left
+%% alone. Done here rather than in reef because it is a fact about SuperDirt
+%% and about wall time, and the browser, which never plays, needs neither.
+-define(FADE_S, 0.001).
+
+lead_in(Ev) ->
+    Sus = float(maps:get(sustain, Ev)),
+    Speed = float(maps:get(speed, Ev)),
+    B = float(maps:get(begin_, Ev, maps:get('begin', Ev, 0.0))),
+    E = float(maps:get('end', Ev)),
+    %% Source fraction consumed per second: the window spans `sustain` at
+    %% speed 1, so one fade reads this much of the tape.
+    D = case Sus > 0.0 of
+            true -> ?FADE_S * abs(Speed) * (E - B) / Sus;
+            false -> 0.0
+        end,
+    Lead = round(?FADE_S * 1000000),
+    if D =< 0.0 -> {0, Ev};
+       Speed >= 0.0, B - D >= 0.0 ->
+           {Lead, set_begin(Ev#{sustain => Sus + ?FADE_S}, B - D)};
+       Speed < 0.0, E + D =< 1.0 ->
+           {Lead, Ev#{sustain => Sus + ?FADE_S, 'end' => E + D}};
+       true -> {0, Ev}
+    end.
+
+set_begin(Ev, B) ->
+    case maps:is_key(begin_, Ev) of
+        true -> Ev#{begin_ => B};
+        false -> Ev#{'begin' => B}
     end.
 
 %% =========================================================================
