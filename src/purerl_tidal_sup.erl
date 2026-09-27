@@ -132,5 +132,14 @@ init([]) ->
            restart => permanent,
            shutdown => 5000,
            type => worker,
-           modules => [tidal_conductor]}],
+           modules => [tidal_conductor]},
+         %% Last, so under rest_for_one its restart touches nothing else.
+         %% It holds only what pages pushed, so a restart loses the record
+         %% of what is loaded, never the sound.
+         #{id => tidal_stage,
+           start => {tidal_stage, start_link, []},
+           restart => permanent,
+           shutdown => 5000,
+           type => worker,
+           modules => [tidal_stage]}],
     {ok, {SupFlags, ChildSpecs}}.

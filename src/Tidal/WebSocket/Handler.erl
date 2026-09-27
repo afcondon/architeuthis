@@ -160,6 +160,10 @@ try_parse_prefixed(<<"conspicillum-scene ", Rest/binary>>) ->
     %% function of the scene and its number — and emits one timetagged
     %% /dirt/play bundle per grain to SuperDirt (:57120). A second push swaps
     %% the scene in place and lands on the next cycle boundary.
+    %%
+    %% The JSON is either the Scene itself (the original form) or, for the
+    %% stage, the envelope {"scene": <Scene>, "base", "edited", "page", "by"}:
+    %% the voice plays `scene` and tidal_stage records the rest.
     {conspicillum_scene, trim_binary(Rest)};
 try_parse_prefixed(<<"conspicillum-stop">>) -> {conspicillum_stop};
 try_parse_prefixed(<<"conspicillum-stop ", _/binary>>) -> {conspicillum_stop};
@@ -640,6 +644,10 @@ try_parse_prefixed(<<"cv ", Rest/binary>>) ->
 %% pattern scheduler.  Opt-in: anchors are only pushed to clients that
 %% send `clock-subscribe`, so Calypso (also on :3012) is unaffected.
 try_parse_prefixed(<<"clock-subscribe">>) -> {clock_subscribe};
+%% stage-subscribe — receive `stage <json>` for every slot now, then one
+%% per change another page makes (tidal_stage, docs/kb/plans/the-stage.md).
+try_parse_prefixed(<<"stage-subscribe">>) -> {stage_subscribe};
+try_parse_prefixed(<<"stage-subscribe ", _/binary>>) -> {stage_subscribe};
 try_parse_prefixed(<<"clock-subscribe ", _/binary>>) -> {clock_subscribe};
 try_parse_prefixed(<<"fire-at ", Rest/binary>>) ->
     %% fire-at <bus> <val> <durMs> <delayMs> → /cv/trig/at (sample-accurate)
@@ -872,6 +880,9 @@ handle_pattern_message(Text, State) ->
                 _ -> tidal_link_anchor ! {subscribe, self()}
             end,
             {reply, {text, <<"OK: clock-subscribe">>}, State};
+        {stage_subscribe} ->
+            tidal_stage:subscribe(self()),
+            {reply, {text, <<"OK: stage-subscribe">>}, State};
         {fire_at, Bus, Val, Dur, Delay} ->
             es9_relay(<<"/cv/trig/at">>,
                       [Bus, float(Val), float(Dur), float(Delay)]),
@@ -913,6 +924,8 @@ handle_pattern_message(Text, State) ->
             %% /dirt/play emitter, and the densest one on the rig, so hush must
             %% reach it too.
             catch reef_conspicillum_voice:stop(),
+            %% and tell the stage, so every page shows the slots stopped.
+            tidal_stage:stopped_all(),
             %% and the four PER-MACHINE voice trees. Until 2026-08-07 hush missed
             %% all of these: a voice under one of them was unreachable by every UI
             %% action AND invisible to `state` (which samples only tidal_clock +
@@ -1102,9 +1115,12 @@ handle_pattern_message(Text, State) ->
                     {reply, {text, <<"ERR: vetula-voicings ", RB/binary>>}, State}
             end;
         {conspicillum_scene, Json} ->
-            %% Conspicillum handoff: run (or live-swap) the pushed cloud.
-            case reef_conspicillum_voice:start_json(Json) of
+            %% Conspicillum handoff: run (or live-swap) the pushed cloud, and
+            %% record it on the stage.
+            {Scene, Staged} = stage_envelope(Json),
+            case reef_conspicillum_voice:start_json(Scene) of
                 {ok, _Pid} ->
+                    tidal_stage:put(conspicillum, Staged, self()),
                     {reply, {text, <<"OK: conspicillum-scene (SuperDirt :57120)">>}, State};
                 {error, Reason} ->
                     RB = list_to_binary(io_lib:format("~p", [Reason])),
@@ -1112,6 +1128,7 @@ handle_pattern_message(Text, State) ->
             end;
         {conspicillum_stop} ->
             catch reef_conspicillum_voice:stop(),
+            tidal_stage:stopped(conspicillum),
             {reply, {text, <<"OK: conspicillum-stop">>}, State};
         {reef_input, Json} ->
             %% Lockstep live edit (P4c): decode the tick-tagged input with the SAME
@@ -1846,6 +1863,9 @@ safe_parse(Text) ->
     end.
 
 
+websocket_info({stage_broadcast, Bin}, State) ->
+    %% A change on the stage made by another page (tidal_stage).
+    {reply, {text, Bin}, State};
 websocket_info({anchor_broadcast, Bin}, State) ->
     %% Forwarded Link anchor from tidal_link_anchor — push it to this
     %% subscribed browser client as a text frame (Atlantis Sync Protocol).
@@ -1853,6 +1873,20 @@ websocket_info({anchor_broadcast, Bin}, State) ->
 websocket_info(Info, State) ->
     io:format("WebSocket: Info: ~p~n", [Info]),
     {ok, State}.
+
+%% Split a scene push into the scene for the voice and what the stage
+%% records. A push is either the scene itself or the envelope
+%% {"scene": …, "base", "edited", "page", "by"}; anything unreadable goes to
+%% the voice unchanged, to be refused there with its own error.
+stage_envelope(Json) ->
+    try json:decode(Json) of
+        #{<<"scene">> := Scene} = Envelope ->
+            {iolist_to_binary(json:encode(Scene)), maps:remove(<<"scene">>, Envelope)};
+        _ ->
+            {Json, #{}}
+    catch _:_ ->
+        {Json, #{}}
+    end.
 
 %% Sanitize a name from a WS verb argument to prevent path traversal
 %% on filesystem operations (e.g. `load <name>` reads
