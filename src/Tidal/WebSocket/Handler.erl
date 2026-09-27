@@ -88,7 +88,7 @@ try_parse_prefixed(<<"balistes-sim-at ", Rest/binary>>) ->
     %% HANDOFF: a whole BalSim (Reef.Balistes.Protocol) stamped with the absolute
     %% model step it's the state for and the model-step length in beats. Mirrors
     %% reef-sim-at; the voice holds the pushed state until step N so the browser
-    %% (ch 10) and the rig (ch 11) play it on the same absolute step. Two splits
+    %% and the rig play it on the same absolute step. Two splits
     %% separate step, beats, and the space-free JSON payload.
     case binary:split(trim_binary(Rest), <<" ">>) of
         [StepBin, Rest2] when StepBin =/= <<>> ->
@@ -110,7 +110,7 @@ try_parse_prefixed(<<"reef-sim ", Rest/binary>>) ->
     {reef_sim, trim_binary(Rest)};
 try_parse_prefixed(<<"balistes-fixed ", Rest/binary>>) ->
     %% balistes-fixed <json> — the fixed-rhythm handoff: a whole FixedPattern
-    %% (Reef.Balistes.Fixed, wire-flat) to play on the rig (ch 11). Stateless (a pure
+    %% (Reef.Balistes.Fixed, wire-flat) to play on the rig. Stateless (a pure
     %% function of the absolute step), so no step tag / phase-hold needed.
     {balistes_fixed, trim_binary(Rest)};
 try_parse_prefixed(<<"balistes-trig ", Rest/binary>>) ->
@@ -917,7 +917,7 @@ handle_pattern_message(Text, State) ->
             %% Also silence the standalone reef voice (reef-odonus). It isn't
             %% under odonus_voice_sup, so hush_all/which_voices miss it.
             catch reef_voice:stop(),
-            %% and the standalone Balistes lockstep voice (balistes-sim-at, ch 11).
+            %% and the standalone Balistes lockstep voice (balistes-sim-at / -fixed / -trig).
             catch reef_balistes_voice:stop(),
             %% and the Vetula performance conductor (vetula-perf). It emits no MIDI,
             %% but stop it so a hushed rig isn't still re-conducting a revived Odonus.
