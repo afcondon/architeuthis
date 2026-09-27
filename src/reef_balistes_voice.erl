@@ -20,7 +20,8 @@
 %% as the frontend's emitHit does.
 -module(reef_balistes_voice).
 -export([start/0, start/2, start_sim_json/3, start_sim_at_json/4,
-         start_fixed_json/3, start_trig_json/3, stop/0, loop/1]).
+         start_fixed_json/3, start_trig_json/3, stop/0, loop/1,
+         set_routing_json/1, routing/0]).
 
 %% Scheduler poll interval (ms). Timing is absolute (WallUs from the anchor), so
 %% poll jitter only affects lookahead slack.
@@ -47,7 +48,27 @@
 %% resolved onsets into the same windows.
 -define(CYCLE_STEPS, 16).
 
+%% Where the routing table is kept: outside any one voice, so every start,
+%% of any engine, plays through the table last pushed.
+-define(ROUTING_KEY, {?MODULE, routing}).
+
 start() -> start(?DEFAULT_CHANNEL, ?STEP_BEATS).
+
+%% The drum routing table, pushed by the browser (`balistes-routing <json>`,
+%% Reef.Routing's wire form): per canonKit lane, the legs to send each hit
+%% down. Until one arrives the voice plays as it always has, every hit to the
+%% FH-2 on channel 10; after, it plays what the browser's table says, through
+%% the same Reef.Routing.drumSends the browser calls.
+set_routing_json(Json) ->
+    case 'reef_routing@ps':decodeDrumRouting(ensure_bin(Json)) of
+        {right, Routing} ->
+            persistent_term:put(?ROUTING_KEY, Routing),
+            ok;
+        {left, Errs} ->
+            {error, {decode, Errs}}
+    end.
+
+routing() -> persistent_term:get(?ROUTING_KEY, none).
 
 %% Hardcoded defaultBalSim (the neutral Grids start), for a standalone smoke test.
 start(Channel, StepBeats) ->
@@ -295,11 +316,33 @@ emit(Sock, Ch, Port, E, WallUs, StepMs) ->
               end, lists:seq(0, N - 1))
     end.
 
-%% Schedule one note to the drums CoreMIDI Port (from St, default ?DEFAULT_PORT).
+%% One hit, sent where the routing table says; with no table yet, the old
+%% single destination (Ch on Port).
+fire(Sock, Ch, Port, Note, Vel, DurMs, AtUs) ->
+    case routing() of
+        none ->
+            fire_one(Sock, Ch, Port, Note, Vel, DurMs, AtUs);
+        Routing ->
+            Hit = #{note => Note, velocity => Vel, atMs => 0.0, durMs => float(DurMs)},
+            lists:foreach(fun(Send) -> send(Sock, Send, AtUs) end,
+                          array:to_list('reef_routing@ps':drumSends(Routing, Hit)))
+    end.
+
+%% One Reef.Routing.Send, its atMs relative to the hit's wall time.
+send(Sock, {note, M}, AtUs) ->
+    fire_one(Sock, maps:get(channel, M), maps:get(port, M), maps:get(note, M),
+             maps:get(velocity, M), maps:get(durMs, M), AtUs + round(maps:get(atMs, M) * 1000.0));
+send(Sock, {control, M}, AtUs) ->
+    Thunk = 'tidal_mIDIBridge@foreign':scheduleCCAt(
+              Sock, maps:get(port, M), maps:get(channel, M), maps:get(controller, M),
+              maps:get(value, M), AtUs + round(maps:get(atMs, M) * 1000.0)),
+    Thunk().
+
+%% Schedule one note to a CoreMIDI Port (by default ?DEFAULT_PORT).
 %% QuadDrum routing (2026-07-12, #197/#198): the default <<"FH-2">> fans the FH-2's
 %% note-filtered trigger MCVs (set-drum-trig, ch 10) out to FHX-8GT gate jacks → the
 %% vpme.de QuadDrum. <<"IAC Driver Tidal">> would send drums to Ableton instead.
-fire(Sock, Ch, Port, Note, Vel, DurMs, AtUs) ->
+fire_one(Sock, Ch, Port, Note, Vel, DurMs, AtUs) ->
     Thunk = 'tidal_mIDIBridge@foreign':scheduleNoteAt(
               Sock, Port, Ch, Note, Vel, DurMs, AtUs),
     Thunk().

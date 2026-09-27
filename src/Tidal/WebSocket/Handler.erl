@@ -120,6 +120,11 @@ try_parse_prefixed(<<"balistes-trig ", Rest/binary>>) ->
     %% no step tag / phase-hold needed; the frontend resolves the mini-notation to
     %% onset fractions before pushing (reef has no Tidal parser).
     {balistes_trig, trim_binary(Rest)};
+try_parse_prefixed(<<"balistes-routing ", Rest/binary>>) ->
+    %% balistes-routing <json> — the drum routing table (Reef.Routing's
+    %% DrumRouting): per canonKit lane, the legs a hit is sent down. Kept for
+    %% every later start of the voice, whichever engine.
+    {balistes_routing, trim_binary(Rest)};
 try_parse_prefixed(<<"balistes-input ", Rest/binary>>) ->
     %% balistes-input <json> — a tick-tagged Balistes gesture (live knob sync):
     %% {tick, input} in the Reef.Balistes.Protocol wire form, applied on the tagged
@@ -1067,6 +1072,14 @@ handle_pattern_message(Text, State) ->
                 {error, Reason} ->
                     RB = list_to_binary(io_lib:format("~p", [Reason])),
                     {reply, {text, <<"ERR: balistes-trig ", RB/binary>>}, State}
+            end;
+        {balistes_routing, Json} ->
+            case reef_balistes_voice:set_routing_json(Json) of
+                ok ->
+                    {reply, {text, <<"OK: balistes-routing">>}, State};
+                {error, Reason} ->
+                    RB = list_to_binary(io_lib:format("~p", [Reason])),
+                    {reply, {text, <<"ERR: balistes-routing ", RB/binary>>}, State}
             end;
         {balistes_input, Json} ->
             %% Balistes live knob sync: decode the tick-tagged BInput with the SAME
