@@ -90,7 +90,6 @@ erl-quick:
 	@erlc -disable-feature maybe_expr -o ebin src/reef_balistes_voice.erl
 	@erlc -disable-feature maybe_expr -o ebin src/reef_vetula_voice.erl
 	@erlc -disable-feature maybe_expr -o ebin src/reef_vetula_brush.erl
-	@erlc -disable-feature maybe_expr -o ebin src/reef_stellatus_voice.erl
 	@erlc -disable-feature maybe_expr -o ebin src/reef_conspicillum_voice.erl
 	@erlc -disable-feature maybe_expr -o ebin src/virtual_selene_voice_sup.erl
 	@erlc -disable-feature maybe_expr -o ebin src/virtual_selene_voice.erl
