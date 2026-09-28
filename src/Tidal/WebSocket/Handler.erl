@@ -120,6 +120,12 @@ try_parse_prefixed(<<"balistes-trig ", Rest/binary>>) ->
     %% no step tag / phase-hold needed; the frontend resolves the mini-notation to
     %% onset fractions before pushing (reef has no Tidal parser).
     {balistes_trig, trim_binary(Rest)};
+try_parse_prefixed(<<"dirt-play ", Rest/binary>>) ->
+    %% dirt-play <json> — audition one sample now: {"s", "n", "begin", "end",
+    %% "speed", "gain", "orbit"}, the fields of a Reef.Routing voice. For the
+    %% routing table's sample destination, so a voice can be heard as it is
+    %% chosen rather than only when a pattern reaches it.
+    {dirt_play, trim_binary(Rest)};
 try_parse_prefixed(<<"balistes-routing ", Rest/binary>>) ->
     %% balistes-routing <json> — the drum routing table (Reef.Routing's
     %% DrumRouting): per canonKit lane, the legs a hit is sent down. Kept for
@@ -1073,6 +1079,11 @@ handle_pattern_message(Text, State) ->
                     RB = list_to_binary(io_lib:format("~p", [Reason])),
                     {reply, {text, <<"ERR: balistes-trig ", RB/binary>>}, State}
             end;
+        {dirt_play, Json} ->
+            case dirt_audition(Json) of
+                ok -> {reply, {text, <<"OK: dirt-play">>}, State};
+                {error, Why} -> {reply, {text, <<"ERR: dirt-play ", Why/binary>>}, State}
+            end;
         {balistes_routing, Json} ->
             case reef_balistes_voice:set_routing_json(Json) of
                 ok ->
@@ -1886,6 +1897,30 @@ websocket_info({anchor_broadcast, Bin}, State) ->
 websocket_info(Info, State) ->
     io:format("WebSocket: Info: ~p~n", [Info]),
     {ok, State}.
+
+%% Play one sample through SuperDirt, 50 ms from now (so the bundle lands
+%% ahead of its timetag). Missing fields take a whole, forward, unit-gain play
+%% on orbit 1, the drums' orbit.
+dirt_audition(Json) ->
+    try json:decode(Json) of
+        #{<<"s">> := S} = V when is_binary(S) ->
+            Num = fun(K, D) -> float(maps:get(K, V, D)) end,
+            Msg = dirt_osc:encode_msg(<<"/dirt/play">>,
+                    [ <<"s">>, S
+                    , <<"n">>, Num(<<"n">>, 0)
+                    , <<"orbit">>, round(maps:get(<<"orbit">>, V, 1))
+                    , <<"begin">>, Num(<<"begin">>, 0)
+                    , <<"end">>, Num(<<"end">>, 1)
+                    , <<"speed">>, Num(<<"speed">>, 1)
+                    , <<"gain">>, Num(<<"gain">>, 1)
+                    ]),
+            {ok, Sock} = gen_udp:open(0, [binary]),
+            dirt_osc:send_at(Sock, erlang:system_time(microsecond) + 50000, Msg),
+            gen_udp:close(Sock),
+            ok;
+        _ -> {error, <<"needs {\"s\": <set>, ...}">>}
+    catch _:_ -> {error, <<"bad JSON">>}
+    end.
 
 %% Split a scene push into the scene for the voice and what the stage
 %% records. A push is either the scene itself or the envelope
