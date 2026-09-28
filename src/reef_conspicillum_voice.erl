@@ -97,7 +97,7 @@ audition(Json, Cycles, Bpm) ->
                     WallUs = round(CycleUs + maps:get(at, Ev) * CycleDurUs) - LeadUs,
                     Msg = encode_dirt_play(Name, Ev, Cps),
                     gen_udp:send(Sock, ?SUPERDIRT_HOST, ?SUPERDIRT_PORT,
-                                 osc_bundle(WallUs, Msg))
+                                 dirt_osc:osc_bundle(WallUs, Msg))
                 end, Emits),
                 Acc + length(Emits)
             end, 0, lists:seq(0, Cycles - 1)),
@@ -182,7 +182,7 @@ drain(St, Cycle, Horizon, AnchorUs, BeatAtAnchor, Tempo) ->
                 WallUs = round(CycleUs + maps:get(at, Ev) * CycleDurUs) - LeadUs,
                 Msg = encode_dirt_play(Name, Ev, Cps),
                 gen_udp:send(Sock, ?SUPERDIRT_HOST, ?SUPERDIRT_PORT,
-                             osc_bundle(WallUs, Msg))
+                             dirt_osc:osc_bundle(WallUs, Msg))
             end, Emits),
             drain(St#{last_cycle => Cycle}, Cycle + 1, Horizon, AnchorUs, BeatAtAnchor, Tempo)
     end.
@@ -263,7 +263,7 @@ encode_dirt_play(Name, Ev, Cps) ->
            , <<"pan">>, float(maps:get(pan, Ev))
            , <<"accelerate">>, float(maps:get(accelerate, Ev))
            ],
-    encode_msg(<<"/dirt/play">>, Args ++ chain_args(Ch) ++ fx_args(Fx)).
+    dirt_osc:encode_msg(<<"/dirt/play">>, Args ++ chain_args(Ch) ++ fx_args(Fx)).
 
 %% =========================================================================
 %% Effects
@@ -383,31 +383,3 @@ vowel_of(X) when X >= 3.5, X < 4.5 -> <<"o">>;
 vowel_of(X) when X >= 4.5, X < 5.5 -> <<"u">>;
 vowel_of(_) -> none.
 
-encode_msg(Addr, Args) ->
-    AddrBin = pad_string(Addr),
-    {Tags, Body} = lists:foldl(fun(A, {T, B}) ->
-        case A of
-            Bin when is_binary(Bin) -> {[$s | T], <<B/binary, (pad_string(Bin))/binary>>};
-            F when is_float(F) -> {[$f | T], <<B/binary, F:32/float>>};
-            I when is_integer(I) -> {[$i | T], <<B/binary, I:32/big-signed-integer>>}
-        end
-    end, {[], <<>>}, Args),
-    TagBin = pad_string(list_to_binary([$, | lists:reverse(Tags)])),
-    <<AddrBin/binary, TagBin/binary, Body/binary>>.
-
-pad_string(B) ->
-    Pad = 4 - (byte_size(B) rem 4),
-    <<B/binary, 0:(Pad * 8)>>.
-
--define(NTP_EPOCH_OFFSET, 2208988800).
-
-%% Wrap one message in a bundle timetagged at `WhenUnixUs`. SuperDirt schedules
-%% the sound at the timetag, so sending ahead lands it sample-accurately rather
-%% than late-on-receipt. Same arithmetic as reef_stellatus_voice.
-osc_bundle(WhenUnixUs, Msg) ->
-    Secs = (WhenUnixUs div 1000000) + ?NTP_EPOCH_OFFSET,
-    FracUs = WhenUnixUs rem 1000000,
-    Frac = (FracUs * 4294967296) div 1000000,
-    Timetag = <<Secs:32/big-unsigned-integer, Frac:32/big-unsigned-integer>>,
-    Element = <<(byte_size(Msg)):32/big-signed-integer, Msg/binary>>,
-    <<"#bundle", 0, Timetag/binary, Element/binary>>.
