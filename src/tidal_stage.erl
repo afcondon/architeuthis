@@ -6,10 +6,12 @@
 %% its state: a tab opened mid-set shows what is playing, and two tabs of
 %% one app stay in step. Design: docs/kb/plans/the-stage.md.
 %%
-%% One entry per slot (`conspicillum` today; one slot per app until a
-%% second instance of one is wanted):
+%% One entry per slot (`conspicillum`, `odonus`, `vetula`, `balistes`,
+%% `selene`; one slot per app until a second instance of one is wanted):
 %%
 %%   base    — the Amphora hash it was loaded from, or null
+%%   alias   — the Rebus alias of what is loaded ("cow-ambulance"), or null:
+%%             enough for any page to draw its chip
 %%   edited  — whether it differs from base (the page knows; the rig
 %%             never fetches from Amphora)
 %%   page    — what the page needs to show it again: opaque to the rig
@@ -30,7 +32,7 @@
 -module(tidal_stage).
 -behaviour(gen_server).
 
--export([start_link/0, subscribe/1, put/3, stopped/1, stopped_all/0, snapshot/0]).
+-export([start_link/0, subscribe/1, put/3, set/3, stopped/1, stopped_all/0, snapshot/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 %% =========================================================================
@@ -48,6 +50,10 @@ subscribe(Pid) -> cast({subscribe, Pid}).
 %% A page pushed a slot's scene. Entry is a map with binary keys: base,
 %% edited, page, by (any may be absent). From is the pushing handler.
 put(Slot, Entry, From) -> cast({put, Slot, Entry, From}).
+
+%% A page recorded its machine's slot directly (stage-put): the same fields,
+%% plus `playing` as the page says, since no scene push started a voice.
+set(Slot, Entry, From) -> cast({set, Slot, Entry, From}).
 
 %% The slot's voice stopped (its stop verb, or hush).
 stopped(Slot) -> cast({stopped, Slot}).
@@ -86,15 +92,11 @@ handle_cast({subscribe, Pid}, State = #{slots := Slots, subscribers := Subscribe
     maps:foreach(fun(Slot, Entry) -> Pid ! {stage_broadcast, frame(Slot, Entry)} end, Slots),
     {noreply, State#{subscribers := Subscribers1}};
 
-handle_cast({put, Slot, Pushed, From}, State = #{slots := Slots}) ->
-    Entry = #{base => maps:get(<<"base">>, Pushed, null),
-              edited => maps:get(<<"edited">>, Pushed, false),
-              page => maps:get(<<"page">>, Pushed, null),
-              playing => true,
-              by => maps:get(<<"by">>, Pushed, null),
-              at => erlang:system_time(millisecond)},
-    announce(Slot, Entry, From, State),
-    {noreply, State#{slots := Slots#{Slot => Entry}}};
+handle_cast({put, Slot, Pushed, From}, State) ->
+    record(Slot, entry(Pushed, true), From, State);
+
+handle_cast({set, Slot, Pushed, From}, State) ->
+    record(Slot, entry(Pushed, maps:get(<<"playing">>, Pushed, false) =:= true), From, State);
 
 handle_cast({stopped, Slot}, State = #{slots := Slots}) ->
     case maps:find(Slot, Slots) of
@@ -127,6 +129,19 @@ terminate(_Reason, _State) ->
 %% =========================================================================
 %% Internals
 %% =========================================================================
+
+entry(Pushed, Playing) ->
+    #{base => maps:get(<<"base">>, Pushed, null),
+      alias => maps:get(<<"alias">>, Pushed, null),
+      edited => maps:get(<<"edited">>, Pushed, false),
+      page => maps:get(<<"page">>, Pushed, null),
+      playing => Playing,
+      by => maps:get(<<"by">>, Pushed, null),
+      at => erlang:system_time(millisecond)}.
+
+record(Slot, Entry, From, State = #{slots := Slots}) ->
+    announce(Slot, Entry, From, State),
+    {noreply, State#{slots := Slots#{Slot => Entry}}}.
 
 announce(Slot, Entry, Except, #{subscribers := Subscribers}) ->
     Frame = frame(Slot, Entry),

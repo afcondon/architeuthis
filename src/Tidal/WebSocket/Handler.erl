@@ -659,6 +659,16 @@ try_parse_prefixed(<<"clock-subscribe">>) -> {clock_subscribe};
 %% per change another page makes (tidal_stage, docs/kb/plans/the-stage.md).
 try_parse_prefixed(<<"stage-subscribe">>) -> {stage_subscribe};
 try_parse_prefixed(<<"stage-subscribe ", _/binary>>) -> {stage_subscribe};
+%% stage-put <slot> <json> — a page records what its machine has loaded and
+%% whether it is playing, for a machine whose sound is not one scene push
+%% (Odonus, Vetula, Balistes, the Selene rack). The rig plays nothing new;
+%% the stage records and announces it. Slots are a fixed set, so a page
+%% cannot mint atoms.
+try_parse_prefixed(<<"stage-put ", Rest/binary>>) ->
+    case binary:split(trim_binary(Rest), <<" ">>) of
+        [Slot, Json] -> {stage_put, Slot, Json};
+        _ -> none
+    end;
 try_parse_prefixed(<<"clock-subscribe ", _/binary>>) -> {clock_subscribe};
 try_parse_prefixed(<<"fire-at ", Rest/binary>>) ->
     %% fire-at <bus> <val> <durMs> <delayMs> → /cv/trig/at (sample-accurate)
@@ -894,6 +904,16 @@ handle_pattern_message(Text, State) ->
         {stage_subscribe} ->
             tidal_stage:subscribe(self()),
             {reply, {text, <<"OK: stage-subscribe">>}, State};
+        {stage_put, SlotBin, Json} ->
+            case {stage_slot(SlotBin), catch json:decode(Json)} of
+                {undefined, _} ->
+                    {reply, {text, <<"ERR: stage-put unknown slot ", SlotBin/binary>>}, State};
+                {Slot, Entry} when is_map(Entry) ->
+                    tidal_stage:set(Slot, Entry, self()),
+                    {reply, {text, <<"OK: stage-put ", SlotBin/binary>>}, State};
+                _ ->
+                    {reply, {text, <<"ERR: stage-put wants a JSON object">>}, State}
+            end;
         {fire_at, Bus, Val, Dur, Delay} ->
             es9_relay(<<"/cv/trig/at">>,
                       [Bus, float(Val), float(Dur), float(Delay)]),
@@ -1921,6 +1941,14 @@ dirt_audition(Json) ->
         _ -> {error, <<"needs {\"s\": <set>, ...}">>}
     catch _:_ -> {error, <<"bad JSON">>}
     end.
+
+%% The slots a page may set with stage-put. Conspicillum's is set by its
+%% scene push instead.
+stage_slot(<<"odonus">>) -> odonus;
+stage_slot(<<"vetula">>) -> vetula;
+stage_slot(<<"balistes">>) -> balistes;
+stage_slot(<<"selene">>) -> selene;
+stage_slot(_) -> undefined.
 
 %% Split a scene push into the scene for the voice and what the stage
 %% records. A push is either the scene itself or the envelope
