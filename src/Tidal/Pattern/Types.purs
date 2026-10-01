@@ -50,6 +50,7 @@ module Tidal.Pattern.Types
   , mkNote
   , class TidalEnum
   , enumRange
+  , addSemitones
   , ValueMap
   , ControlPattern
     -- * Utilities
@@ -229,20 +230,27 @@ mkNote n = Note { note: n, bend: 0.0 }
 -- | Type class for types that can be enumerated in ranges
 -- |
 -- | Used by the `..` operator, e.g., `0 .. 7` or `c4 .. c5`
+-- |
+-- | Haskell Tidal's `Enumerable`, plus what its chords ask of a type
+-- | (`Num`): `addSemitones` moves a value up by an interval. Types that
+-- | chords never apply to (strings) leave the value alone.
 class TidalEnum a where
   enumRange :: a -> a -> Array a
+  addSemitones :: Int -> a -> a
 
 -- | Int enumeration: 0 .. 5 = [0, 1, 2, 3, 4, 5]
 instance tidalEnumInt :: TidalEnum Int where
   enumRange from to
     | from <= to = Array.range from to
     | otherwise = Array.reverse (Array.range to from)
+  addSemitones k x = x + k
 
 -- | Note enumeration: chromatic scale between notes
 instance tidalEnumNote :: TidalEnum Note where
   enumRange (Note { note: from }) (Note { note: to })
     | from <= to = map mkNote (Array.range from to)
     | otherwise = map mkNote (Array.reverse (Array.range to from))
+  addSemitones k (Note n) = Note n { note = n.note + k }
 
 -- | Number enumeration: step by 1.0
 -- | Haskell's `[a .. b]` for Doubles (`numericEnumFromTo`): steps of one
@@ -253,16 +261,19 @@ instance tidalEnumNumber :: TidalEnum Number where
         where
         upTo x = if x > to + 0.5 then [] else Array.cons x (upTo (x + 1.0))
     | otherwise = Array.reverse (enumRange to from)
+  addSemitones k x = x + Int.toNumber k
 
--- | String: no meaningful enumeration
+-- | String: the two ends, as Tidal's `fromTo` for String.
 instance tidalEnumString :: TidalEnum String where
-  enumRange from _ = [from]  -- Just return the start value
+  enumRange from to = [ from, to ]
+  addSemitones _ x = x
 
 -- | Rational: step by 1
 instance tidalEnumRational :: TidalEnum Rational where
   enumRange from to = map fromInt (enumRange (rationalToInt from) (rationalToInt to))
     where
       rationalToInt r = Int.floor (toNumber r)
+  addSemitones k x = x + fromInt k
 
 -- | Primitive values for control patterns
 -- |

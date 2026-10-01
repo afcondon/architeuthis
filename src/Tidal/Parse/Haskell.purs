@@ -25,10 +25,20 @@ module Tidal.Parse.Haskell
 
 import Prelude
 
-import Tidal.AST.Types (TPat(..))
-import Tidal.Parse.Class (class AtomParseable, liftP, located)
-import Tidal.Parse.Numbers (parseIntNote, pDouble, pNote, pVocable)
-import Tidal.Pattern.Types (class TidalEnum, enumRange)
+import Control.Alt ((<|>))
+import Control.Lazy (defer)
+import Data.Identity (Identity)
+import Data.Rational (toNumber)
+import Data.Tuple (Tuple(..))
+import Text.Parsing.Parser (ParserT)
+import Text.Parsing.Parser.String (char)
+import Tidal.AST.Types (Located(..), TPat(..))
+import Tidal.Chords (Modifiers)
+import Tidal.Core.Types (emptySpan)
+import Tidal.Parse.Class (class AtomParseable, TidalParser, liftP, located, patternParser)
+import Tidal.Parse.Combinators (manyT, pPartWith, spanned, tryT)
+import Tidal.Parse.Numbers (parseIntNote, pDouble, pNote, pNoteWithoutChord, pRatio, pVocable)
+import Tidal.Pattern.Types (class TidalEnum, addSemitones, enumRange)
 
 newtype Vocable = Vocable String
 newtype TDouble = TDouble Number
@@ -40,32 +50,62 @@ derive instance Eq TDouble
 derive instance Eq TNote
 derive instance Eq TInt
 
+type P = ParserT String Identity
+
 instance AtomParseable Vocable where
   atomParser = located (liftP (Vocable <$> pVocable))
   patternParser = TPat_Atom <$> located (liftP (Vocable <$> pVocable))
 
 instance AtomParseable TDouble where
   atomParser = located (liftP (TDouble <$> pDouble))
-  patternParser = TPat_Atom <$> located (liftP (TDouble <$> pDouble))
+  patternParser = defer \_ -> withChords (atom (TDouble <$> pDouble)) (TDouble 0.0)
 
+-- | `pNote`: as `pDouble`, then a ratio as a last resort.
 instance AtomParseable TNote where
   atomParser = located (liftP (TNote <$> pNote))
-  patternParser = TPat_Atom <$> located (liftP (TNote <$> pNote))
+  patternParser = defer \_ ->
+    withChords (atom (TNote <$> pNoteWithoutChord)) (TNote 0.0)
+      <|> atom (TNote <<< toNumber <$> pRatio)
 
 instance AtomParseable TInt where
   atomParser = located (liftP (TInt <$> parseIntNote))
-  patternParser = TPat_Atom <$> located (liftP (TInt <$> parseIntNote))
+  patternParser = defer \_ -> withChords (atom (TInt <$> parseIntNote)) (TInt 0)
+
+atom :: forall a. P a -> TidalParser (TPat a)
+atom p = TPat_Atom <$> located (liftP p)
+
+-- | Haskell's `pDouble`/`pNote`/`pIntegral` shape: a root part, then
+-- | perhaps a chord; or a chord on a root of 0 (`'major`); or the part.
+withChords :: forall a. AtomParseable a => TidalParser (TPat a) -> a -> TidalParser (TPat a)
+withChords f zero =
+  tryT (pPartWith f >>= \root -> pChord root <|> pure root)
+    <|> pChord (TPat_Atom (Located emptySpan zero))
+    <|> pPartWith f
+
+-- | `pChord`: `'`, a chord name part, then `'`-separated modifier parts.
+pChord :: forall a. TPat a -> TidalParser (TPat a)
+pChord root = do
+  Tuple span (Tuple name mods) <- spanned do
+    _ <- liftP (char '\'')
+    name <- pPartWith (atom (Vocable <$> pVocable))
+    mods <- manyT (liftP (char '\'') *> pPartWith (patternParser :: TidalParser (TPat Modifiers)))
+    pure (Tuple name mods)
+  pure (TPat_Chord span root (map (\(Vocable v) -> v) name) mods)
 
 -- | Strings enumerate as the two ends, as Tidal's `fromTo` for String.
 instance TidalEnum Vocable where
   enumRange a b = [ a, b ]
+  addSemitones _ x = x
 
 instance TidalEnum TDouble where
   enumRange (TDouble a) (TDouble b) = map TDouble (enumRange a b)
+  addSemitones k (TDouble x) = TDouble (addSemitones k x)
 
 instance TidalEnum TNote where
   enumRange (TNote a) (TNote b) = map TNote (enumRange a b)
+  addSemitones k (TNote x) = TNote (addSemitones k x)
 
 instance TidalEnum TInt where
   enumRange (TInt a) (TInt b) = map TInt (enumRange a b)
+  addSemitones k (TInt x) = TInt (x + k)
 

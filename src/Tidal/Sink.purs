@@ -405,6 +405,7 @@ classifyTPat tpat =
       TPat_CycleChoose _ _ ps -> Array.concatMap collectAtoms ps
       TPat_Euclid _ _ _ _ p -> collectAtoms p
       TPat_EnumFromTo _ _ _ -> []  -- range expansion happens at eval
+      TPat_Chord _ root _ _ -> collectAtoms root
 
     summarise :: Array StringContent -> StringContent
     summarise [] = ContentEmpty

@@ -5,7 +5,8 @@
 -- | ParseTest cases first, then ours). Each is read here as a line, queried
 -- | over the same arc and rendered the same way; the event lists must be
 -- | equal, fragments and all, in any order. A case Tidal refused must be
--- | refused here too.
+-- | refused here too. Since parity reached 100% (2026-10-01), a difference
+-- | fails the run.
 module Test.OracleSpec (runOracleTests) where
 
 import Prelude
@@ -17,6 +18,7 @@ import Data.Rational (fromInt)
 import Data.Traversable (for)
 import Effect (Effect)
 import Effect.Console (log)
+import Effect.Exception (throw)
 import Test.ControlSpec (render)
 import Test.Oracle.Golden (golden, tidalVersion)
 import Tidal.Line (Command(..), parseLine)
@@ -44,6 +46,9 @@ runOracleTests = do
   let passed = length (filter identity results)
   log ""
   log ("  parity: " <> show passed <> " of " <> show (length results) <> " cases identical to Tidal " <> tidalVersion)
+  -- Parity reached 100% on 2026-10-01; any divergence now fails the run.
+  when (passed < length results) $
+    throw (show (length results - passed) <> " case(s) differ from Tidal " <> tidalVersion)
   where
   maybe' = case _ of
     Nothing -> "refused"

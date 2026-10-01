@@ -29,6 +29,7 @@ import Data.Traversable (class Traversable)
 
 import Data.Maybe (Maybe)
 import Data.Rational (Rational)
+import Tidal.Chords (Modifiers)
 import Tidal.Core.Types (SourceSpan, SourcePos, Seed, ControlName, emptySpan)
 
 -- | A value with its source location
@@ -107,6 +108,10 @@ data TPat a
   | TPat_EnumFromTo SourceSpan (TPat a) (TPat a)
     -- ^ Range enumeration: 0 .. 7
 
+  -- Chords (numeric atoms only, as in Tidal)
+  | TPat_Chord SourceSpan (TPat a) (TPat String) (Array (TPat Modifiers))
+    -- ^ c'major'i: a root, a pattern of chord names, patterns of modifiers
+
 derive instance functorTPat :: Functor TPat
 derive instance foldableTPat :: Foldable TPat
 derive instance traversableTPat :: Traversable TPat
@@ -131,6 +136,8 @@ instance showTPat :: Show a => Show (TPat a) where
     TPat_Euclid _ n k s pat ->
       "TPat_Euclid " <> show n <> " " <> show k <> " " <> show s <> " " <> show pat
     TPat_EnumFromTo _ a b -> "TPat_EnumFromTo " <> show a <> " " <> show b
+    TPat_Chord _ root name mods ->
+      "TPat_Chord " <> show root <> " " <> show name <> " " <> show mods
 
 -- | Extract the source span from any TPat node
 -- |
@@ -152,3 +159,4 @@ tpatSpan = case _ of
   TPat_CycleChoose span _ _ -> span
   TPat_Euclid span _ _ _ _ -> span
   TPat_EnumFromTo span _ _ -> span
+  TPat_Chord span _ _ _ -> span

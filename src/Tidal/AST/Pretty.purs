@@ -19,6 +19,7 @@ import Data.Int as Int
 import Data.Rational (Rational, toNumber)
 import Data.String as String
 import Tidal.AST.Types (TPat(..), Located(..), getValue)
+import Tidal.Chords (Modifier(..), Modifiers(..))
 import Tidal.Core.Types (ControlName(..))
 
 -- | Type class for atoms that can be pretty-printed
@@ -102,6 +103,18 @@ pretty = case _ of
 
   TPat_EnumFromTo _ a b ->
     pretty a <> " .. " <> pretty b
+
+  TPat_Chord _ root name mods ->
+    pretty root <> "'" <> pretty name
+      <> String.joinWith "" (map (\m -> "'" <> pretty (map modifiersText m)) mods)
+
+-- | Chord modifiers as written: `i`, `o`, `d1`, a range number.
+modifiersText :: Modifiers -> String
+modifiersText (Modifiers ms) = String.joinWith "" $ ms <#> case _ of
+  Invert -> "i"
+  Open -> "o"
+  Drop n -> "d" <> show n
+  Range n -> show n
 
 -- | Pretty-print a sequence, joining with spaces
 prettySeq :: forall a. PrettyAtom a => Array (TPat a) -> String

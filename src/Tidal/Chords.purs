@@ -4,9 +4,12 @@
 -- | Based on TidalCycles chord definitions.
 module Tidal.Chords
   ( lookupChord
+  , lookupTidalChord
+  , chordTable
   , chordNames
   -- * Modifiers
   , Modifier(..)
+  , Modifiers(..)
   , applyModifier
   , applyModifiers
   -- * Basic triads
@@ -45,6 +48,7 @@ import Data.Array as Array
 import Data.Foldable (foldl)
 import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Tuple (Tuple(..))
+import Tidal.Pattern.Types (class TidalEnum)
 
 -------------------------------------------------------------------------------
 -- Chord modifiers
@@ -71,14 +75,31 @@ instance showModifier :: Show Modifier where
   show (Drop n) = "Drop " <> show n
   show Open = "Open"
 
+-- | A list of modifiers, one atom of a chord's modifier pattern
+-- | (`c'major'<i 5>` has two). Tidal's `[Modifier]`.
+newtype Modifiers = Modifiers (Array Modifier)
+
+derive instance Eq Modifiers
+
+instance Show Modifiers where
+  show (Modifiers ms) = show ms
+
+-- | They enumerate as the two ends, as Tidal's `fromTo` for `[Modifier]`;
+-- | a chord never transposes them.
+instance tidalEnumModifiers :: TidalEnum Modifiers where
+  enumRange a b = [ a, b ]
+  addSemitones _ ms = ms
+
 -- | Apply a single modifier to chord intervals
 applyModifier :: Modifier -> Array Int -> Array Int
 applyModifier Invert notes = case Array.uncons notes of
   Nothing -> notes
   Just { head: d, tail: ds } -> ds <> [d + 12]
 applyModifier (Range i) notes =
-  -- Take i notes from chord extended across octaves
-  let octaves = Array.concat $ map (\oct -> map (_ + oct) notes) [0, 12, 24, 36, 48]
+  -- Take i notes from the chord repeated up the octaves, as many as needed.
+  let
+    n = max 1 (Array.length notes)
+    octaves = Array.concat $ map (\k -> map (_ + 12 * k) notes) (Array.range 0 (i / n + 1))
   in Array.take i octaves
 applyModifier (Drop i) notes =
   -- Drop the ith voice from top down an octave
@@ -109,106 +130,179 @@ applyModifiers mods notes = foldl (flip applyModifier) notes mods
 -- Chord lookup
 -------------------------------------------------------------------------------
 
--- | Look up a chord by name, returning intervals from root
-lookupChord :: String -> Maybe (Array Int)
-lookupChord name = Array.find (\(Tuple n _) -> n == name) chordTable
+-- | Look up a chord by name as Haskell Tidal does: its own table only, first
+-- | match wins. An unknown name is `Nothing`; Tidal then plays the root.
+lookupTidalChord :: String -> Maybe (Array Int)
+lookupTidalChord name = Array.find (\(Tuple n _) -> n == name) chordTable
   >>= \(Tuple _ intervals) -> Just intervals
 
--- | List of all supported chord names
-chordNames :: Array String
-chordNames = map (\(Tuple n _) -> n) chordTable
+-- | Look up a chord for the typed-cue path: Tidal's table, then the names
+-- | this library had before it followed Tidal (`7`, `9`, `sus`, …).
+lookupChord :: String -> Maybe (Array Int)
+lookupChord name = case lookupTidalChord name of
+  Just intervals -> Just intervals
+  Nothing -> Array.find (\(Tuple n _) -> n == name) legacyChords
+    >>= \(Tuple _ intervals) -> Just intervals
 
--- | Chord lookup table: name -> intervals
+-- | Every chord name either lookup knows.
+chordNames :: Array String
+chordNames = map (\(Tuple n _) -> n) (chordTable <> legacyChords)
+
+-- | Haskell Tidal 1.10.1's `chordTable`, in its order, generated from GHCi
+-- | (`Sound.Tidal.Chords.chordTable`). Its quirks are kept on purpose:
+-- | `dom9` is [0,4,7,14] and `9s5` [0,1,13], as in Tidal.
 chordTable :: Array (Tuple String (Array Int))
 chordTable =
-  -- Major triads
-  [ Tuple "major" major
-  , Tuple "maj" major
-  , Tuple "M" major
+  [ Tuple "major" [0, 4, 7]
+  , Tuple "maj" [0, 4, 7]
+  , Tuple "M" [0, 4, 7]
+  , Tuple "aug" [0, 4, 8]
+  , Tuple "plus" [0, 4, 8]
+  , Tuple "sharp5" [0, 4, 8]
+  , Tuple "six" [0, 4, 7, 9]
+  , Tuple "6" [0, 4, 7, 9]
+  , Tuple "sixNine" [0, 4, 7, 9, 14]
+  , Tuple "six9" [0, 4, 7, 9, 14]
+  , Tuple "sixby9" [0, 4, 7, 9, 14]
+  , Tuple "6by9" [0, 4, 7, 9, 14]
+  , Tuple "major7" [0, 4, 7, 11]
+  , Tuple "maj7" [0, 4, 7, 11]
+  , Tuple "M7" [0, 4, 7, 11]
+  , Tuple "major9" [0, 4, 7, 11, 14]
+  , Tuple "maj9" [0, 4, 7, 11, 14]
+  , Tuple "M9" [0, 4, 7, 11, 14]
+  , Tuple "add9" [0, 4, 7, 14]
+  , Tuple "major11" [0, 4, 7, 11, 14, 17]
+  , Tuple "maj11" [0, 4, 7, 11, 14, 17]
+  , Tuple "M11" [0, 4, 7, 11, 14, 17]
+  , Tuple "add11" [0, 4, 7, 17]
+  , Tuple "major13" [0, 4, 7, 11, 14, 21]
+  , Tuple "maj13" [0, 4, 7, 11, 14, 21]
+  , Tuple "M13" [0, 4, 7, 11, 14, 21]
+  , Tuple "add13" [0, 4, 7, 21]
+  , Tuple "dom7" [0, 4, 7, 10]
+  , Tuple "dom9" [0, 4, 7, 14]
+  , Tuple "dom11" [0, 4, 7, 17]
+  , Tuple "dom13" [0, 4, 7, 21]
+  , Tuple "sevenFlat5" [0, 4, 6, 10]
+  , Tuple "7f5" [0, 4, 6, 10]
+  , Tuple "sevenSharp5" [0, 4, 8, 10]
+  , Tuple "7s5" [0, 4, 8, 10]
+  , Tuple "sevenFlat9" [0, 4, 7, 10, 13]
+  , Tuple "7f9" [0, 4, 7, 10, 13]
+  , Tuple "nine" [0, 4, 7, 10, 14]
+  , Tuple "eleven" [0, 4, 7, 10, 14, 17]
+  , Tuple "11" [0, 4, 7, 10, 14, 17]
+  , Tuple "thirteen" [0, 4, 7, 10, 14, 17, 21]
+  , Tuple "13" [0, 4, 7, 10, 14, 17, 21]
+  , Tuple "minor" [0, 3, 7]
+  , Tuple "min" [0, 3, 7]
+  , Tuple "m" [0, 3, 7]
+  , Tuple "diminished" [0, 3, 6]
+  , Tuple "dim" [0, 3, 6]
+  , Tuple "minorSharp5" [0, 3, 8]
+  , Tuple "msharp5" [0, 3, 8]
+  , Tuple "mS5" [0, 3, 8]
+  , Tuple "minor6" [0, 3, 7, 9]
+  , Tuple "min6" [0, 3, 7, 9]
+  , Tuple "m6" [0, 3, 7, 9]
+  , Tuple "minorSixNine" [0, 3, 9, 7, 14]
+  , Tuple "minor69" [0, 3, 9, 7, 14]
+  , Tuple "min69" [0, 3, 9, 7, 14]
+  , Tuple "minSixNine" [0, 3, 9, 7, 14]
+  , Tuple "m69" [0, 3, 9, 7, 14]
+  , Tuple "mSixNine" [0, 3, 9, 7, 14]
+  , Tuple "m6by9" [0, 3, 9, 7, 14]
+  , Tuple "minor7flat5" [0, 3, 6, 10]
+  , Tuple "minor7f5" [0, 3, 6, 10]
+  , Tuple "min7flat5" [0, 3, 6, 10]
+  , Tuple "min7f5" [0, 3, 6, 10]
+  , Tuple "m7flat5" [0, 3, 6, 10]
+  , Tuple "m7f5" [0, 3, 6, 10]
+  , Tuple "minor7" [0, 3, 7, 10]
+  , Tuple "min7" [0, 3, 7, 10]
+  , Tuple "m7" [0, 3, 7, 10]
+  , Tuple "minor7sharp5" [0, 3, 8, 10]
+  , Tuple "minor7s5" [0, 3, 8, 10]
+  , Tuple "min7sharp5" [0, 3, 8, 10]
+  , Tuple "min7s5" [0, 3, 8, 10]
+  , Tuple "m7sharp5" [0, 3, 8, 10]
+  , Tuple "m7s5" [0, 3, 8, 10]
+  , Tuple "minor7flat9" [0, 3, 7, 10, 13]
+  , Tuple "minor7f9" [0, 3, 7, 10, 13]
+  , Tuple "min7flat9" [0, 3, 7, 10, 13]
+  , Tuple "min7f9" [0, 3, 7, 10, 13]
+  , Tuple "m7flat9" [0, 3, 7, 10, 13]
+  , Tuple "m7f9" [0, 3, 7, 10, 13]
+  , Tuple "minor7sharp9" [0, 3, 7, 10, 15]
+  , Tuple "minor7s9" [0, 3, 7, 10, 15]
+  , Tuple "min7sharp9" [0, 3, 7, 10, 15]
+  , Tuple "min7s9" [0, 3, 7, 10, 15]
+  , Tuple "m7sharp9" [0, 3, 7, 10, 15]
+  , Tuple "m7s9" [0, 3, 7, 10, 15]
+  , Tuple "diminished7" [0, 3, 6, 9]
+  , Tuple "dim7" [0, 3, 6, 9]
+  , Tuple "minor9" [0, 3, 7, 10, 14]
+  , Tuple "min9" [0, 3, 7, 10, 14]
+  , Tuple "m9" [0, 3, 7, 10, 14]
+  , Tuple "minor11" [0, 3, 7, 10, 14, 17]
+  , Tuple "min11" [0, 3, 7, 10, 14, 17]
+  , Tuple "m11" [0, 3, 7, 10, 14, 17]
+  , Tuple "minor13" [0, 3, 7, 10, 14, 17, 21]
+  , Tuple "min13" [0, 3, 7, 10, 14, 17, 21]
+  , Tuple "m13" [0, 3, 7, 10, 14, 17, 21]
+  , Tuple "minorMajor7" [0, 3, 7, 11]
+  , Tuple "minMaj7" [0, 3, 7, 11]
+  , Tuple "mmaj7" [0, 3, 7, 11]
+  , Tuple "one" [0]
+  , Tuple "1" [0]
+  , Tuple "five" [0, 7]
+  , Tuple "5" [0, 7]
+  , Tuple "sus2" [0, 2, 7]
+  , Tuple "sus4" [0, 5, 7]
+  , Tuple "sevenSus2" [0, 2, 7, 10]
+  , Tuple "7sus2" [0, 2, 7, 10]
+  , Tuple "sevenSus4" [0, 5, 7, 10]
+  , Tuple "7sus4" [0, 5, 7, 10]
+  , Tuple "nineSus4" [0, 5, 7, 10, 14]
+  , Tuple "ninesus4" [0, 5, 7, 10, 14]
+  , Tuple "9sus4" [0, 5, 7, 10, 14]
+  , Tuple "sevenFlat10" [0, 4, 7, 10, 15]
+  , Tuple "7f10" [0, 4, 7, 10, 15]
+  , Tuple "nineSharp5" [0, 1, 13]
+  , Tuple "9sharp5" [0, 1, 13]
+  , Tuple "9s5" [0, 1, 13]
+  , Tuple "minor9sharp5" [0, 1, 14]
+  , Tuple "minor9s5" [0, 1, 14]
+  , Tuple "min9sharp5" [0, 1, 14]
+  , Tuple "min9s5" [0, 1, 14]
+  , Tuple "m9sharp5" [0, 1, 14]
+  , Tuple "m9s5" [0, 1, 14]
+  , Tuple "sevenSharp5flat9" [0, 4, 8, 10, 13]
+  , Tuple "7s5f9" [0, 4, 8, 10, 13]
+  , Tuple "minor7sharp5flat9" [0, 3, 8, 10, 13]
+  , Tuple "m7sharp5flat9" [0, 3, 8, 10, 13]
+  , Tuple "elevenSharp" [0, 4, 7, 10, 14, 18]
+  , Tuple "11s" [0, 4, 7, 10, 14, 18]
+  , Tuple "minor11sharp" [0, 3, 7, 10, 14, 18]
+  , Tuple "m11sharp" [0, 3, 7, 10, 14, 18]
+  , Tuple "m11s" [0, 3, 7, 10, 14, 18]
+  ]
 
-  -- Minor triads
-  , Tuple "minor" minor
-  , Tuple "min" minor
-  , Tuple "m" minor
-
-  -- Augmented
-  , Tuple "aug" aug
-  , Tuple "plus" aug
-
-  -- Diminished
-  , Tuple "dim" dim
-  , Tuple "diminished" dim
-
-  -- Major 7th
-  , Tuple "major7" major7
-  , Tuple "maj7" major7
-  , Tuple "M7" major7
-
-  -- Minor 7th
-  , Tuple "minor7" minor7
-  , Tuple "min7" minor7
-  , Tuple "m7" minor7
-
-  -- Dominant 7th
-  , Tuple "dom7" dom7
-  , Tuple "7" dom7
-
-  -- Diminished 7th
-  , Tuple "dim7" dim7
-  , Tuple "diminished7" dim7
-
-  -- Augmented 7th
+-- | Names this library knew before it followed Tidal's table, and Tidal
+-- | does not: the typed-cue path still reads them.
+legacyChords :: Array (Tuple String (Array Int))
+legacyChords =
+  [ Tuple "7" dom7
   , Tuple "aug7" aug7
-
-  -- Half-diminished (minor 7 flat 5)
   , Tuple "m7b5" halfDim7
-  , Tuple "m7flat5" halfDim7
   , Tuple "halfDim" halfDim7
-
-  -- 9th chords
-  , Tuple "major9" major9
-  , Tuple "maj9" major9
-  , Tuple "M9" major9
-  , Tuple "minor9" minor9
-  , Tuple "min9" minor9
-  , Tuple "m9" minor9
-  , Tuple "dom9" dom9
-  , Tuple "9" dom9
-
-  -- 11th chords
-  , Tuple "major11" major11
-  , Tuple "maj11" major11
-  , Tuple "M11" major11
-  , Tuple "minor11" minor11
-  , Tuple "min11" minor11
-  , Tuple "m11" minor11
-
-  -- 13th chords
-  , Tuple "major13" major13
-  , Tuple "maj13" major13
-  , Tuple "M13" major13
-  , Tuple "minor13" minor13
-  , Tuple "min13" minor13
-  , Tuple "m13" minor13
-
-  -- Suspended
-  , Tuple "sus2" sus2
-  , Tuple "sus4" sus4
+  , Tuple "9" [ 0, 4, 7, 10, 14 ]
   , Tuple "sus" sus4
-  , Tuple "7sus4" sevenSus4
   , Tuple "7sus" sevenSus4
-
-  -- 6th chords
-  , Tuple "six" six
-  , Tuple "6" six
-  , Tuple "minor6" minor6
-  , Tuple "min6" minor6
-  , Tuple "m6" minor6
-
-  -- Add chords
-  , Tuple "add9" add9
   , Tuple "add2" add9
   ]
+
 
 -------------------------------------------------------------------------------
 -- Basic triads

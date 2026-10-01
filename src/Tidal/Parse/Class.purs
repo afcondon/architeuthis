@@ -39,9 +39,9 @@ import Text.Parsing.Parser.Combinators as PC
 import Text.Parsing.Parser.String (char, satisfy)
 import Text.Parsing.Parser.Token (alphaNum, digit, letter)
 import Tidal.AST.Types (Located(..), TPat(..), SourceSpan)
-import Tidal.Chords (Modifier(..), lookupChord, applyModifiers)
+import Tidal.Chords (Modifier(..), Modifiers(..), lookupChord, applyModifiers)
 import Tidal.Pattern.Types (Note, mkNote)
-import Tidal.Parse.Numbers (parseIntNote, pRatio)
+import Tidal.Parse.Numbers (parseIntNote, parseModifiers, pRatio)
 import Tidal.Parse.State (ParseState, currentPos, mkSourceSpan)
 
 -- | The parser monad: Parser with state for seed generation
@@ -101,6 +101,15 @@ class AtomParseable a where
   -- | Parse a pattern element. Default wraps atom in TPat_Atom.
   -- | Override for types like Note that support chord syntax.
   patternParser :: TidalParser (TPat a)
+
+-------------------------------------------------------------------------------
+-- Chord modifiers
+-------------------------------------------------------------------------------
+
+-- | One atom of a chord's modifier pattern: Haskell's `pModifiers`.
+instance AtomParseable Modifiers where
+  atomParser = located (liftP (Modifiers <$> parseModifiers))
+  patternParser = TPat_Atom <$> located (liftP (Modifiers <$> parseModifiers))
 
 -------------------------------------------------------------------------------
 -- String atoms

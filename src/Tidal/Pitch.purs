@@ -112,3 +112,5 @@ instance tidalEnumPitch :: TidalEnum PitchedNote12 where
     | from <= to = map Degree (enumRange from to)
     | otherwise  = map Degree (enumRange from to)
   enumRange from _ = [from]
+  -- Chords are not parsed for pitches; a value passes through.
+  addSemitones _ x = x

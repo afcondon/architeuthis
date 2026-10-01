@@ -20,19 +20,21 @@
 module Tidal.Eval.Interpret
   ( tpatToPattern
   , evalTPat
+  , timeParam
   ) where
 
 import Prelude
 
 import Data.Array as Array
 import Data.Foldable (foldl)
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Rational (Rational, (%))
 import Data.Tuple (Tuple(..), snd)
 import Tidal.AST.Types (Located(..), TPat(..))
 import Tidal.Core.Types (Seed(..))
-import Tidal.Pattern.Core (chooseBy, degradeByUsing, euclidOff, fast, fastCat, innerJoin, rand, rotL, segment, slow, stack, timeCat, unwrap)
-import Tidal.Pattern.Types (class TidalEnum, Pattern, enumRange, silence)
+import Tidal.Chords (Modifiers(..), applyModifiers, lookupTidalChord)
+import Tidal.Pattern.Core (chooseBy, degradeByUsing, euclidOff, fast, fastCat, innerJoin, rand, rotL, segment, slow, stack, timeCat, uncollect, unwrap)
+import Tidal.Pattern.Types (class TidalEnum, Pattern, addSemitones, enumRange, silence)
 
 -- | Evaluate mini-notation: Haskell Tidal's `toPat`.
 tpatToPattern :: forall a. TidalEnum a => TPat a -> Pattern a
@@ -61,9 +63,33 @@ tpatToPattern = case _ of
     unwrap $ segment 1 $ chooseBy (rotL (seed % 10000) rand) (map tpatToPattern xs)
   TPat_Euclid _ n k s x -> euclidParam n k s (tpatToPattern x)
   TPat_EnumFromTo _ a b -> unwrap (fromTo <$> tpatToPattern a <*> tpatToPattern b)
+  TPat_Chord _ root name mods -> chord root name mods
   -- Only meaningful as steps of a sequence, where resolveSize reads them.
   TPat_Elongate _ _ _ -> silence
   TPat_Repeat _ _ _ -> silence
+
+-- | Haskell Tidal's `chordToPatSeq`: for each root and chord name, the
+-- | chord's intervals (Tidal's table; an unknown name is the root alone),
+-- | then each modifier pattern in turn, then one event per note. The
+-- | modifiers only shift octaves and pick by position, so they are applied
+-- | to the intervals and the root added after, which is the same.
+chord
+  :: forall a
+   . TidalEnum a
+  => TPat a
+  -> TPat String
+  -> Array (TPat Modifiers)
+  -> Pattern a
+chord root name mods = uncollect do
+  n <- tpatToPattern root
+  nm <- tpatToPattern name
+  intervals <- foldl applyMods (pure (fromMaybe [ 0 ] (lookupTidalChord nm))) (map tpatToPattern mods)
+  pure (map (\i -> addSemitones i n) intervals)
+  where
+  applyMods pat modsP = do
+    ivs <- pat
+    Modifiers ms <- modsP
+    pure (applyModifiers ms ivs)
 
 evalTPat :: forall a. TidalEnum a => TPat a -> Pattern a
 evalTPat = tpatToPattern

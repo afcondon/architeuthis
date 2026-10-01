@@ -10,10 +10,12 @@ module Tidal.Parse.Numbers
   ( pVocable
   , pDouble
   , pNote
+  , pNoteWithoutChord
   , parseIntNote
   , pRatio
   , intOrFloat
   , parseNote
+  , parseModifiers
   ) where
 
 import Prelude
@@ -30,6 +32,7 @@ import Text.Parsing.Parser (ParserT, fail)
 import Text.Parsing.Parser.Combinators as PC
 import Text.Parsing.Parser.String (char, satisfy)
 import Text.Parsing.Parser.Token (digit, letter)
+import Tidal.Chords (Modifier(..))
 
 type P = ParserT String Identity
 
@@ -49,12 +52,14 @@ pDouble = do
 
 -- | `pNoteWithoutChord`'s atom, then `pNote`'s ratio fallback.
 pNote :: P Number
-pNote = PC.try noteish <|> (toNumber <$> pRatio)
-  where
-  noteish = do
-    s <- sign
-    v <- (toNumber <$> intOrFloat) <|> parseNote
-    pure (s v)
+pNote = PC.try pNoteWithoutChord <|> (toNumber <$> pRatio)
+
+-- | `pNoteWithoutChord`'s atom: sign, then an int or float or a note name.
+pNoteWithoutChord :: P Number
+pNoteWithoutChord = do
+  s <- sign
+  v <- (toNumber <$> intOrFloat) <|> parseNote
+  pure (s v)
 
 -- | `parseIntNote`: as a note, but it must be whole.
 parseIntNote :: P Int
@@ -144,3 +149,13 @@ parseNote = do
   notenum = (char 'c' $> 0) <|> (char 'd' $> 2) <|> (char 'e' $> 4) <|> (char 'f' $> 5)
     <|> (char 'g' $> 7) <|> (char 'a' $> 9) <|> (char 'b' $> 11)
   modifier = (char 's' $> 1) <|> (char 'f' $> (-1)) <|> (char 'n' $> 0)
+
+-- | `parseModifiers`: `o`s (Open), `d` and a number (Drop), a number or
+-- | note (Range), `i` and a number (that many Inverts), or `i`s.
+parseModifiers :: P (Array Modifier)
+parseModifiers =
+  (map (const Open) <$> Array.some (char 'o'))
+    <|> (char 'd' *> (pure <<< Drop <$> pInteger))
+    <|> (pure <<< Range <$> parseIntNote)
+    <|> PC.try (char 'i' *> ((\n -> Array.replicate n Invert) <$> pInteger))
+    <|> (map (const Invert) <$> Array.some (char 'i'))

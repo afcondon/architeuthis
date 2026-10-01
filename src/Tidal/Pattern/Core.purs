@@ -74,6 +74,7 @@ module Tidal.Pattern.Core
   , fastGap
   , innerJoin
   , unwrap
+  , uncollect
   , patternify
   , rangeBy
   , chooseBy
@@ -147,6 +148,7 @@ import Tidal.Pattern.Types
   , applyLeft
   , applyRight
   , eventPart
+  , mapEventValue
   , floorDiv
   , floorMod
   , floorR
@@ -1045,6 +1047,12 @@ innerJoin pp = pattern \st@(State s) ->
   eventContext' = case _ of
     Digital e -> e.context
     Analog e -> e.context
+
+-- | Haskell Tidal's `uncollect`: an event holding a list becomes one event
+-- | per value, with the same whole and part (how a chord sounds).
+uncollect :: forall a. Pattern (Array a) -> Pattern a
+uncollect pat = pattern \st ->
+  Array.concatMap (\e -> map (\v -> mapEventValue (const v) e) (eventValue e)) (query pat st)
 
 -- | Haskell Tidal's `unwrap`; also this library's `bind`.
 unwrap :: forall a. Pattern (Pattern a) -> Pattern a

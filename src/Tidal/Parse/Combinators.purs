@@ -20,7 +20,9 @@ module Tidal.Parse.Combinators
     -- * Sequence and parts
   , pSequence
   , pPart
+  , pPartWith
   , pSingle
+  , pSingleWith
     -- * Atoms
   , pAtom
   , pSilence
@@ -208,21 +210,30 @@ pSequence = defer \_ -> do
       Just _ -> false
 
 -- | A part: Haskell's `pPart`, `(pSingle <|> pPolyIn <|> pPolyOut <|> pVar)
--- | >>= pE >>= pRand`.
+-- | >>= pE >>= pRand`, with the type's own atom parser.
 pPart :: forall a. AtomParseable a => TidalParser (TPat a)
-pPart = defer \_ ->
-  ((pSingle <|> pPolyIn <|> pPolyOut <|> pVar) >>= pE) >>= pRand
+pPart = defer \_ -> pPartWith patternParser
 
--- | An atom or a rest, then `?` and `*`/`/`: Haskell's `pSingle`, with its
--- | `parseRest`: a `-` is a negative sign when what follows it (after any
--- | spaces) is not another `-` and parses as an atom; otherwise a rest.
+-- | `pPart` over a given atom parser, as Haskell's `pPart f`: how a chord's
+-- | root, name and modifiers are each a whole part (`<c e>'<major minor>`).
+pPartWith :: forall a. AtomParseable a => TidalParser (TPat a) -> TidalParser (TPat a)
+pPartWith f = defer \_ ->
+  ((pSingleWith f <|> pPolyIn <|> pPolyOut <|> pVar) >>= pE) >>= pRand
+
+-- | An atom or a rest, then `?` and `*`/`/`: Haskell's `pSingle`.
 pSingle :: forall a. AtomParseable a => TidalParser (TPat a)
-pSingle = defer \_ -> (restOrAtom >>= pRand) >>= pMult
+pSingle = defer \_ -> pSingleWith patternParser
+
+-- | `pSingle` over a given atom parser, with Haskell's `parseRest`: a `-`
+-- | is a negative sign when what follows it (after any spaces) is not
+-- | another `-` and parses as an atom; otherwise a rest.
+pSingleWith :: forall a. TidalParser (TPat a) -> TidalParser (TPat a)
+pSingleWith f = defer \_ -> (restOrAtom >>= pRand) >>= pMult
   where
     restOrAtom =
-      tryT (liftP (PC.lookAhead (char '-' *> skipSpaces *> noneOf [ '-' ])) *> patternParser)
+      tryT (liftP (PC.lookAhead (char '-' *> skipSpaces *> noneOf [ '-' ])) *> f)
         <|> dash
-        <|> patternParser
+        <|> f
         <|> tilde
     dash = do
       Tuple span _ <- spanned (liftP (char '-'))

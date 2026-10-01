@@ -40,7 +40,9 @@ import Data.String as String
 import Data.String.CodeUnits as CU
 import Data.Tuple (Tuple(..))
 import Tidal.Controls (Control, Kind(..), controlFromMini, controls, keepLeft, keepRight)
-import Tidal.Pattern.Core (fast, rev, slow)
+import Tidal.Eval.Interpret (timeParam)
+import Tidal.Parse.Parser (parseTPat)
+import Tidal.Pattern.Core (fast, innerJoin, rev, slow)
 import Tidal.Pattern.Types (ControlPattern, silence)
 
 -- | What a block asks for.
@@ -203,14 +205,17 @@ atom tokens = case uncons tokens of
 data Value
   = VPattern ControlPattern
   | VString String
-  | VNumber Number Rational
+  -- A number, exact, and whether it is pure as Tidal's would be: a literal
+  -- or a negation is (`pureValue`), the result of `+ - * /` is not, since
+  -- Tidal computes those with liftA2. It decides how `fast` applies it.
+  | VNumber Number Rational Boolean
   | VFunction String (Value -> Either String Value)
 
 kindName :: Value -> String
 kindName = case _ of
   VPattern _ -> "a control pattern"
   VString _ -> "a string"
-  VNumber _ _ -> "a number"
+  VNumber _ _ _ -> "a number"
   VFunction name _ -> "the function " <> name
 
 asPattern :: Value -> Either String ControlPattern
@@ -218,16 +223,6 @@ asPattern = case _ of
   VPattern p -> Right p
   VString s -> Left ("the string " <> show s <> " is not a control pattern; did you mean s " <> show s <> "?")
   other -> Left (kindName other <> " is not a control pattern")
-
--- | A time argument, as `fast` and `slow` take one. Tidal patterns these; a
--- | constant is all this reads so far, and a pattern is refused by name.
-asTime :: String -> Value -> Either String Rational
-asTime fn = case _ of
-  VNumber _ r -> Right r
-  VString s -> case exactNumber (trim s) of
-    Just r -> Right r
-    Nothing -> Left ("a patterned argument to " <> fn <> " (" <> show s <> ") is not supported yet")
-  other -> Left (fn <> " wants a number, not " <> kindName other)
 
 -- | A decimal literal as an exact rational: `1.25` is 5/4, not a float.
 exactNumber :: String -> Maybe Rational
@@ -249,7 +244,7 @@ function = VFunction
 controlFunction :: Control -> Value
 controlFunction k = function k.name case _ of
   VString src -> VPattern <$> miniControl k src
-  VNumber x _ -> case k.kind of
+  VNumber x _ _ -> case k.kind of
     KString -> Left (k.name <> " wants a string, not a number")
     KSound -> Left (k.name <> " wants a string, not a number")
     _ -> map VPattern (miniControl k (show' x))
@@ -264,10 +259,18 @@ miniControl = controlFromMini
 transform :: String -> (ControlPattern -> ControlPattern) -> Value
 transform name f = function name \v -> VPattern <<< f <$> asPattern v
 
+-- | A function of time, as `fast` and `slow`: Tidal's `patternify`. A pure
+-- | number applies directly; an impure one (`3/2`) through `innerJoin`,
+-- | which divides events at cycle boundaries as Tidal's does; a string is
+-- | mini-notation of rationals (`"<1 2>"`), constant or patterned.
 timeTransform :: String -> (Rational -> ControlPattern -> ControlPattern) -> Value
-timeTransform name f = function name \t -> do
-  r <- asTime name t
-  pure (transform name (f r))
+timeTransform name f = function name case _ of
+  VNumber _ r true -> Right (transform name (f r))
+  VNumber _ r false -> Right (transform name \p -> innerJoin (map (\r' -> f r' p) (pure r)))
+  VString src -> case parseTPat src of
+    Right tpat -> Right (transform name (timeParam f tpat))
+    Left err -> Left (name <> ": mini-notation " <> show src <> ": " <> show err)
+  other -> Left (name <> " wants a time, not " <> kindName other)
 
 -- | Every name the language knows, controls included.
 functions :: Array (Tuple String Value)
@@ -294,7 +297,7 @@ eval = case _ of
   ENumber text -> number text
   EString s -> Right (VString s)
   ENegate e -> eval e >>= case _ of
-    VNumber x r -> Right (VNumber (negate x) (negate r))
+    VNumber x r p -> Right (VNumber (negate x) (negate r) p)
     other -> Left ("cannot negate " <> kindName other)
   EApp f x -> do
     fv <- eval f
@@ -314,7 +317,7 @@ eval = case _ of
     binary op av bv
   where
   number text = case exactNumber text, Number.fromString text of
-    Just r, Just x -> Right (VNumber x r)
+    Just r, Just x -> Right (VNumber x r true)
     _, _ -> Left ("cannot read the number " <> text)
 
 applyValue :: Value -> Value -> Either String Value
@@ -327,10 +330,10 @@ binary op a b = case op, a, b of
   "#", _, _ -> both keepRight
   "|>", _, _ -> both keepRight
   "|<", _, _ -> both keepLeft
-  "+", VNumber x r, VNumber y s -> Right (VNumber (x + y) (r + s))
-  "-", VNumber x r, VNumber y s -> Right (VNumber (x - y) (r - s))
-  "*", VNumber x r, VNumber y s -> Right (VNumber (x * y) (r * s))
-  "/", VNumber x r, VNumber y s -> Right (VNumber (x / y) (r / s))
+  "+", VNumber x r _, VNumber y s _ -> Right (VNumber (x + y) (r + s) false)
+  "-", VNumber x r _, VNumber y s _ -> Right (VNumber (x - y) (r - s) false)
+  "*", VNumber x r _, VNumber y s _ -> Right (VNumber (x * y) (r * s) false)
+  "/", VNumber x r _, VNumber y s _ -> Right (VNumber (x / y) (r / s) false)
   _, _, _ -> Left (op <> " on " <> kindName a <> " and " <> kindName b <> " is not supported yet")
   where
   both f = do
@@ -354,7 +357,7 @@ parseLine text = do
     Just { head: TName "setcps", tail } -> do
       v <- whole tail >>= eval
       case v of
-        VNumber x _ -> Right (SetCps x)
+        VNumber x _ _ -> Right (SetCps x)
         VString s | Just r <- exactNumber (trim s) -> Right (SetCps (Rational.toNumber r))
         other -> Left ("setcps wants a number, not " <> kindName other)
     Just { head: TName name, tail } | Just n <- stream name -> do

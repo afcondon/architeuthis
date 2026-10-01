@@ -3,11 +3,8 @@
 -- | Each `plays` case is a line as typed in Limulus; its events, over the
 -- | arc given, were rendered by GHCi running Tidal 1.10.1 with
 -- | `test/ghci/render.hs` (`render (<expression>) from to`), in the same form
--- | `Test.ControlSpec` renders ours. What is compared is what would be
--- | PLAYED: the events whose onset is in the arc, as whole and values. How a
--- | query divides an event into fragments (Tidal splits at cycle
--- | boundaries; ours does not yet) is mini-notation detail, held to Tidal by
--- | its own suite. Event order is not compared either.
+-- | `Test.ControlSpec` renders ours. The event lists must be equal,
+-- | fragments and all; their order is not compared.
 -- |
 -- | `refusals` are lines the language must refuse, by name, rather than play
 -- | something else.
@@ -15,12 +12,11 @@ module Test.LineSpec (runLineTests) where
 
 import Prelude
 
-import Data.Array (filter, length, mapMaybe, sort)
+import Data.Array (filter, length, sort)
 import Data.Either (Either(..))
 import Data.Maybe (Maybe(..))
 import Data.Rational (fromInt)
-import Data.String (Pattern(..), contains, split)
-import Data.String.CodeUnits (takeWhile)
+import Data.String (Pattern(..), contains)
 import Data.Traversable (for)
 import Effect (Effect)
 import Effect.Console (log)
@@ -58,12 +54,17 @@ plays =
       , want: [ "0-2/3|0-2/3|s=\"bd\"", "2/3-4/3|2/3-1|s=\"bd\"", "2/3-4/3|1-4/3|s=\"bd\"", "4/3-2|4/3-2|s=\"bd\"" ] },
     { line: "d16 $ s \"bd:3 hh:1\" # n 2", stream: 16, from: 0, to: 1
       , want: [ "0-1/2|0-1/2|n=n2.000,s=\"bd\"", "1/2-1|1/2-1|n=n2.000,s=\"hh\"" ] }
+  , { line: "d1 $ fast \"<1 2>\" $ s \"bd sn\"", stream: 1, from: 0, to: 2
+      , want: [ "0-1/2|0-1/2|s=\"bd\"", "1/2-1|1/2-1|s=\"sn\"", "1-5/4|1-5/4|s=\"bd\"", "3/2-7/4|3/2-7/4|s=\"bd\"", "5/4-3/2|5/4-3/2|s=\"sn\"", "7/4-2|7/4-2|s=\"sn\"" ] }
+  , { line: "d1 $ fast (1+0.5) $ s \"bd\"", stream: 1, from: 0, to: 2
+      , want: [ "0-2/3|0-2/3|s=\"bd\"", "2/3-4/3|2/3-1|s=\"bd\"", "2/3-4/3|1-4/3|s=\"bd\"", "4/3-2|4/3-2|s=\"bd\"" ] }
+  , { line: "d1 $ slow \"1 2\" $ s \"bd*4\"", stream: 1, from: 0, to: 2
+      , want: [ "0-1/4|0-1/4|s=\"bd\"", "1/4-1/2|1/4-1/2|s=\"bd\"", "1-5/4|1-5/4|s=\"bd\"", "5/4-3/2|5/4-3/2|s=\"bd\"", "1/2-1|1/2-1|s=\"bd\"", "3/2-2|3/2-2|s=\"bd\"" ] }
   ]
 
 refusals :: Array { line :: String, says :: String }
 refusals =
   [ { line: "d1 $ s \"bd\" # foo \"1\"", says: "unknown name foo" }
-  , { line: "d1 $ fast \"<1 2>\" $ s \"bd\"", says: "not supported yet" }
   , { line: "d1 $ n \"0 zz\"", says: "mini-notation" }
   , { line: "d17 $ s \"bd\"", says: "starts with d1..d16" }
   , { line: "d1 $ s \"bd\" # n \"1\" . rev", says: "cannot mix" }
@@ -81,8 +82,8 @@ runLineTests = do
   played <- for plays \c -> check c.line case parseLine c.line of
     Right (Play n p) | n == c.stream ->
       let
-        got = played (map render (queryArc p (fromInt c.from) (fromInt c.to)))
-        want = played c.want
+        got = sort (map render (queryArc p (fromInt c.from) (fromInt c.to)))
+        want = sort c.want
       in
         if got == want then Nothing else Just ("got " <> show got <> "\n       want " <> show want)
     Right _ -> Just "not a Play on that stream"
@@ -105,11 +106,6 @@ runLineTests = do
   let failed = length (filter not (played <> refused <> commands))
   when (failed > 0) $ throw (show failed <> " line language test(s) failed")
   where
-  -- `whole|part|values` to `whole|values`, onsets only, sorted.
-  played = sort <<< mapMaybe \r -> case split (Pattern "|") r of
-    [ whole, part, values ]
-      | takeWhile (_ /= '-') whole == takeWhile (_ /= '-') part -> Just (whole <> "|" <> values)
-    _ -> Nothing
   check line = case _ of
     Nothing -> log ("  ok   " <> line) $> true
     Just why -> do
