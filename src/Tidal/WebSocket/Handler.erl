@@ -1917,10 +1917,12 @@ odonus_line(Line) ->
         {left, Reason} ->
             <<"ERR: odonus: ", Reason/binary>>;
         {right, Move} ->
-            case whereis(reef_voice) of
-                undefined ->
+            case {whereis(reef_voice), unreadable_harmony(Move)} of
+                {_, {bad, Why}} ->
+                    <<"ERR: odonus: ", Why/binary>>;
+                {undefined, ok} ->
                     <<"ERR: odonus: no Odonus voice is running (start Odonus from Triggerfish)">>;
-                Pid ->
+                {Pid, ok} ->
                     Pid ! {move, Move},
                     N = array:size('reef_move@ps':inputsOf(Move)),
                     iolist_to_binary(io_lib:format("OK: odonus (~p gestures)", [N]))
@@ -1929,6 +1931,19 @@ odonus_line(Line) ->
         Class:Why ->
             iolist_to_binary(io_lib:format("ERR: odonus: ~p:~p", [Class, Why]))
     end.
+
+%% A `harmony "..."` pattern is read by Littorina on each step, which treats
+%% one it cannot parse as a rest; refuse it here instead, with Tidal's reason.
+unreadable_harmony(Move) ->
+    Texts = [T || I <- array:to_list('reef_move@ps':inputsOf(Move)),
+                  #{tag := <<"SetHarmony">>, txt := {just, T}} <- ['reef_input@ps':toWire(I)]],
+    lists:foldl(fun(T, ok) ->
+                        case 'tidal_harmony@ps':parseHarmony(T) of
+                            {left, Why} -> {bad, Why};
+                            {right, _} -> ok
+                        end;
+                   (_, Bad) -> Bad
+                end, ok, Texts).
 
 tidal_pattern_line(Block) ->
     try ('tidal_line@ps':parseLine(Block)) of

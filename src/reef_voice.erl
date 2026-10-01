@@ -319,7 +319,12 @@ drain(St, Step, Horizon, AnchorUs, BeatAtAnchor, Tempo) ->
             Sim0 = lists:foldl(
                      fun({_T, I}, S) -> ('reef_input@ps':applyInput(I))(S) end,
                      maps:get(sim, St), Due),
-            Res = 'reef_engine@ps':stepTick(Sim0),
+            %% HARMONY: if Odonus has a Tidal harmony pattern, the chord overlay
+            %% follows Littorina's reading of it at this step's cycle position
+            %% (four beats to the cycle), the same call Triggerfish makes.
+            Quarters = round(StepBeats * 4),
+            Sampler = fun(Txt) -> 'tidal_harmony@ps':harmonySampler(Step * Quarters, 16, Txt) end,
+            Res = 'reef_engine@ps':stepTick('reef_engine@ps':followHarmony(Sampler, Sim0)),
             Sim1 = maps:get(sim, Res),
             Odo1 = maps:get(odo, Sim1),
             Fired = array:to_list(maps:get(fired, Res)),
