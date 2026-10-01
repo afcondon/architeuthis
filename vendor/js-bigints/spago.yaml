@@ -1,0 +1,8 @@
+# purerl port of js-bigints 2.2.1 (see src/JS/BigInt.purs). Built only as a
+# path package of a purerl workspace; on JS, use the registry's js-bigints.
+package:
+  name: js-bigints
+  dependencies:
+    - integers
+    - maybe
+    - prelude

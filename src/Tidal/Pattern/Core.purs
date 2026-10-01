@@ -114,7 +114,7 @@ import Data.Foldable (foldl)
 import Data.Rational (Rational, fromInt, toNumber)
 import Data.Tuple (Tuple(..), fst)
 import Partial.Unsafe (unsafeCrashWith)
-import Tidal.Pattern.Random (timeToRand)
+import Tidal.Pattern.Random (timeToRandAt)
 import Math (cos, floor, pi, sin, sqrt)
 import Tidal.Core.Types (Time)
 import Tidal.Notation (class Notation, toPattern)
@@ -973,7 +973,7 @@ ilogSaw = pattern \(State st) ->
 -- | `timeToRand` of the query's start, so it is a function of time alone.
 rand :: Pattern Number
 rand = pattern \(State st) ->
-  [ Analog { context: emptyContext, part: st.arc, value: timeToRand (arcStart st.arc) } ]
+  [ Analog { context: emptyContext, part: st.arc, value: timeToRandAt (arcStart st.arc) } ]
 
 -- | Haskell Tidal's `irand`: `floor (rand * n)`.
 irand :: Int -> Pattern Int

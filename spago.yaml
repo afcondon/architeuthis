@@ -32,6 +32,7 @@ package:
     - tuples
     - harmonia
     - reef
+    - js-bigints   # the purerl port, a workspace package (vendor/js-bigints)
   # Without this section spago compiles src/ only, and `make test` ran
   # whatever test modules were last compiled (2026-05-08) rather than test/.
   test:

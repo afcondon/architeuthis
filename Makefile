@@ -14,7 +14,7 @@
 #   make clean        - clean PureScript output
 #   make distclean    - clean everything including deps
 
-.PHONY: all deps ps erl erl-quick test run start clean distclean help
+.PHONY: all deps ps erl erl-quick test haskell-is-standalone oracle-prim run start clean distclean help
 
 # Default target
 all: erl
@@ -101,11 +101,22 @@ erl-quick:
 	@erlc -disable-feature maybe_expr -o ebin src/selene_pattern_voice.erl
 
 # Run tests
-test: erl
+test: erl haskell-is-standalone
 	@echo "==> Running tests..."
 	ERL_LIBS="_build/default/lib" erl -pa ebin -noshell \
 		-eval 'F = test_main@ps:main(), F()' \
 		-s init stop
+
+# The reference-semantics types (src/Haskell/*) know nothing of Tidal, so
+# that they can leave for their own package the day a second port needs them.
+haskell-is-standalone:
+	@! grep -rn "^import Tidal" src/Haskell || (echo "src/Haskell must not import Tidal.*" && false)
+
+# Regenerate test/Test/Oracle/HaskellPrimGolden.purs by asking GHC (and Tidal's
+# Sound.Tidal.UI), from the GHC that Limulus boots. Needs ../limulus/ghc-tidal.
+oracle-prim:
+	../limulus/ghc-tidal/bin/runghc test/oracle/haskell-prim.hs \
+		< test/oracle/haskell-prim.txt > test/Test/Oracle/HaskellPrimGolden.purs
 
 # EUnit tests for the hand-written Erlang modules (the PureScript suite
 # above cannot reach them). Currently the step-window clamp, whose
