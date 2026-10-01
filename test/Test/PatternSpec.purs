@@ -461,12 +461,12 @@ runToussaintTests = do
     1
     [{ sample: "bd", start: 0.0, stop: 0.25 }]
 
-  -- E(2,3) = [1,0,1] - triadic rhythm
+  -- E(2,3) = [1,1,0] in Tidal's Bjorklund (GHCi, Tidal 1.10.1)
   testPattern "bd(2,3)"
     "E(2,3) - triadic"
     2
     [ { sample: "bd", start: 0.0, stop: 0.333 }
-    , { sample: "bd", start: 0.666, stop: 1.0 }
+    , { sample: "bd", start: 0.333, stop: 0.666 }
     ]
 
   -- E(2,5) = [1,0,1,0,0] - Persian rhythm (khafif-e-ramal)
@@ -477,13 +477,13 @@ runToussaintTests = do
     , { sample: "bd", start: 0.4, stop: 0.6 }
     ]
 
-  -- E(3,4) = [1,1,0,1] - hits at 0,1,3
+  -- E(3,4) = [1,1,1,0] in Tidal's Bjorklund (GHCi, Tidal 1.10.1)
   testPattern "bd(3,4)"
     "E(3,4) - three of four"
     3
     [ { sample: "bd", start: 0.0, stop: 0.25 }
     , { sample: "bd", start: 0.25, stop: 0.5 }
-    , { sample: "bd", start: 0.75, stop: 1.0 }
+    , { sample: "bd", start: 0.5, stop: 0.75 }
     ]
 
   -- E(3,5) = [1,0,1,0,1] - Persian rhythm (khafif-e-ramal variant)
@@ -524,15 +524,15 @@ runToussaintTests = do
     , { sample: "bd", start: 0.666, stop: 0.777 }
     ]
 
-  -- E(5,6) = [1,1,1,0,1,1] - hits at 0,1,2,4,5
+  -- E(5,6) = [1,1,1,1,1,0] in Tidal's Bjorklund (GHCi, Tidal 1.10.1)
   testPattern "bd(5,6)"
     "E(5,6) - five of six"
     5
     [ { sample: "bd", start: 0.0, stop: 0.166 }
     , { sample: "bd", start: 0.166, stop: 0.333 }
     , { sample: "bd", start: 0.333, stop: 0.5 }
+    , { sample: "bd", start: 0.5, stop: 0.666 }
     , { sample: "bd", start: 0.666, stop: 0.833 }
-    , { sample: "bd", start: 0.833, stop: 1.0 }
     ]
 
   -- E(5,7) = [1,0,1,1,0,1,1] - hits at 0,2,3,5,6
@@ -560,7 +560,7 @@ runToussaintTests = do
     , { sample: "bd", start: 0.75, stop: 0.875 }
     ]
 
-  -- E(7,8) = [1,1,1,1,0,1,1,1] - seven of eight with gap at position 4
+  -- E(7,8) = [1,1,1,1,1,1,1,0] in Tidal's Bjorklund (GHCi, Tidal 1.10.1)
   testPattern "bd(7,8)"
     "E(7,8) - seven of eight"
     7
@@ -568,9 +568,9 @@ runToussaintTests = do
     , { sample: "bd", start: 0.125, stop: 0.25 }
     , { sample: "bd", start: 0.25, stop: 0.375 }
     , { sample: "bd", start: 0.375, stop: 0.5 }
+    , { sample: "bd", start: 0.5, stop: 0.625 }
     , { sample: "bd", start: 0.625, stop: 0.75 }
     , { sample: "bd", start: 0.75, stop: 0.875 }
-    , { sample: "bd", start: 0.875, stop: 1.0 }
     ]
 
   log ""

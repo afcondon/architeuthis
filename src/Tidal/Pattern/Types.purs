@@ -39,6 +39,11 @@ module Tidal.Pattern.Types
   , applyRight
   , subArc
   , wholeOrPart
+  , sect
+  , cycleArcsInArc
+  , floorDiv
+  , floorMod
+  , floorR
     -- * Values for control patterns
   , Value(..)
   , Note(..)
@@ -55,14 +60,14 @@ module Tidal.Pattern.Types
 
 import Prelude
 
-import Data.Array (concatMap, filter, mapMaybe, range, reverse) as Array
+import Data.Array (concatMap, cons, filter, mapMaybe, range, reverse) as Array
 import Data.Int as Int
 import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Newtype (class Newtype)
 import Data.Rational (Rational, fromInt, toNumber)
-import Data.Rational (fromInt, toNumber) as Rational
+import Data.Rational (denominator, fromInt, numerator, toNumber) as Rational
 import Tidal.Core.Types (Time, SourceSpan, emptySpan, Seed, ControlName)
 
 -------------------------------------------------------------------------------
@@ -240,10 +245,14 @@ instance tidalEnumNote :: TidalEnum Note where
     | otherwise = map mkNote (Array.reverse (Array.range to from))
 
 -- | Number enumeration: step by 1.0
+-- | Haskell's `[a .. b]` for Doubles (`numericEnumFromTo`): steps of one
+-- | from a while at most b + 1/2; descending, the reverse of b's.
 instance tidalEnumNumber :: TidalEnum Number where
   enumRange from to
-    | from <= to = map Int.toNumber (Array.range (Int.floor from) (Int.floor to))
-    | otherwise = Array.reverse $ map Int.toNumber (Array.range (Int.floor to) (Int.floor from))
+    | from <= to = upTo from
+        where
+        upTo x = if x > to + 0.5 then [] else Array.cons x (upTo (x + 1.0))
+    | otherwise = Array.reverse (enumRange to from)
 
 -- | String: no meaningful enumeration
 instance tidalEnumString :: TidalEnum String where
@@ -389,71 +398,39 @@ instance monadPattern :: Monad Pattern
 -- Internal: Applicative implementation
 -------------------------------------------------------------------------------
 
--- | Pure pattern - constant value repeating every cycle
+-- | Pure pattern: the value once per cycle, as Haskell Tidal's `pure`. The
+-- | part is the cycle intersected with the query, zero-width when the query
+-- | is (Tidal's zero-width queries find the event at that instant).
 purePattern :: forall a. a -> Pattern a
 purePattern v = Pattern \(State { arc: queryArc }) ->
-  Array.concatMap (mkEvent v queryArc) (cycleArcsInArc queryArc)
-  where
-    mkEvent :: a -> Arc -> Arc -> Array (Event a)
-    mkEvent val qArc cycleArc =
-      case sectArc qArc cycleArc of
-        Nothing -> []
-        Just part ->
-          [ Digital { context: emptyContext, whole: cycleArc, part, value: val } ]
+  map
+    (\cycleArc -> Digital { context: emptyContext, whole: cycleArc, part: sect queryArc cycleArc, value: v })
+    (cycleArcsInArc queryArc)
 
--- | Default applicative: structure from both sides
+-- | Structure from both sides: Haskell Tidal's `<*>` (`applyPatToPatBoth`).
+-- | Digital function events meet digital values over the function's whole;
+-- | analog ones meet every value over their part; analog values meet
+-- | digital functions over theirs. Wholes are intersected (`Nothing` if
+-- | either is analog), parts by `subArc`.
 applyPatternBoth :: forall a b. Pattern (a -> b) -> Pattern a -> Pattern b
 applyPatternBoth (Pattern pf) (Pattern px) = Pattern \st ->
   let
-    -- Get function events
-    fEvents = pf st
-    -- For each function event, find matching value events
-    applyOne :: Event (a -> b) -> Array (Event b)
-    applyOne fe = case fe of
-      -- Analog function: query values for the part
-      Analog f ->
-        let xEvents = px (setState st f.part)
-        in Array.concatMap (combineAnalog f) xEvents
-      -- Digital function: query values for the whole
-      Digital f ->
-        let xEvents = filterDigital $ px (setState st f.whole)
-        in Array.concatMap (combineDigital f) xEvents
-  in Array.concatMap applyOne fEvents
+    at arc = setArc st arc
+    match ef = case ef of
+      Analog f -> Array.mapMaybe (withFX ef) (px (at f.part))
+      Digital f -> Array.mapMaybe (withFX ef) (Array.filter isDigital (px (at f.whole)))
+    matchX ex = Array.mapMaybe (\ef -> withFX ef ex) (Array.filter isDigital (pf (at (eventPart ex))))
+  in
+    Array.concatMap match (pf st) <> Array.concatMap matchX (Array.filter isAnalog (px st))
   where
-    setState (State s) arc = State s { arc = arc }
-
-    filterDigital :: Array (Event a) -> Array (Event a)
-    filterDigital = Array.filter isDigital
-
-    combineAnalog :: forall x y. { context :: Context, part :: Arc, value :: x -> y }
-                  -> Event x -> Array (Event y)
-    combineAnalog f xe = case sectArc f.part (eventPart xe) of
-      Nothing -> []
-      Just part ->
-        [ Analog
-            { context: f.context <> eventContext xe
-            , part
-            , value: f.value (eventValue xe)
-            }
-        ]
-
-    combineDigital :: forall x y.
-      { context :: Context, whole :: Arc, part :: Arc, value :: x -> y }
-      -> Event x -> Array (Event y)
-    combineDigital f (Digital x) =
-      case sectArc f.whole x.whole of
-        Nothing -> []
-        Just whole' -> case sectArc f.part x.part of
-          Nothing -> []
-          Just part' ->
-            [ Digital
-                { context: f.context <> x.context
-                , whole: whole'
-                , part: part'
-                , value: f.value x.value
-                }
-            ]
-    combineDigital _ (Analog _) = [] -- Already filtered
+  withFX :: Event (a -> b) -> Event a -> Maybe (Event b)
+  withFX ef ex = do
+    part <- subArc (eventPart ef) (eventPart ex)
+    let context = eventContext ef <> eventContext ex
+        value = eventValue ef (eventValue ex)
+    case eventWhole ef, eventWhole ex of
+      Just wf, Just wx -> subArc wf wx <#> \whole -> Digital { context, whole, part, value }
+      _, _ -> Just (Analog { context, part, value })
 
 eventContext :: forall a. Event a -> Context
 eventContext (Digital e) = e.context
@@ -500,46 +477,22 @@ rebuild e part context value = case e of
 -- Internal: Monad implementation (unwrap/join)
 -------------------------------------------------------------------------------
 
--- | Bind for patterns - structure from both outer and inner
+-- | Bind is Haskell Tidal's `unwrap`: each outer event's part queries the
+-- | inner pattern; wholes are intersected (`Nothing` if either is analog),
+-- | parts by `subArc`.
 bindPattern' :: forall a b. Pattern a -> (a -> Pattern b) -> Pattern b
-bindPattern' (Pattern pa) f = Pattern \st ->
-  let
-    outerEvents = pa st
-    processOuter :: Event a -> Array (Event b)
-    processOuter oe = case oe of
-      Analog o ->
-        let innerPat = f o.value
-            innerEvents = query innerPat (setState st o.part)
-        in Array.concatMap (mungeAnalog o) innerEvents
-      Digital o ->
-        let innerPat = f o.value
-            innerEvents = query innerPat (setState st o.part)
-        in Array.concatMap (mungeDigital o) innerEvents
-  in Array.concatMap processOuter outerEvents
+bindPattern' (Pattern pa) f = Pattern \st@(State s) ->
+  Array.concatMap
+    (\oe -> Array.mapMaybe (munge oe) (query (f (eventValue oe)) (State s { arc = eventPart oe })))
+    (pa st)
   where
-    setState (State s) arc = State s { arc = arc }
-
-    mungeAnalog :: { context :: Context, part :: Arc, value :: a }
-                -> Event b -> Array (Event b)
-    mungeAnalog o ie = case sectArc o.part (eventPart ie) of
-      Nothing -> []
-      Just part' -> case ie of
-        Analog i ->
-          [ Analog { context: o.context <> i.context, part: part', value: i.value } ]
-        Digital i ->
-          [ Analog { context: o.context <> i.context, part: part', value: i.value } ]
-
-    mungeDigital :: { context :: Context, whole :: Arc, part :: Arc, value :: a }
-                 -> Event b -> Array (Event b)
-    mungeDigital o ie = case sectArc o.part (eventPart ie) of
-      Nothing -> []
-      Just part' -> case ie of
-        Analog i ->
-          [ Digital { context: o.context <> i.context, whole: o.whole, part: part', value: i.value } ]
-        Digital i -> case sectArc o.whole i.whole of
-          Nothing -> []
-          Just whole' ->
-            [ Digital { context: o.context <> i.context, whole: whole', part: part', value: i.value } ]
+  munge oe ie = do
+    part <- subArc (eventPart oe) (eventPart ie)
+    let context = eventContext ie <> eventContext oe
+        value = eventValue ie
+    case eventWhole oe, eventWhole ie of
+      Just wo, Just wi -> subArc wo wi <#> \whole -> Digital { context, whole, part, value }
+      _, _ -> Just (Analog { context, part, value })
 
 -------------------------------------------------------------------------------
 -- Internal: Arc utilities
@@ -559,27 +512,41 @@ subArc (Arc x) (Arc y) =
     if endOf x || endOf y || s > e then Nothing
     else Just (Arc { start: s, stop: e })
 
--- | Intersect two arcs, returning Nothing if they don't overlap
-sectArc :: Arc -> Arc -> Maybe Arc
-sectArc (Arc a) (Arc b) =
-  let s = max a.start b.start
-      e = min a.stop b.stop
-  in if s < e then Just (Arc { start: s, stop: e }) else Nothing
-
--- | Get the cycle arcs that overlap with a given arc
--- |
--- | A cycle is the closed-open interval [n, n+1) for integer n. This
--- | returns the FULL cycle arc for each cycle that overlaps the query,
--- | NOT the cycle clipped to the query — atoms set their `whole` from
--- | this and rely on it spanning the real cycle so that scaleEventTime
--- | (under `fast`/`slow`/etc.) can scale to the correct event span.
+-- | The whole cycles a query touches, as Haskell Tidal's `cycleArcsInArc`:
+-- | none for a backwards arc, the cycle containing it for a zero-width one,
+-- | otherwise every cycle from the start's to the one before the end's
+-- | ceiling. Full cycles, not clipped: atoms take their whole from these.
 cycleArcsInArc :: Arc -> Array Arc
 cycleArcsInArc (Arc { start, stop }) =
-  let startCycle = sam start
-      go acc s =
-        if s >= stop then acc
-        else go (acc <> [Arc { start: s, stop: s + one }]) (s + one)
-  in go [] startCycle
+  if start > stop then []
+  else if start == stop then [ cycleOf (sam start) ]
+  else
+    let first = floorR start
+        lastC = ceilR stop - 1
+    in if lastC < first then [] else map (cycleOf <<< fromInt) (Array.range first lastC)
+  where
+  cycleOf c = Arc { start: c, stop: c + one }
+
+-- | Haskell's `sect`: the overlap of two arcs, possibly empty or backwards.
+sect :: Arc -> Arc -> Arc
+sect (Arc a) (Arc b) = Arc { start: max a.start b.start, stop: min a.stop b.stop }
+
+floorR :: Rational -> Int
+floorR r = floorDiv (Rational.numerator r) (Rational.denominator r)
+
+ceilR :: Rational -> Int
+ceilR r = negate (floorR (negate r))
+
+-- | Floor division. Not `div`: purs-backend-erl compiles Int `div` to
+-- | Erlang's, which truncates towards zero, so `-1 div 2` is 0 there.
+floorDiv :: Int -> Int -> Int
+floorDiv a b =
+  let q = Int.quot a b
+  in if Int.rem a b /= 0 && ((a < 0) /= (b < 0)) then q - 1 else q
+
+-- | The remainder to go with `floorDiv`: the sign of the divisor.
+floorMod :: Int -> Int -> Int
+floorMod a b = a - b * floorDiv a b
 
 -- | Get the start of the cycle containing this time
 -- | (equivalent to floor for positive, needs care for negative)

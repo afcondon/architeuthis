@@ -40,7 +40,6 @@ import Data.String as String
 import Data.String.CodeUnits as CU
 import Data.Tuple (Tuple(..))
 import Tidal.Controls (Control, Kind(..), controlFromMini, controls, keepLeft, keepRight)
-import Tidal.Parse.Parser (parse)
 import Tidal.Pattern.Core (fast, rev, slow)
 import Tidal.Pattern.Types (ControlPattern, silence)
 
@@ -258,11 +257,9 @@ controlFunction k = function k.name case _ of
   where
   show' x = if Int.toNumber (Int.round x) == x then show (Int.round x) else show x
 
--- | Mini-notation read at a control's kind, every atom checked.
+-- | Mini-notation read at a control's type, as Tidal reads it.
 miniControl :: Control -> String -> Either String ControlPattern
-miniControl k src = case parse src of
-  Left err -> Left ("mini-notation " <> show src <> ": " <> show err)
-  Right tpat -> note (k.name <> " cannot read every value in " <> show src) (controlFromMini k tpat)
+miniControl = controlFromMini
 
 transform :: String -> (ControlPattern -> ControlPattern) -> Value
 transform name f = function name \v -> VPattern <<< f <$> asPattern v

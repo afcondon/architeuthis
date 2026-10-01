@@ -64,6 +64,23 @@ module Tidal.Pattern.Core
   , ilogSaw
   , rand
   , irand
+    -- * Haskell Tidal's machinery
+  , withResultArc
+  , withResultTime
+  , withQueryTime
+  , splitQueries
+  , arcCyclesZW
+  , timeCat
+  , fastGap
+  , innerJoin
+  , unwrap
+  , patternify
+  , rangeBy
+  , chooseBy
+  , degradeByUsing
+  , euclid
+  , euclidOff
+  , bjorklund
     -- * Filtering and selection
   , filterEvents
   , filterDigital
@@ -92,7 +109,11 @@ import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Number as Number
 import Data.Ord (comparing)
+import Data.Foldable (foldl)
 import Data.Rational (Rational, fromInt, toNumber)
+import Data.Tuple (Tuple(..), fst)
+import Partial.Unsafe (unsafeCrashWith)
+import Tidal.Pattern.Random (timeToRand)
 import Math (cos, floor, pi, sin, sqrt)
 import Tidal.Core.Types (Time)
 import Tidal.Notation (class Notation, toPattern)
@@ -123,6 +144,13 @@ import Tidal.Pattern.Types
   , Event(..)
   , Pattern
   , State(..)
+  , applyLeft
+  , applyRight
+  , eventPart
+  , floorDiv
+  , floorMod
+  , floorR
+  , subArc
   , arcStart
   , arcStop
   , emptyContext
@@ -163,22 +191,13 @@ floorTime t = fromInt (Int.floor (toNumber t))
 -- Time manipulation
 -------------------------------------------------------------------------------
 
--- | Speed up a pattern by a factor
--- |
--- | `fast 2 p` plays pattern `p` twice as fast
--- | `fast 0.5 p` plays at half speed (same as `slow 2 p`)
+-- | Speed up a pattern by a factor: Haskell Tidal's `_fast`. A negative
+-- | rate reverses the fast pattern (`rev (fast r p)`, not `fast r (rev p)`).
 fast :: forall a. Rational -> Pattern a -> Pattern a
 fast rate pat
   | rate == zero = silence
-  | rate < zero = fast (negate rate) (rev pat)
-  | otherwise = pattern \(State st) ->
-      let
-        -- Query a larger arc (scaled by rate)
-        scaledArc = scaleArc rate st.arc
-        events = query pat (State st { arc = scaledArc })
-      in
-        -- Scale the results back
-        map (scaleEventTime (one / rate)) events
+  | rate < zero = rev (fast (negate rate) pat)
+  | otherwise = withResultTime (_ / rate) (withQueryTime (_ * rate) pat)
 
 -- | Slow down a pattern by a factor
 -- |
@@ -187,22 +206,6 @@ slow :: forall a. Rational -> Pattern a -> Pattern a
 slow rate pat
   | rate == zero = silence
   | otherwise = fast (one / rate) pat
-
--- | Scale an arc's times by a factor
-scaleArc :: Rational -> Arc -> Arc
-scaleArc factor (Arc { start, stop }) =
-  Arc { start: start * factor, stop: stop * factor }
-
--- | Scale an event's times by a factor
-scaleEventTime :: forall a. Rational -> Event a -> Event a
-scaleEventTime factor = case _ of
-  Digital e -> Digital e
-    { whole = scaleArc factor e.whole
-    , part = scaleArc factor e.part
-    }
-  Analog e -> Analog e
-    { part = scaleArc factor e.part
-    }
 
 -- | Rotate a pattern left (earlier) in time
 -- |
@@ -286,85 +289,58 @@ shiftEventTime t = case _ of
 shiftArc :: Time -> Arc -> Arc
 shiftArc t (Arc { start, stop }) = Arc { start: start + t, stop: stop + t }
 
--- | Reverse a pattern within each cycle
+-- | Reverse each cycle: Haskell Tidal's `rev`. The query is split by cycle
+-- | and mirrored about the cycle's middle; an event's whole keeps its
+-- | offsets from its part, so a fragment of a longer event stays one.
 rev :: forall n a. Notation n a => n -> Pattern a
-rev notation = pattern \(State st) ->
+rev notation = splitQueries $ pattern \(State st) ->
   let
     pat = toPattern notation
-    -- Split query into per-cycle queries
-    cycleArcs = splitArcByCycles st.arc
-
-    processOneCycle :: Arc -> Array (Event a)
-    processOneCycle cycleArc =
-      let
-        -- Mirror the query arc within the cycle
-        cyc = sam (arcStart cycleArc)
-        mirrorTime t = cyc + (one - (t - cyc))
-        mirroredArc = Arc
-          { start: mirrorTime (arcStop cycleArc)
-          , stop: mirrorTime (arcStart cycleArc)
-          }
-        events = query pat (State st { arc = mirroredArc })
-      in
-        map (mirrorEvent cyc) events
-
-    mirrorEvent :: Time -> Event a -> Event a
-    mirrorEvent cyc = case _ of
-      Digital e -> Digital e
-        { whole = mirrorArc cyc e.whole
-        , part = mirrorArc cyc e.part
-        }
-      Analog e -> Analog e
-        { part = mirrorArc cyc e.part
-        }
-
-    mirrorArc :: Time -> Arc -> Arc
-    mirrorArc cyc (Arc { start, stop }) =
-      let mirrorT t = cyc + (one - (t - cyc))
-      in Arc { start: mirrorT stop, stop: mirrorT start }
+    mid = sam (arcStart st.arc) + (one / fromInt 2)
+    mirror (Arc a) = Arc { start: mid - (a.stop - mid), stop: mid + (mid - a.start) }
+    flipEvent = case _ of
+      Digital e ->
+        let
+          Arc w = e.whole
+          Arc p = e.part
+          Arc p' = mirror e.part
+        in
+          Digital e
+            { part = Arc p'
+            , whole = Arc { start: p'.start - (w.stop - p.stop), stop: p'.stop + (p.start - w.start) }
+            }
+      Analog e -> Analog e { part = mirror e.part }
   in
-    Array.concatMap processOneCycle cycleArcs
+    map flipEvent (query pat (State st { arc = mirror st.arc }))
 
 -------------------------------------------------------------------------------
 -- Pattern structure
 -------------------------------------------------------------------------------
 
--- | Concatenate patterns, playing each in sequence
--- |
--- | Each pattern gets one cycle, then speeds up to fit in one total cycle.
--- | `cat [a, b, c]` plays a in cycle 0, b in cycle 1, c in cycle 2,
--- | then repeats (with each pattern taking 1/3 of a cycle).
+-- | One pattern per cycle, in turn: Haskell Tidal's `cat`. Each pattern
+-- | counts its own cycles, so in `cat [a, b]` cycle 2 plays a's cycle 1.
 cat :: forall a. Array (Pattern a) -> Pattern a
 cat [] = silence
+cat [ p ] = p
 cat pats = pattern \(State st) ->
-  let
-    n = Array.length pats
-    -- Which cycle(s) are we querying?
-    cycleArcs = splitArcByCycles st.arc
-
-    processOneCycle :: Arc -> Array (Event a)
-    processOneCycle cycleArc =
-      let
-        cyc = sam (arcStart cycleArc)
-        -- Which pattern in this cycle?
-        patIdx = mod (floorInt cyc) n
-        -- Get the pattern
-        mPat = Array.index pats patIdx
-      in
-        case mPat of
-          Nothing -> []
-          Just p -> query p (State st { arc = cycleArc })
-  in
-    Array.concatMap processOneCycle cycleArcs
+  Array.concatMap (cycleOf st) (arcCyclesZW st.arc)
   where
-    floorInt :: Time -> Int
-    floorInt t = Int.floor (toNumber t)
+  n = Array.length pats
+  cycleOf st (Arc a) =
+    let
+      cyc = floorR a.start
+      i = floorMod cyc n
+      offset = fromInt (cyc - floorDiv (cyc - i) n)
+    in
+      case Array.index pats i of
+        Nothing -> []
+        Just p ->
+          query (withResultTime (_ + offset) p)
+            (State st { arc = Arc { start: a.start - offset, stop: a.stop - offset } })
 
--- | Fast concatenation - all patterns fit in one cycle
--- |
--- | `fastCat [a, b, c]` compresses all patterns into one cycle,
--- | each taking 1/n of the cycle.
+-- | All the patterns in one cycle: Haskell Tidal's `fastCat`.
 fastCat :: forall a. Array (Pattern a) -> Pattern a
+fastCat [ p ] = p
 fastCat pats = fast (fromInt (Array.length pats)) (cat pats)
 
 -- | Slow concatenation - alias for `cat`
@@ -395,107 +371,35 @@ fastAppend a b = fastCat [a, b]
 -- Transformations
 -------------------------------------------------------------------------------
 
--- | Segment a pattern into n equal events per cycle
--- |
--- | `segment 4 pat` discretizes the pattern into 4 events per cycle,
--- | sampling the pattern at each step.
+-- | Sample a pattern n times a cycle: Haskell Tidal's `_segment`,
+-- | `_fast n (pure id) <* p`.
 segment :: forall a. Int -> Pattern a -> Pattern a
-segment n pat
-  | n <= 0 = silence
-  | otherwise = pattern \(State st) ->
-      let
-        rate = fromInt n
-        cycleArcs = splitArcByCycles st.arc
+segment n pat = applyLeft (fast (fromInt n) (pure identity)) pat
 
-        processOneCycle :: Arc -> Array (Event a)
-        processOneCycle cycleArc =
-          let
-            cyc = sam (arcStart cycleArc)
-            -- Generate n sample points
-            indices = Array.range 0 (n - 1)
-            sampleAt i =
-              let
-                t = cyc + (fromInt i / rate)
-                tNext = cyc + (fromInt (i + 1) / rate)
-                sampleArc = Arc { start: t, stop: tNext }
-                -- Only include if it overlaps our query
-              in if arcOverlaps sampleArc cycleArc
-                 then
-                   -- Query at this instant
-                   case Array.head (query pat (State { arc: Arc { start: t, stop: t + one / (rate * fromInt 100) }, controls: st.controls })) of
-                     Nothing -> []
-                     Just evt -> [ Digital { context: getContext evt, whole: sampleArc, part: sectArc sampleArc cycleArc, value: eventValue evt } ]
-                 else []
-          in Array.concatMap sampleAt indices
-      in Array.concatMap processOneCycle cycleArcs
-  where
-    getContext :: Event a -> Context
-    getContext (Digital e) = e.context
-    getContext (Analog e) = e.context
-
-    sectArc :: Arc -> Arc -> Arc
-    sectArc (Arc a) (Arc b) =
-      Arc { start: max a.start b.start, stop: min a.stop b.stop }
-
-    arcOverlaps :: Arc -> Arc -> Boolean
-    arcOverlaps (Arc a) (Arc b) = a.start < b.stop && b.start < a.stop
-
--- | Compress a pattern into a portion of each cycle
--- |
--- | `compress (0.25, 0.75) pat` squeezes the pattern into the middle half
--- | of each cycle.
+-- | Squeeze each cycle into the span s..e of a cycle, leaving the rest
+-- | empty: Haskell Tidal's `compressArc`.
 compress :: forall a. Time -> Time -> Pattern a -> Pattern a
-compress s e pat
-  | s >= e = silence
-  | otherwise = pattern \(State st) ->
+compress s e p
+  | s > e || s > one || e > one || s < zero || e < zero || s == e = silence
+  | otherwise = rotR s (fastGap (one / (e - s)) p)
+
+-- | Haskell Tidal's `_fastGap`: speed up within each cycle, leaving a gap
+-- | rather than starting the next cycle early. Queries split by cycle.
+fastGap :: forall a. Time -> Pattern a -> Pattern a
+fastGap r p
+  | r == zero = silence
+  | otherwise = splitQueries $ withResultArc munge $ pattern \(State st) ->
       let
-        scale = e - s
-        -- Transform query time back to pattern time
-        cycleArcs = splitArcByCycles st.arc
-
-        processOneCycle :: Arc -> Array (Event a)
-        processOneCycle cycleArc =
-          let
-            cyc = sam (arcStart cycleArc)
-            compressedStart = cyc + s
-            compressedEnd = cyc + e
-
-            -- Check if query overlaps the compressed region
-            Arc { start: qStart, stop: qStop } = cycleArc
-          in if qStart >= compressedEnd || qStop <= compressedStart
-             then []
-             else
-               let
-                 -- Map query into pattern time (0-1)
-                 patStart = (max qStart compressedStart - compressedStart) / scale
-                 patStop = (min qStop compressedEnd - compressedStart) / scale
-                 patArc = Arc { start: cyc + patStart, stop: cyc + patStop }
-
-                 events = query pat (State st { arc = patArc })
-
-                 -- Map events back to compressed time
-                 mapEvent = case _ of
-                   Digital ev ->
-                     let
-                       Arc w = ev.whole
-                       Arc p = ev.part
-                     in Digital ev
-                          { whole = Arc { start: compressedStart + (w.start - cyc) * scale
-                                        , stop: compressedStart + (w.stop - cyc) * scale
-                                        }
-                          , part = Arc { start: compressedStart + (p.start - cyc) * scale
-                                       , stop: compressedStart + (p.stop - cyc) * scale
-                                       }
-                          }
-                   Analog ev ->
-                     let Arc p = ev.part
-                     in Analog ev
-                          { part = Arc { start: compressedStart + (p.start - cyc) * scale
-                                       , stop: compressedStart + (p.stop - cyc) * scale
-                                       }
-                          }
-               in map mapEvent events
-      in Array.concatMap processOneCycle cycleArcs
+        Arc q = st.arc
+        a' = Arc { start: mungeQuery q.start, stop: mungeQuery q.stop }
+      in
+        if arcStart a' == nextSam q.start then [] else query p (State st { arc = a' })
+  where
+  r' = max r one
+  mungeQuery t = sam t + min one (r' * cyclePos t)
+  munge (Arc a) =
+    let c = sam a.start
+    in Arc { start: c + (a.start - c) / r', stop: c + (a.stop - c) / r' }
 
 -- | Zoom into a portion of a pattern
 -- |
@@ -1063,30 +967,163 @@ ilogSaw = pattern \(State st) ->
   in
     [ Analog { context: emptyContext, part: st.arc, value } ]
 
--- | Pseudorandom values 0 to 1, deterministic based on cycle position
--- | Uses a simple hash function for repeatability
+-- | Haskell Tidal's `rand`: one analog event per query, its value
+-- | `timeToRand` of the query's start, so it is a function of time alone.
 rand :: Pattern Number
 rand = pattern \(State st) ->
-  let
-    Arc { start, stop } = st.arc
-    midpoint = toNumber $ (start + stop) / fromInt 2
-    -- Simple hash: multiply by large prime, take fractional part
-    hash = midpoint * 15485863.0
-    value = hash - floor hash
-  in
-    [ Analog { context: emptyContext, part: st.arc, value } ]
+  [ Analog { context: emptyContext, part: st.arc, value: timeToRand (arcStart st.arc) } ]
 
--- | Random integers from 0 to n-1
+-- | Haskell Tidal's `irand`: `floor (rand * n)`.
 irand :: Int -> Pattern Int
-irand n = pattern \(State st) ->
+irand n = map (\x -> Int.floor (x * Int.toNumber n)) rand
+
+-------------------------------------------------------------------------------
+-- Haskell Tidal's machinery (Sound.Tidal.Pattern, Core, UI; 1.10.1)
+-------------------------------------------------------------------------------
+
+mapArc :: (Time -> Time) -> Arc -> Arc
+mapArc f (Arc a) = Arc { start: f a.start, stop: f a.stop }
+
+-- | Apply a function to every whole and part a pattern returns.
+withResultArc :: forall a. (Arc -> Arc) -> Pattern a -> Pattern a
+withResultArc f pat = pattern \st -> map onEvent (query pat st)
+  where
+  onEvent = case _ of
+    Digital e -> Digital e { whole = f e.whole, part = f e.part }
+    Analog e -> Analog e { part = f e.part }
+
+withResultTime :: forall a. (Time -> Time) -> Pattern a -> Pattern a
+withResultTime f = withResultArc (mapArc f)
+
+withQueryTime :: forall a. (Time -> Time) -> Pattern a -> Pattern a
+withQueryTime f pat = pattern \(State st) -> query pat (State st { arc = mapArc f st.arc })
+
+-- | An arc cut at cycle boundaries; a zero-width arc is kept as it is.
+arcCyclesZW :: Arc -> Array Arc
+arcCyclesZW (Arc a)
+  | a.start == a.stop = [ Arc a ]
+  | otherwise = arcCycles (Arc a)
+
+arcCycles :: Arc -> Array Arc
+arcCycles (Arc a) =
+  if a.start >= a.stop then []
+  else if sam a.start == sam a.stop then [ Arc a ]
+  else Array.cons (Arc a { stop = nextSam a.start }) (arcCycles (Arc a { start = nextSam a.start }))
+
+-- | Query cycle by cycle, so a pattern can assume no query spans cycles.
+splitQueries :: forall a. Pattern a -> Pattern a
+splitQueries pat = pattern \(State st) ->
+  Array.concatMap (\a -> query pat (State st { arc = a })) (arcCyclesZW st.arc)
+
+-- | Patterns side by side in one cycle, each given its share of the time:
+-- | Haskell Tidal's `timeCat`, what a mini-notation sequence becomes.
+timeCat :: forall a. Array (Tuple Time (Pattern a)) -> Pattern a
+timeCat [ Tuple _ p ] = p
+timeCat tps =
+  stack (arrange zero (Array.filter (\(Tuple t _) -> t > zero) tps))
+  where
+  total = foldl (\acc (Tuple t _) -> acc + t) zero tps
+  arrange from = Array.uncons >>> case _ of
+    Nothing -> []
+    Just { head: Tuple t p, tail } ->
+      Array.cons (compress (from / total) ((from + t) / total) p) (arrange (from + t) tail)
+
+-- | A pattern of patterns, with structure from the inner patterns only:
+-- | Haskell Tidal's `innerJoin`, behind every patterned argument.
+innerJoin :: forall a. Pattern (Pattern a) -> Pattern a
+innerJoin pp = pattern \st@(State s) ->
+  Array.concatMap
+    (\oe -> Array.mapMaybe (munge s.arc oe) (query (eventValue oe) (State s { arc = eventPart oe })))
+    (query pp st)
+  where
+  munge qarc oe ie = do
+    p <- subArc qarc (eventPart ie)
+    p' <- subArc p qarc
+    pure case ie of
+      Digital i -> Digital i { part = p', context = i.context <> eventContext' oe }
+      Analog i -> Analog i { part = p', context = i.context <> eventContext' oe }
+  eventContext' = case _ of
+    Digital e -> e.context
+    Analog e -> e.context
+
+-- | Haskell Tidal's `unwrap`; also this library's `bind`.
+unwrap :: forall a. Pattern (Pattern a) -> Pattern a
+unwrap pp = pp >>= identity
+
+-- | A function of a value, patterned: Haskell's `patternify`, without its
+-- | shortcut for a pure argument (callers that know the argument is
+-- | constant call the function directly).
+patternify :: forall t a. (t -> Pattern a -> Pattern a) -> Pattern t -> Pattern a -> Pattern a
+patternify f pt p = innerJoin (map (\t -> f t p) pt)
+
+-- | Haskell Tidal's `range`, `(\from to v -> v * (to - from) + from) <$>
+-- | fromP *> toP *> p`: structure from the values.
+rangeBy :: Number -> Number -> Pattern Number -> Pattern Number
+rangeBy from to p = applyRight (applyRight (map (\_ _ v -> v * (to - from) + from) (pure from)) (pure to)) p
+
+-- | Haskell Tidal's `chooseBy`: a value from the list, picked by a
+-- | pattern of numbers in [0, 1).
+chooseBy :: forall a. Pattern Number -> Array a -> Pattern a
+chooseBy f xs = case Array.length xs of
+  0 -> silence
+  n -> map (\x -> pick (floorMod (Int.floor x) n)) (rangeBy 0.0 (Int.toNumber n) f)
+  where
+  pick i = case Array.index xs i of
+    Just v -> v
+    Nothing -> unsafeCrashWith "chooseBy: the index is reduced modulo the length"
+
+-- | Haskell Tidal's `_degradeByUsing`: keep the events where the random
+-- | pattern, sampled with structure from the events, is at least x.
+degradeByUsing :: forall a. Pattern Number -> Number -> Pattern a -> Pattern a
+degradeByUsing prand x p =
+  map fst (filterValues (\(Tuple _ r) -> r >= x) (applyLeft (map Tuple p) prand))
+
+-- | Haskell Tidal's `_euclid`: n pulses spread over k steps (Bjorklund);
+-- | a negative n plays the gaps instead.
+euclid :: forall a. Int -> Int -> Pattern a -> Pattern a
+euclid n k a
+  | n >= 0 = fastCat (map (\b -> if b then a else silence) (bjorklund n k))
+  | otherwise = fastCat (map (\b -> if b then silence else a) (bjorklund (negate n) k))
+
+-- | Haskell Tidal's `_euclidOff`: `euclid`, turned left by s steps.
+euclidOff :: forall a. Int -> Int -> Int -> Pattern a -> Pattern a
+euclidOff n k s p
+  | k == 0 = silence
+  | otherwise = rotL (fromInt s / fromInt k) (euclid n k p)
+
+-- | Haskell Tidal's Bjorklund (Rohan Drape's, in Sound.Tidal.Bjorklund).
+bjorklund :: Int -> Int -> Array Boolean
+bjorklund i j' =
   let
-    Arc { start, stop } = st.arc
-    midpoint = toNumber $ (start + stop) / fromInt 2
-    hash = midpoint * 15485863.0
-    frac = hash - floor hash
-    value = Int.floor (frac * Int.toNumber n)
+    j = j' - i
+    { xs, ys } = go i j (Array.replicate i [ true ]) (Array.replicate j [ false ])
   in
-    [ Analog { context: emptyContext, part: st.arc, value } ]
+    Array.concat xs <> Array.concat ys
+  where
+  go a b xs ys
+    | min a b <= 1 = { xs, ys }
+    | a > b =
+        let
+          xs' = Array.take b xs
+          xs'' = Array.drop b xs
+        in
+          go b (a - b) (zipConcat xs' ys) xs''
+    | otherwise =
+        let
+          ys' = Array.take a ys
+          ys'' = Array.drop a ys
+        in
+          go a (b - a) (zipConcat xs ys') ys''
+  -- `zipWith (++)`, truncating to the shorter, as Haskell's does. Not
+  -- Data.Array.zipWith: on Erlang 28 that crashes on unequal lengths.
+  zipConcat as bs =
+    let m = min (Array.length as) (Array.length bs)
+    in
+      if m == 0 then []
+      else map (\k -> fromArr (Array.index as k) <> fromArr (Array.index bs k)) (Array.range 0 (m - 1))
+  fromArr = case _ of
+    Just v -> v
+    Nothing -> []
 
 -------------------------------------------------------------------------------
 -- Internal utilities

@@ -9,7 +9,7 @@
 -- | Unlike the older specs, a failure here fails the run.
 module Test.ControlSpec (runControlTests, render) where
 
-import Prelude
+import Prelude hiding ((#))
 
 import Data.Ord (abs)
 
@@ -46,12 +46,13 @@ render = case _ of
   rat :: Rational -> String
   rat r = if denominator r == 1 then show (numerator r) else show (numerator r) <> "/" <> show (denominator r)
   -- purerl shows Numbers in exponent form; three decimals is enough here.
+  -- Sign handled apart: purerl's Int div truncates, so -0.5 would lose it.
   num x =
     let
-      i = Int.round (x * 1000.0)
-      frac = show (abs (i `mod` 1000) + 1000)
+      i = Int.round (abs x * 1000.0)
+      frac = show (i `mod` 1000 + 1000)
     in
-      show (i / 1000) <> "." <> String.drop 1 frac
+      (if x < 0.0 && i /= 0 then "-" else "") <> show (i / 1000) <> "." <> String.drop 1 frac
   values m = joinWith "," (map kv (Map.toUnfoldable m :: Array (Tuple String Value)))
   kv (Tuple k v) = k <> "=" <> case v of
     VNumber x -> "f" <> num x

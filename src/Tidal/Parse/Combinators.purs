@@ -74,9 +74,10 @@ import Data.Tuple (Tuple(..))
 import Text.Parsing.Parser (ParserT)
 import Text.Parsing.Parser as P
 import Text.Parsing.Parser.Combinators as PC
-import Text.Parsing.Parser.String (char, satisfy, string, skipSpaces)
+import Text.Parsing.Parser.String (char, noneOf, satisfy, string, skipSpaces)
 import Text.Parsing.Parser.Token (alphaNum, digit)
 import Tidal.AST.Types (Located(..), TPat(..), SourceSpan, tpatSpan)
+import Tidal.Parse.Numbers (pRatio)
 import Tidal.Chords (Modifier(..), lookupChord, applyModifiers)
 import Tidal.Core.Types (ControlName(..), SourcePos)
 import Tidal.Parse.Class (class AtomParseable, atomParser, patternParser, TidalParser, number)
@@ -150,7 +151,8 @@ parens = betweenT (void $ symbol "(") (void $ symbol ")")
 pTidal :: forall a. AtomParseable a => TidalParser (TPat a)
 pTidal = defer \_ -> do
   s <- pSequence
-  stackTail s <|> chooseTail s <|> dotTail s <|> pure s
+  x <- stackTail s <|> chooseTail s <|> pure s
+  pMult x
   where
     stackTail s = do
       _ <- symbol ","
@@ -165,21 +167,6 @@ pTidal = defer \_ -> do
       seed <- newSeed
       pure $ TPat_CycleChoose theSpan seed (Array.cons s ss)
 
-    -- Dot grouping: "bd sd . hh hh hh" = [[bd sd] [hh hh hh]]
-    -- Each dot-separated group gets equal time in the cycle
-    dotTail s = do
-      _ <- pDot
-      ss <- pSequence `sepByT` pDot
-      theSpan <- spanFromArray (Array.cons s ss)
-      pure $ TPat_Seq theSpan (Array.cons s ss)
-
-    -- Parse dot separator (. but not ..)
-    pDot = tryT do
-      _ <- liftP $ char '.'
-      -- Make sure it's not .. (range operator)
-      liftP $ PC.notFollowedBy (char '.')
-      spaces
-
     -- Get span covering all elements
     spanFromArray :: Array (TPat a) -> TidalParser SourceSpan
     spanFromArray arr = do
@@ -189,28 +176,60 @@ pTidal = defer \_ -> do
             Nothing -> end
       pure $ mkSourceSpan start end
 
--- | Parse a sequence of parts
+-- | Parse a sequence of parts: Haskell's `pSequence`. A `.` is a foot:
+-- | `bd sd . hh hh hh` is `[bd sd] [hh hh hh]`, wherever a sequence is
+-- | (inside `<>` and `{}` too). A `?` may follow the whole sequence.
 pSequence :: forall a. AtomParseable a => TidalParser (TPat a)
 pSequence = defer \_ -> do
   Tuple span parts <- spanned do
     spaces
-    manyT do
+    manyT (step <|> foot)
+  pRand (resolveFeet span parts)
+  where
+    step = do
       a <- pPart
       spaces
-      pEnumeration a <|> pElongate a <|> pRepeat a <|> pure a
-  pure $ TPat_Seq span parts
+      Just <$> (pEnumeration a <|> pElongate a <|> pRepeat a <|> pure a)
+    foot = tryT do
+      _ <- liftP $ char '.'
+      liftP $ PC.notFollowedBy (char '.')
+      spaces
+      pure Nothing
+    resolveFeet span parts =
+      let feet = splitFeet parts
+      in
+        if Array.length feet > 1 then TPat_Seq span (map (TPat_Seq span) feet)
+        else TPat_Seq span (Array.catMaybes parts)
+    splitFeet parts = case Array.findIndex isFoot parts of
+      Nothing -> [ Array.catMaybes parts ]
+      Just i -> Array.cons (Array.catMaybes (Array.take i parts)) (splitFeet (Array.drop (i + 1) parts))
+    isFoot = case _ of
+      Nothing -> true
+      Just _ -> false
 
--- | Parse a single part (atom, group, variable, etc.)
+-- | A part: Haskell's `pPart`, `(pSingle <|> pPolyIn <|> pPolyOut <|> pVar)
+-- | >>= pE >>= pRand`.
 pPart :: forall a. AtomParseable a => TidalParser (TPat a)
 pPart = defer \_ ->
-  (pSingle >>= pE >>= pRand >>= pMult)
-    <|> pPolyIn
-    <|> pPolyOut
-    <|> pVar
+  ((pSingle <|> pPolyIn <|> pPolyOut <|> pVar) >>= pE) >>= pRand
 
--- | Parse an atom with its modifiers (uses patternParser to support chords for Note)
+-- | An atom or a rest, then `?` and `*`/`/`: Haskell's `pSingle`, with its
+-- | `parseRest`: a `-` is a negative sign when what follows it (after any
+-- | spaces) is not another `-` and parses as an atom; otherwise a rest.
 pSingle :: forall a. AtomParseable a => TidalParser (TPat a)
-pSingle = defer \_ -> patternParser <|> pSilence
+pSingle = defer \_ -> (restOrAtom >>= pRand) >>= pMult
+  where
+    restOrAtom =
+      tryT (liftP (PC.lookAhead (char '-' *> skipSpaces *> noneOf [ '-' ])) *> patternParser)
+        <|> dash
+        <|> patternParser
+        <|> tilde
+    dash = do
+      Tuple span _ <- spanned (liftP (char '-'))
+      pure (TPat_Silence span)
+    tilde = do
+      Tuple span _ <- spanned (liftP (char '~'))
+      pure (TPat_Silence span)
 
 -------------------------------------------------------------------------------
 -- Atoms
@@ -383,11 +402,13 @@ pNoteChord = tryT $ do
 pMult :: forall a. TPat a -> TidalParser (TPat a)
 pMult thing = fast <|> slow <|> pure thing
   where
+    -- Haskell: `pRational <|> pPolyIn pRational <|> pPolyOut pRational`.
+    rate = pRationalTPat <|> pPolyIn <|> pPolyOut
     fast = do
       start <- getPos
       _ <- liftP $ char '*'
       spaces
-      r <- pRationalTPat
+      r <- rate
       end <- getPos
       pure $ TPat_Fast (mkSourceSpan start end) r thing
 
@@ -395,7 +416,7 @@ pMult thing = fast <|> slow <|> pure thing
       start <- getPos
       _ <- liftP $ char '/'
       spaces
-      r <- pRationalTPat
+      r <- rate
       end <- getPos
       pure $ TPat_Slow (mkSourceSpan start end) r thing
 
@@ -419,12 +440,12 @@ pE thing = euclidean <|> pure thing
     euclidean = do
       start <- getPos
       Tuple _ (Tuple3 n k s) <- spanned $ parens do
-        n' <- pIntTPat
+        n' <- pSequence
         _ <- symbol ","
-        k' <- pIntTPat
+        k' <- pSequence
         s' <- optionT (intAtom 0) do
           _ <- symbol ","
-          pIntTPat
+          pSequence
         pure $ Tuple3 n' k' s'
       end <- getPos
       pure $ TPat_Euclid (mkSourceSpan start end) n k s thing
@@ -435,26 +456,20 @@ pE thing = euclidean <|> pure thing
 -- | Helper for Tuple3
 data Tuple3 a b c = Tuple3 a b c
 
--- | Elongation: @n or _ (underscore extends by 1)
+-- | Elongation: `@r` or `_`, accumulating, as Haskell's `pElongate`; `r` is
+-- | an exact ratio (`@1%6`, `@1.5`, `@h`).
 pElongate :: forall a. TPat a -> TidalParser (TPat a)
 pElongate a = do
   start <- getPos
   rs <- liftP $ Array.some elongateOne
   end <- getPos
-  let total = 1.0 + Array.foldr (+) 0.0 rs
-  pure $ TPat_Elongate (mkSourceSpan start end) (toRational total) a
+  pure $ TPat_Elongate (mkSourceSpan start end) (one + Array.foldr (+) zero rs) a
   where
     elongateOne = do
       _ <- satisfy \c -> c == '@' || c == '_'
-      r <- PC.option 1.0 ((\x -> x - 1.0) <$> pRatioNum)
+      r <- PC.option one ((_ - one) <$> pRatio)
       skipSpaces
       pure r
-
-    toRational :: Number -> Rational
-    toRational n = Int.round (n * 1000.0) % 1000
-
-    pRatioNum :: ParserT String Identity Number
-    pRatioNum = number
 
 -- | Repetition: !n (default !1 means duplicate once)
 pRepeat :: forall a. TPat a -> TidalParser (TPat a)
@@ -502,12 +517,10 @@ pPolyOut :: forall a. AtomParseable a => TidalParser (TPat a)
 pPolyOut = defer \_ -> braces_ <|> angles_
   where
     braces_ = do
-      Tuple span (Tuple seqs mRatio) <- spanned $ braces do
-        seqs <- pSequence `sepByT` symbol ","
-        ratio <- optionalT do
-          _ <- liftP $ char '%'
-          pRationalTPat
-        pure $ Tuple seqs ratio
+      Tuple span seqs <- spanned $ braces (pSequence `sepByT` symbol ",")
+      mRatio <- optionalT do
+        _ <- liftP $ char '%'
+        pSequence
       result <- pMult $ TPat_Polyrhythm span mRatio seqs
       pure result
 

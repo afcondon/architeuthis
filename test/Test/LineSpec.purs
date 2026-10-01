@@ -64,7 +64,7 @@ refusals :: Array { line :: String, says :: String }
 refusals =
   [ { line: "d1 $ s \"bd\" # foo \"1\"", says: "unknown name foo" }
   , { line: "d1 $ fast \"<1 2>\" $ s \"bd\"", says: "not supported yet" }
-  , { line: "d1 $ n \"0 zz\"", says: "cannot read" }
+  , { line: "d1 $ n \"0 zz\"", says: "mini-notation" }
   , { line: "d17 $ s \"bd\"", says: "starts with d1..d16" }
   , { line: "d1 $ s \"bd\" # n \"1\" . rev", says: "cannot mix" }
   , { line: "d1 $ \"bd\"", says: "did you mean s" }

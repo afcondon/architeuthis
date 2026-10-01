@@ -16,6 +16,7 @@ module Tidal.Parse.Class
   , TidalParser
   , number
   , liftP
+  , located
   ) where
 
 import Prelude
@@ -40,6 +41,7 @@ import Text.Parsing.Parser.Token (alphaNum, digit, letter)
 import Tidal.AST.Types (Located(..), TPat(..), SourceSpan)
 import Tidal.Chords (Modifier(..), lookupChord, applyModifiers)
 import Tidal.Pattern.Types (Note, mkNote)
+import Tidal.Parse.Numbers (parseIntNote, pRatio)
 import Tidal.Parse.State (ParseState, currentPos, mkSourceSpan)
 
 -- | The parser monad: Parser with state for seed generation
@@ -323,14 +325,10 @@ instance AtomParseable Int where
   atomParser = located intAtom
   patternParser = TPat_Atom <$> located intAtom
 
--- | Core int atom parser
+-- | Core int atom parser: Haskell Tidal's `parseIntNote` (a whole number
+-- | or a note name, so `bd(3,8,c)` works as in Tidal).
 intAtom :: TidalParser Int
-intAtom = do
-  sign <- (liftP (char '-') $> (-1)) <|> pure 1
-  digits <- liftP $ Array.some digit
-  case Int.fromString (SCU.fromCharArray digits) of
-    Just n -> pure (sign * n)
-    Nothing -> liftP $ P.fail "expected integer"
+intAtom = liftP parseIntNote
 
 -------------------------------------------------------------------------------
 -- Rational atoms
@@ -348,65 +346,10 @@ instance AtomParseable Rational where
   atomParser = located rationalAtom
   patternParser = TPat_Atom <$> located rationalAtom
 
--- | Core rational atom parser
+-- | Core rational atom parser: Haskell Tidal's `pRatio` (an int or float,
+-- | `%` and a denominator, a duration letter: `3h`, `1%6`, `q`), exact.
 rationalAtom :: TidalParser Rational
-rationalAtom = numberedShortcut <|> shortcut <|> ratio <|> decimal
-  where
-    -- Number with duration suffix: 3h (3 half notes), 1.5q (1.5 quarter notes)
-    numberedShortcut = liftP $ PC.try do
-      sign <- (char '-' $> (-1.0)) <|> pure 1.0
-      n <- number
-      c <- satisfy \x -> x == 'w' || x == 'h' || x == 'q' ||
-                         x == 'e' || x == 's' || x == 't' ||
-                         x == 'f' || x == 'x'
-      let base = case c of
-            'w' -> 1.0       -- whole
-            'h' -> 0.5       -- half
-            'q' -> 0.25      -- quarter
-            'e' -> 0.125     -- eighth
-            's' -> 0.0625    -- sixteenth
-            't' -> 0.03125   -- 32nd
-            'f' -> 0.015625  -- 64th
-            _   -> 0.0078125 -- 128th (x)
-          result = sign * n * base * 1000.0
-      pure $ Int.round result % 1000
-
-    -- Duration shortcuts (like in Tidal) - single letter
-    shortcut = do
-      c <- liftP $ satisfy \x -> x == 'w' || x == 'h' || x == 'q' ||
-                                 x == 'e' || x == 's' || x == 't' ||
-                                 x == 'f' || x == 'x'
-      pure $ case c of
-        'w' -> 1 % 1   -- whole
-        'h' -> 1 % 2   -- half
-        'q' -> 1 % 4   -- quarter
-        'e' -> 1 % 8   -- eighth
-        's' -> 1 % 16  -- sixteenth
-        't' -> 1 % 32  -- 32nd
-        'f' -> 1 % 64  -- 64th
-        'x' -> 1 % 128 -- 128th
-        _   -> 1 % 1   -- shouldn't happen
-
-    -- Explicit ratio: n%d
-    ratio = liftP $ PC.try do
-      sign <- (char '-' $> (-1)) <|> pure 1
-      nDigits <- Array.some digit
-      _ <- char '%'
-      dDigits <- Array.some digit
-      case Int.fromString (SCU.fromCharArray nDigits), Int.fromString (SCU.fromCharArray dDigits) of
-        Just n, Just d -> pure $ (sign * n) % d
-        _, _ -> P.fail "invalid ratio"
-
-    -- Decimal (converted to rational)
-    decimal = do
-      sign <- (liftP (char '-') $> (-1.0)) <|> pure 1.0
-      n <- liftP number
-      let scaled = sign * n * 1000.0
-      pure $ Int.round scaled % 1000
-
--------------------------------------------------------------------------------
--- Note atoms
--------------------------------------------------------------------------------
+rationalAtom = liftP pRatio
 
 -- | Parse a musical note
 -- |

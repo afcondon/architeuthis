@@ -18,7 +18,7 @@ module Test.FugueSpec
 
 import Prelude
 
-import Data.Array (sortBy)
+import Data.Array (sortBy, sortWith)
 import Data.Rational (fromInt)
 import Effect (Effect)
 import Effect.Console (log)
@@ -71,7 +71,8 @@ runFugueTests = do
     fastEvents = queryArc
       (fugueVoice (defaultVoice { speed = doubleSpeed }) (degree "1 5"))
       (fromInt 0) (fromInt 1)
-  if (map eventValue fastEvents) == [Degree 1, Degree 5, Degree 1, Degree 5]
+  -- In onset order: the order a query lists events in is not meaning.
+  if (map eventValue (sortWith (arcStart <<< eventPart) fastEvents)) == [Degree 1, Degree 5, Degree 1, Degree 5]
     then log "  ✓ doubleSpeed packs two passes into one cycle"
     else log $ "  ✗ doubleSpeed: got " <> show (map eventValue fastEvents)
 

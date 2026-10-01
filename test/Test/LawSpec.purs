@@ -16,7 +16,7 @@ import Tidal.AST.Types (TPat)
 import Tidal.Eval.Interpret (tpatToPattern)
 import Tidal.Parse.Parser (parseTPat)
 import Tidal.Pattern.Core (queryArc, silence, stack, cat, fast, slow, rotL, rotR, rev)
-import Tidal.Pattern.Types (Arc(..), Event(..), Pattern, arcStart, arcStop)
+import Tidal.Pattern.Types (Arc(..), Event(..), Pattern, arcStart, arcStop, eventValue)
 
 -------------------------------------------------------------------------------
 -- Test runner
@@ -71,7 +71,7 @@ runLawTests = do
   log "--- Query Boundary Conditions ---"
 
   testQueryEmptyArc
-    "query empty arc returns no events"
+    "query empty arc returns the event at that instant (as Tidal)"
 
   testQuerySingleCycle
     "query single cycle returns correct events"
@@ -268,13 +268,14 @@ testQueryEmptyArc desc = do
     Left err -> log $ "  ✗ " <> desc <> ": parse error"
     Right ast -> do
       let pat = tpatToPattern ast :: Pattern String
-      -- Query arc [0.5, 0.5] - zero length
+      -- Query arc [0.5, 0.5] - zero length. Tidal 1.10.1 answers with the
+      -- event there: `(½>½)-1|"sn"` (GHCi).
       let events = queryArc pat (1 % 2) (1 % 2)
-      if Array.length events == 0 then
+      if map eventValue events == [ "sn" ] then
         log $ "  ✓ " <> desc
       else do
         log $ "  ✗ " <> desc
-        log $ "    Expected 0 events, got " <> show (Array.length events)
+        log $ "    Expected the one event sn, got " <> show (map eventValue events)
 
 -- | Test: query single cycle returns correct number of events
 testQuerySingleCycle :: String -> Effect Unit

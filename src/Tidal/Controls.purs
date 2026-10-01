@@ -44,7 +44,7 @@ import Control.Alt ((<|>))
 
 import Data.Array (catMaybes, find, index)
 import Data.Foldable (foldl)
-import Data.Traversable (traverse)
+import Data.Either (Either(..))
 import Data.Int as Int
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
@@ -53,7 +53,9 @@ import Data.String (split)
 import Data.String.CodeUnits as CU
 import Data.String as String
 import Data.Tuple (Tuple(..))
-import Tidal.AST.Types (TPat)
+import Tidal.Parse.Class (class AtomParseable)
+import Tidal.Parse.Haskell (TDouble(..), TInt(..), TNote(..), Vocable(..))
+import Tidal.Parse.Parser (parseTPat)
 import Tidal.Eval.Interpret (tpatToPattern)
 import Tidal.Pattern.Types (class TidalEnum, ControlPattern, Pattern, Value(..), ValueMap, applyLeft)
 
@@ -124,19 +126,22 @@ readInt v = Int.fromString v <|> (Int.round <$> noteName v)
 readFloat :: String -> Maybe Number
 readFloat v = Number.fromString v <|> durationLetter v <|> noteName v
 
--- | Mini-notation as a control. The atoms are read at the control's kind
--- | BEFORE the pattern is evaluated, as Tidal parses at the type wanted, so
--- | that `n "0 .. 3"` counts in numbers. `Nothing` when an atom does not read.
-controlFromMini :: Control -> TPat String -> Maybe ControlPattern
-controlFromMini k tpat = case k.kind of
-  KString -> Just (pS k.key (tpatToPattern tpat))
-  KSound -> Just (map grp (tpatToPattern tpat))
-  KFloat -> pF k.key <$> typed readFloat
-  KNote -> pN k.key <$> typed readNote
-  KInt -> pI k.key <$> typed readInt
+-- | Mini-notation as a control, parsed at the control's type as Tidal
+-- | parses it (`Tidal.Parse.Haskell`): `n "0..8"` and `gain "3h"` read as
+-- | numbers, `s "bd:3"` as a string. A string that does not parse at that
+-- | type is refused with the parser's message.
+controlFromMini :: Control -> String -> Either String ControlPattern
+controlFromMini k src = case k.kind of
+  KString -> pS k.key <<< map (\(Vocable v) -> v) <$> typed
+  KSound -> map (grp <<< \(Vocable v) -> v) <$> typed
+  KFloat -> pF k.key <<< map (\(TDouble v) -> v) <$> typed
+  KNote -> pN k.key <<< map (\(TNote v) -> v) <$> typed
+  KInt -> pI k.key <<< map (\(TInt v) -> v) <$> typed
   where
-  typed :: forall a. TidalEnum a => (String -> Maybe a) -> Maybe (Pattern a)
-  typed read = traverse read tpat <#> tpatToPattern
+  typed :: forall a. AtomParseable a => TidalEnum a => Either String (Pattern a)
+  typed = case parseTPat src of
+    Right tpat -> Right (tpatToPattern tpat)
+    Left err -> Left ("mini-notation " <> show src <> ": " <> show err)
 
 -- | Tidal's note names: a letter, any of `s` (sharp), `f` (flat), `n`
 -- | (natural), then an octave, 5 if none. C5 is 0.
