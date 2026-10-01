@@ -14,7 +14,7 @@
 #   make clean        - clean PureScript output
 #   make distclean    - clean everything including deps
 
-.PHONY: all deps ps erl erl-quick test haskell-is-standalone oracle-prim oracle-tidal conformance run start clean distclean help
+.PHONY: all deps ps erl erl-quick test run start clean distclean help
 
 # Default target
 all: erl
@@ -101,35 +101,15 @@ erl-quick:
 	@erlc -disable-feature maybe_expr -o ebin src/selene_pattern_voice.erl
 
 # Run tests
-test: erl haskell-is-standalone
+test: erl
 	@echo "==> Running tests..."
 	ERL_LIBS="_build/default/lib" erl -pa ebin -noshell \
 		-eval 'F = test_main@ps:main(), F()' \
 		-s init stop
 
-# The reference-semantics types (engine/core/src/Haskell/*) know nothing of
-# Tidal, so that they can leave for their own package the day a second port
-# needs them.
-haskell-is-standalone:
-	@! grep -rn "^import Tidal" engine/core/src/Haskell || (echo "engine/core/src/Haskell must not import Tidal.*" && false)
-
-# The engine's conformance suite in every column (engine/columns/*), through
-# polyglot-template's poly: GHC, the BEAM and JS must agree case for case.
-POLY ?= ../../../polyglot/polyglot-template/bin/poly
-conformance:
-	cd engine && $(abspath $(POLY)) run all
-
-# Regenerate the engine's GHC golden (Tidal.Conformance.HaskellGolden) by
-# asking GHC, Tidal's Sound.Tidal.UI and Text.Parsec, from the GHC that
-# Limulus boots. Needs ../limulus/ghc-tidal.
-oracle-prim:
-	../limulus/ghc-tidal/bin/runghc engine/core/oracle/haskell-prim.hs \
-		< engine/core/oracle/haskell-prim.txt > engine/core/src/Tidal/Conformance/HaskellGolden.purs
-
-# Regenerate the engine's Tidal golden (Tidal.Conformance.TidalGolden) from a
-# GHCi running Tidal behind Limulus (:3036).
-oracle-tidal:
-	node engine/core/oracle/generate.mjs
+# The engine's conformance suite, its oracles and its standalone check live
+# with the engine in music/littorina (`make conformance` there); `make test`
+# here still runs the suite on the BEAM through Tidal.Conformance.Main.
 
 # EUnit tests for the hand-written Erlang modules (the PureScript suite
 # above cannot reach them). Currently the step-window clamp, whose

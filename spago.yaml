@@ -32,8 +32,8 @@ package:
     - tuples
     - harmonia
     - reef
-    - js-bigints   # the purerl port, a workspace package (vendor/js-bigints)
-    - tidal-engine # the engine, a workspace package (engine/core)
+    - js-bigints   # the purerl port (../../littorina/vendor/js-bigints)
+    - littorina    # Tidal's engine: patterns, mini-notation, line language
   # Without this section spago compiles src/ only, and `make test` ran
   # whatever test modules were last compiled (2026-05-08) rather than test/.
   test:
@@ -53,6 +53,13 @@ workspace:
     # voice will call Reef.Odonus.stepEmit@ps (replacing odonus_engine.erl).
     reef:
       path: ../../reef
+    # Tidal's engine, one source for the BEAM and JS, held to Haskell Tidal by
+    # its own conformance suite (music/littorina; `make conformance` there).
+    # It was engine/ here until 2026-10-01.
+    littorina:
+      path: ../../littorina/core
+    js-bigints:
+      path: ../../littorina/vendor/js-bigints
   packageSet:
     url: https://raw.githubusercontent.com/purerl/package-sets/erl-0.15.3-20220629/packages.json
   backend:
