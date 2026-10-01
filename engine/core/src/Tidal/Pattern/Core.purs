@@ -28,6 +28,7 @@ module Tidal.Pattern.Core
   , compress
   , zoom
   , every
+  , whenCycle
   , whenMod
   , iter
   , iter'
@@ -451,25 +452,21 @@ zoom s e pat
           in map mapEvent events
       in Array.concatMap processOneCycle cycleArcs
 
--- | Apply a function every n cycles
--- |
--- | `every 4 rev pat` reverses the pattern every 4th cycle
+-- | Tidal's `_every`: apply the function in every nth cycle (`every 4 rev`
+-- | reverses cycles 0, 4, 8, ...). `every 0` is the identity; a negative n
+-- | acts as its absolute value, since Tidal tests `cycle `mod` n == 0`.
 every :: forall notation a. Notation notation a => Int -> (Pattern a -> Pattern a) -> notation -> Pattern a
 every n f notation
-  | n <= 0 = toPattern notation
-  | otherwise = pattern \(State st) ->
-      let
-        pat = toPattern notation
-        cycleArcs = splitArcByCycles st.arc
-        processOneCycle cycleArc =
-          let
-            cyc = floorInt (sam (arcStart cycleArc))
-            shouldApply = mod cyc n == 0
-            p = if shouldApply then f pat else pat
-          in query p (State st { arc = cycleArc })
-      in Array.concatMap processOneCycle cycleArcs
-  where
-    floorInt t = floorR t
+  | n == 0 = toPattern notation
+  | otherwise = whenCycle (\c -> c `mod` n == 0) f (toPattern notation)
+
+-- | Tidal's `when` (renamed: PureScript's Prelude has a `when`): apply the
+-- | function in the cycles whose number passes the test, cycle by cycle.
+-- | `when test f p = splitQueries $ p {query = apply}`, where `apply`
+-- | queries `f p` if `test (floor $ start $ arc st)`, else `p`.
+whenCycle :: forall a. (Int -> Boolean) -> (Pattern a -> Pattern a) -> Pattern a -> Pattern a
+whenCycle test f p = splitQueries $ pattern \st@(State s) ->
+  if test (floorR (arcStart s.arc)) then query (f p) st else query p st
 
 -- | Apply a function when cycle modulo matches
 -- |
