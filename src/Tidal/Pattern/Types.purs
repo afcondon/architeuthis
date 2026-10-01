@@ -35,6 +35,10 @@ module Tidal.Pattern.Types
   , query
   , pattern
   , silence
+  , applyLeft
+  , applyRight
+  , subArc
+  , wholeOrPart
     -- * Values for control patterns
   , Value(..)
   , Note(..)
@@ -51,7 +55,7 @@ module Tidal.Pattern.Types
 
 import Prelude
 
-import Data.Array (concatMap, filter, range, reverse) as Array
+import Data.Array (concatMap, filter, mapMaybe, range, reverse) as Array
 import Data.Int as Int
 import Data.Map (Map)
 import Data.Map as Map
@@ -261,7 +265,7 @@ data Value
   = VInt Int
   | VNumber Number
   | VString String
-  | VNote Note
+  | VNote Number
   | VBool Boolean
   | VRational Rational
 
@@ -455,6 +459,43 @@ eventContext :: forall a. Event a -> Context
 eventContext (Digital e) = e.context
 eventContext (Analog e) = e.context
 
+-- | The whole of a digital event, the part of an analog one.
+wholeOrPart :: forall a. Event a -> Arc
+wholeOrPart (Digital e) = e.whole
+wholeOrPart (Analog e) = e.part
+
+-- | Structure from the left: Haskell Tidal's `<*` (`applyPatToPatLeft`).
+-- | Each function event keeps its whole; the values are queried over that
+-- | whole, and each match narrows the part. This is what `#` is built on.
+applyLeft :: forall a b. Pattern (a -> b) -> Pattern a -> Pattern b
+applyLeft (Pattern pf) (Pattern px) = Pattern \st ->
+  Array.concatMap
+    (\ef -> Array.mapMaybe (withFX ef) (px (setArc st (wholeOrPart ef))))
+    (pf st)
+  where
+  withFX ef ex = subArc (eventPart ef) (eventPart ex) <#> \part ->
+    rebuild ef part (eventContext ef <> eventContext ex) (eventValue ef (eventValue ex))
+
+-- | Structure from the right: Haskell Tidal's `*>` (`applyPatToPatRight`).
+applyRight :: forall a b. Pattern (a -> b) -> Pattern a -> Pattern b
+applyRight (Pattern pf) (Pattern px) = Pattern \st ->
+  Array.concatMap
+    (\ex -> Array.mapMaybe (\ef -> withFX ef ex) (pf (setArc st (wholeOrPart ex))))
+    (px st)
+  where
+  withFX ef ex = subArc (eventPart ef) (eventPart ex) <#> \part ->
+    rebuild ex part (eventContext ef <> eventContext ex) (eventValue ef (eventValue ex))
+
+setArc :: State -> Arc -> State
+setArc (State s) arc = State s { arc = arc }
+
+-- | An event of the given one's kind and whole, with a new part, context and
+-- | value.
+rebuild :: forall a b. Event a -> Arc -> Context -> b -> Event b
+rebuild e part context value = case e of
+  Digital d -> Digital { context, whole: d.whole, part, value }
+  Analog _ -> Analog { context, part, value }
+
 -------------------------------------------------------------------------------
 -- Internal: Monad implementation (unwrap/join)
 -------------------------------------------------------------------------------
@@ -503,6 +544,20 @@ bindPattern' (Pattern pa) f = Pattern \st ->
 -------------------------------------------------------------------------------
 -- Internal: Arc utilities
 -------------------------------------------------------------------------------
+
+-- | Haskell Tidal's `subArc`: the intersection of two arcs, `Nothing` when
+-- | they do not meet. A zero-width intersection survives only when it is not
+-- | the end of a non-zero-width arc, so an event is not matched by the next
+-- | one's start.
+subArc :: Arc -> Arc -> Maybe Arc
+subArc (Arc x) (Arc y) =
+  let
+    s = max x.start y.start
+    e = min x.stop y.stop
+    endOf a = s == e && s == a.stop && a.start < a.stop
+  in
+    if endOf x || endOf y || s > e then Nothing
+    else Just (Arc { start: s, stop: e })
 
 -- | Intersect two arcs, returning Nothing if they don't overlap
 sectArc :: Arc -> Arc -> Maybe Arc

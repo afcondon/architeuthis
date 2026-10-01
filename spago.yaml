@@ -32,6 +32,12 @@ package:
     - tuples
     - harmonia
     - reef
+  # Without this section spago compiles src/ only, and `make test` ran
+  # whatever test modules were last compiled (2026-05-08) rather than test/.
+  test:
+    main: Test.Main
+    dependencies:
+      - exceptions
 
 workspace:
   extraPackages:
