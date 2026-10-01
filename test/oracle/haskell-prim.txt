@@ -92,3 +92,32 @@ timeToRand 301/7
 timeToRand -1/3
 timeToRand 123456789/1000
 timeToRand 1000000007/3
+# Parsec: `parsec NAME INPUT` runs the named parser (the same table in
+# haskell-prim.hs and Test.HaskellPrimSpec) on INPUT, where `^` stands for a
+# tab and `_` for a space, and shows the Either as Haskell shows it.
+parsec stringAlt ab
+parsec stringAlt ax
+parsec stringAlt q
+parsec tryStringAlt ax
+parsec digitsEof 123
+parsec digitsEof 12a
+parsec digitsEof _
+parsec lookAheadThen abc
+parsec lookAheadThen abd
+parsec commaList a,bc,d
+parsec commaList a,,b
+parsec labelled x
+parsec labelled 7
+parsec labelled q
+parsec column __^_^x
+parsec column ^^
+parsec keyword let
+parsec keyword lets
+parsec keyword le
+parsec spacesThen __abc
+parsec spacesThen __
+parsec optionDigits 42
+parsec optionDigits x
+parsec choiceStrings bar
+parsec choiceStrings fob
+parsec choiceStrings zzz

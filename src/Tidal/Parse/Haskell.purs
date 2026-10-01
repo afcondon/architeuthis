@@ -27,11 +27,10 @@ import Prelude
 
 import Control.Alt ((<|>))
 import Control.Lazy (defer)
-import Data.Identity (Identity)
+import Haskell.Parsec (Parsec, char)
+import Tidal.Parse.State (ParseState)
 import Data.Rational (toNumber)
 import Data.Tuple (Tuple(..))
-import Text.Parsing.Parser (ParserT)
-import Text.Parsing.Parser.String (char)
 import Tidal.AST.Types (Located(..), TPat(..))
 import Tidal.Chords (Modifiers)
 import Tidal.Core.Types (emptySpan)
@@ -50,7 +49,7 @@ derive instance Eq TDouble
 derive instance Eq TNote
 derive instance Eq TInt
 
-type P = ParserT String Identity
+type P = Parsec ParseState
 
 instance AtomParseable Vocable where
   atomParser = located (liftP (Vocable <$> pVocable))

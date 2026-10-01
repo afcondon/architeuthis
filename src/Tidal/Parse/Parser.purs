@@ -15,13 +15,11 @@ module Tidal.Parse.Parser
 
 import Prelude
 
-import Control.Monad.State (evalStateT)
 import Data.Either (Either)
-import Text.Parsing.Parser (ParseError, runParser)
-import Text.Parsing.Parser.String (eof)
+import Haskell.Parsec (ParseError, eof, runParser)
 import Tidal.AST.Types (TPat)
 import Tidal.Parse.Class (class AtomParseable, TidalParser)
-import Tidal.Parse.Combinators (pTidal, pNoteChord, liftP)
+import Tidal.Parse.Combinators (pTidal, pNoteChord)
 import Tidal.Parse.State (initialState)
 import Tidal.Pattern.Types (Note)
 
@@ -35,10 +33,10 @@ import Tidal.Pattern.Types (Note)
 -- | parseTPat "c4 e4 g4" :: Either ParseError (TPat Note)
 -- | ```
 parseTPat :: forall a. AtomParseable a => String -> Either ParseError (TPat a)
-parseTPat input = runParser input (evalStateT parser (initialState "<input>"))
+parseTPat input = runParser parser (initialState "<input>") "" input
   where
     parser :: TidalParser (TPat a)
-    parser = pTidal <* liftP eof
+    parser = pTidal <* eof
 
 -- | Alias for parseTPat with a friendlier name
 parseMini :: forall a. AtomParseable a => String -> Either ParseError (TPat a)
@@ -57,7 +55,7 @@ parse = parseTPat
 -- |
 -- | Returns a TPat_Stack of notes for the chord.
 parseChord :: String -> Either ParseError (TPat Note)
-parseChord input = runParser input (evalStateT parser (initialState "<input>"))
+parseChord input = runParser parser (initialState "<input>") "" input
   where
     parser :: TidalParser (TPat Note)
-    parser = pNoteChord <* liftP eof
+    parser = pNoteChord <* eof

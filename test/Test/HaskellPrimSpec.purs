@@ -11,14 +11,19 @@ module Test.HaskellPrimSpec (runHaskellPrimTests) where
 import Prelude
 
 import Data.Array (filter, length)
+import Data.Either (Either(..))
 import Data.Maybe (Maybe(..), maybe)
-import Data.String (Pattern(..), split)
+import Data.String (Pattern(..), Replacement(..), replaceAll, split)
+import Data.String.CodeUnits (fromCharArray)
 import Data.Traversable (for)
 import Data.Tuple (Tuple(..))
 import Effect (Effect)
 import Effect.Console (log)
+import Control.Alt ((<|>))
 import Effect.Exception (throw)
 import Haskell.Int as H
+import Haskell.Parsec (ParseError, Parsec, alphaNum, char, choice, digit, eof, getPosition, letter, lookAhead, many, many1, notFollowedBy, oneOf, option, sepBy, sourceColumn, sourceLine, spaces, string, try, (<?>))
+import Haskell.Parsec as Parsec
 import Haskell.Integer (Integer)
 import Haskell.Integer as Integer
 import Haskell.Rational (Rational, (%))
@@ -72,7 +77,37 @@ eval = case _ of
   -- Every value is k / 2^29; compare k.
   [ "timeToRand", r ] -> rational r >>= \t ->
     show <$> BigInt.fromNumber (timeToRand t * 536870912.0)
+  [ "parsec", name, input ] -> parsec name (replaceAll (Pattern "_") (Replacement " ") (replaceAll (Pattern "^") (Replacement "\t") input))
   _ -> Nothing
+
+-- | The same table as haskell-prim.hs's.
+parsec :: String -> String -> Maybe String
+parsec name input = case name of
+  "stringAlt" -> Just $ run (string "ab" <|> string "ax")
+  "tryStringAlt" -> Just $ run (try (string "ab") <|> string "ax")
+  "digitsEof" -> Just $ run (str (many1 digit) <* eof)
+  "lookAheadThen" -> Just $ run (lookAhead (string "ab") *> string "abc")
+  "commaList" -> Just $ run (sepBy (str (many1 letter)) (char ',') <* eof)
+  "labelled" -> Just $ run ((char 'x' <?> "an x") <|> digit)
+  "column" -> Just $ showEither (\p -> "(" <> show (sourceLine p) <> "," <> show (sourceColumn p) <> ")")
+      (Parsec.parse (many (oneOf [ ' ', '\t' ]) *> getPosition) "" input)
+  "keyword" -> Just $ run (string "let" <* notFollowedBy alphaNum)
+  "spacesThen" -> Just $ run (spaces *> str (many1 letter) <* eof)
+  "optionDigits" -> Just $ run (option "none" (str (many1 digit)) <* eof)
+  "choiceStrings" -> Just $ run (choice [ string "foo", string "bar" ] <* eof)
+  _ -> Nothing
+  where
+  -- Haskell's String is [Char]; ours is not, so make it one to show it.
+  str = map fromCharArray
+  run :: forall a. Show a => Parsec Unit a -> String
+  run p = showEither show (Parsec.parse p "" input)
+
+-- | `show` of an `Either`, as Haskell shows it (Parsec's `ParseError` has
+-- | only `show`, so it takes no parentheses).
+showEither :: forall a. (a -> String) -> Either ParseError a -> String
+showEither sh = case _ of
+  Left e -> "Left " <> show e
+  Right a -> "Right " <> sh a
 
 runHaskellPrimTests :: Effect Unit
 runHaskellPrimTests = do

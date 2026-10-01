@@ -63,21 +63,15 @@ import Prelude hiding (between)
 
 import Control.Alt ((<|>))
 import Control.Lazy (defer)
-import Control.Monad.State.Trans (mapStateT)
-import Control.Monad.Trans.Class (lift)
+import Haskell.Parsec (char, noneOf, satisfy, string, alphaNum, digit)
+import Haskell.Parsec as Parsec
 import Data.Array as Array
 import Data.Char (toCharCode, fromCharCode)
-import Data.Identity (Identity)
 import Data.Int as Int
 import Data.Maybe (Maybe(..))
 import Data.Rational (Rational, (%))
 import Data.String.CodeUnits as SCU
 import Data.Tuple (Tuple(..))
-import Text.Parsing.Parser (ParserT)
-import Text.Parsing.Parser as P
-import Text.Parsing.Parser.Combinators as PC
-import Text.Parsing.Parser.String (char, noneOf, satisfy, string, skipSpaces)
-import Text.Parsing.Parser.Token (alphaNum, digit)
 import Tidal.AST.Types (Located(..), TPat(..), SourceSpan, tpatSpan)
 import Tidal.Parse.Numbers (pRatio)
 import Tidal.Chords (Modifier(..), lookupChord, applyModifiers)
@@ -86,9 +80,10 @@ import Tidal.Parse.Class (class AtomParseable, atomParser, patternParser, TidalP
 import Tidal.Parse.State (currentPos, mkSourceSpan, newSeed)
 import Tidal.Pattern.Types (Note, mkNote)
 
--- | Lift a parser operation into TidalParser
-liftP :: forall a. ParserT String Identity a -> TidalParser a
-liftP = lift
+-- | The identity: plain parsers are TidalParsers now that the seed lives in
+-- | Parsec's user state. Kept so the grammar reads as it did.
+liftP :: forall a. TidalParser a -> TidalParser a
+liftP = identity
 
 -- | Get current position from the parser
 getPos :: TidalParser SourcePos
@@ -110,7 +105,7 @@ located p = do
 
 -- | Skip whitespace
 spaces :: TidalParser Unit
-spaces = liftP skipSpaces
+spaces = liftP Parsec.spaces
 
 -- | Parse a symbol (string followed by optional spaces)
 symbol :: String -> TidalParser String
@@ -194,7 +189,7 @@ pSequence = defer \_ -> do
       Just <$> (pEnumeration a <|> pElongate a <|> pRepeat a <|> pure a)
     foot = tryT do
       _ <- liftP $ char '.'
-      liftP $ PC.notFollowedBy (char '.')
+      liftP $ Parsec.notFollowedBy (char '.')
       spaces
       pure Nothing
     resolveFeet span parts =
@@ -231,7 +226,7 @@ pSingleWith :: forall a. TidalParser (TPat a) -> TidalParser (TPat a)
 pSingleWith f = defer \_ -> (restOrAtom >>= pRand) >>= pMult
   where
     restOrAtom =
-      tryT (liftP (PC.lookAhead (char '-' *> skipSpaces *> noneOf [ '-' ])) *> f)
+      tryT (liftP (Parsec.lookAhead (char '-' *> Parsec.spaces *> noneOf [ '-' ])) *> f)
         <|> dash
         <|> f
         <|> tilde
@@ -258,10 +253,10 @@ pSilence = do
   where
     tilde = void $ char '~'
     -- Dash is silence only when NOT followed by a digit (otherwise it's negation)
-    dash = PC.try do
+    dash = Parsec.try do
       _ <- char '-'
       -- Peek ahead - fail if followed by digit
-      PC.notFollowedBy digit
+      Parsec.notFollowedBy digit
       pure unit
 
 -- | Parse a variable reference: ^name
@@ -269,7 +264,7 @@ pVar :: forall a. TidalParser (TPat a)
 pVar = do
   Tuple span name <- spanned do
     _ <- liftP $ char '^'
-    cs <- liftP $ Array.many (alphaNum <|> satisfy \c -> c == '.' || c == '-' || c == '_' || c == ':')
+    cs <- liftP $ Parsec.many (alphaNum <|> satisfy \c -> c == '.' || c == '-' || c == '_' || c == ':')
     pure $ ControlName $ SCU.fromCharArray cs
   pure $ TPat_Var span name
 
@@ -293,21 +288,21 @@ pNoteChord = tryT $ do
     root <- optionT 0 pNoteRoot
     -- Parse chord separator and name
     _ <- liftP $ char '\''
-    chordName <- liftP $ Array.some (alphaNum <|> satisfy \c -> c == '7' || c == '9')
+    chordName <- liftP $ Parsec.many1 (alphaNum <|> satisfy \c -> c == '7' || c == '9')
     let name = SCU.fromCharArray chordName
     case lookupChord name of
       Just ints -> do
         -- Parse optional modifiers (each prefixed with ')
-        mods <- liftP $ Array.many parseModifierGroup
+        mods <- liftP $ Parsec.many parseModifierGroup
         pure $ Tuple root (applyModifiers (Array.concat mods) ints)
-      Nothing -> liftP $ P.fail $ "unknown chord: " <> name
+      Nothing -> liftP $ Parsec.fail $ "unknown chord: " <> name
   -- Build stack of notes
   let notes = map (\interval -> noteAtom span (root + interval)) intervals
   case Array.length notes of
-    0 -> liftP $ P.fail "empty chord"
+    0 -> liftP $ Parsec.fail "empty chord"
     1 -> case Array.head notes of
            Just n -> pure n
-           Nothing -> liftP $ P.fail "empty chord"
+           Nothing -> liftP $ Parsec.fail "empty chord"
     _ -> pure $ TPat_Stack span notes
   where
     -- Create a single note atom
@@ -316,61 +311,61 @@ pNoteChord = tryT $ do
 
     -- Parse root note: c, d, e, f, g, a, b with optional accidentals and octave
     pNoteRoot :: TidalParser Int
-    pNoteRoot = liftP $ PC.try do
+    pNoteRoot = liftP $ Parsec.try do
       base <- noteBase
-      mods <- Array.many noteModifier
-      oct <- PC.option 5 (Int.round <$> number)
+      mods <- Parsec.many noteModifier
+      oct <- Parsec.option 5 (Int.round <$> number)
       pure $ base + Array.foldl (+) 0 mods + (oct - 5) * 12
 
     -- Parse a modifier group: 'i, 'ii, 'i2, 'o, 'd1, '5
-    parseModifierGroup :: ParserT String Identity (Array Modifier)
+    parseModifierGroup :: TidalParser (Array Modifier)
     parseModifierGroup = do
       _ <- char '\''
       parseInvertMany <|> parseInvertN <|> parseOpen <|> parseDrop <|> parseRange
 
     -- Parse multiple 'i' characters: 'ii = two inversions
-    parseInvertMany :: ParserT String Identity (Array Modifier)
-    parseInvertMany = PC.try do
-      is <- Array.some (char 'i')
-      PC.notFollowedBy digit  -- Not 'i2' form
+    parseInvertMany :: TidalParser (Array Modifier)
+    parseInvertMany = Parsec.try do
+      is <- Parsec.many1 (char 'i')
+      Parsec.notFollowedBy digit  -- Not 'i2' form
       pure $ Array.replicate (Array.length is) Invert
 
     -- Parse 'i2' form: 'i followed by a number
-    parseInvertN :: ParserT String Identity (Array Modifier)
-    parseInvertN = PC.try do
+    parseInvertN :: TidalParser (Array Modifier)
+    parseInvertN = Parsec.try do
       _ <- char 'i'
       n <- pIntRaw
       pure $ Array.replicate n Invert
 
     -- Parse 'o' for open voicing
-    parseOpen :: ParserT String Identity (Array Modifier)
+    parseOpen :: TidalParser (Array Modifier)
     parseOpen = do
-      os <- Array.some (char 'o')
+      os <- Parsec.many1 (char 'o')
       pure $ Array.replicate (Array.length os) Open
 
     -- Parse 'd1', 'd2' for drop voicing
-    parseDrop :: ParserT String Identity (Array Modifier)
+    parseDrop :: TidalParser (Array Modifier)
     parseDrop = do
       _ <- char 'd'
       n <- pIntRaw
       pure [Drop n]
 
     -- Parse a number alone as range
-    parseRange :: ParserT String Identity (Array Modifier)
+    parseRange :: TidalParser (Array Modifier)
     parseRange = do
       n <- pIntRaw
       pure [Range n]
 
     -- Parse a positive integer (raw parser, not TidalParser)
-    pIntRaw :: ParserT String Identity Int
+    pIntRaw :: TidalParser Int
     pIntRaw = do
-      digits <- Array.some digit
+      digits <- Parsec.many1 digit
       case Int.fromString (SCU.fromCharArray digits) of
         Just n -> pure n
-        Nothing -> P.fail "expected integer"
+        Nothing -> Parsec.fail "expected integer"
 
     -- Base note values
-    noteBase :: ParserT String Identity Int
+    noteBase :: TidalParser Int
     noteBase = do
       c <- satisfy \x -> x >= 'a' && x <= 'g' || x >= 'A' && x <= 'G'
       case toLower c of
@@ -381,10 +376,10 @@ pNoteChord = tryT $ do
         'g' -> pure 7
         'a' -> pure 9
         'b' -> pure 11
-        _   -> P.fail "expected note name"
+        _   -> Parsec.fail "expected note name"
 
     -- Accidentals
-    noteModifier :: ParserT String Identity Int
+    noteModifier :: TidalParser Int
     noteModifier = do
       c <- satisfy \x -> x == 's' || x == 'f' || x == 'n'
       pure $ case c of
@@ -472,37 +467,37 @@ data Tuple3 a b c = Tuple3 a b c
 pElongate :: forall a. TPat a -> TidalParser (TPat a)
 pElongate a = do
   start <- getPos
-  rs <- liftP $ Array.some elongateOne
+  rs <- liftP $ Parsec.many1 elongateOne
   end <- getPos
   pure $ TPat_Elongate (mkSourceSpan start end) (one + Array.foldr (+) zero rs) a
   where
     elongateOne = do
       _ <- satisfy \c -> c == '@' || c == '_'
-      r <- PC.option one ((_ - one) <$> pRatio)
-      skipSpaces
+      r <- Parsec.option one ((_ - one) <$> pRatio)
+      Parsec.spaces
       pure r
 
 -- | Repetition: !n (default !1 means duplicate once)
 pRepeat :: forall a. TPat a -> TidalParser (TPat a)
 pRepeat a = do
   start <- getPos
-  ns <- liftP $ Array.some repeatOne
+  ns <- liftP $ Parsec.many1 repeatOne
   end <- getPos
   let total = 1 + Array.foldr (+) 0 ns
   pure $ TPat_Repeat (mkSourceSpan start end) total a
   where
     repeatOne = do
       _ <- char '!'
-      n <- PC.option 1 ((\x -> x - 1) <$> intParser)
-      skipSpaces
+      n <- Parsec.option 1 ((\x -> x - 1) <$> intParser)
+      Parsec.spaces
       pure n
 
-    intParser :: ParserT String Identity Int
+    intParser :: TidalParser Int
     intParser = do
-      digits <- Array.some digit
+      digits <- Parsec.many1 digit
       case Int.fromString (SCU.fromCharArray digits) of
         Just n -> pure n
-        Nothing -> P.fail "expected integer"
+        Nothing -> Parsec.fail "expected integer"
 
 -- | Enumeration: a .. b
 pEnumeration :: forall a. AtomParseable a => TPat a -> TidalParser (TPat a)
@@ -599,20 +594,18 @@ sepByT p sep = do
       rest <- manyT (sep *> p)
       pure $ Array.cons f rest
 
--- | Try combinator for TidalParser (backtracking)
--- |
--- | Uses mapStateT to lift PC.try through the StateT layer
+-- | Parsec's `try`: a consumed failure becomes an unconsumed one.
 tryT :: forall a. TidalParser a -> TidalParser a
-tryT = mapStateT PC.try
+tryT = Parsec.try
 
 -- | Parse an integer
 pInt :: TidalParser Int
 pInt = do
   sign <- (liftP (char '-') $> (-1)) <|> pure 1
-  digits <- liftP $ Array.some digit
+  digits <- liftP $ Parsec.many1 digit
   case Int.fromString (SCU.fromCharArray digits) of
     Just n -> pure (sign * n)
-    Nothing -> liftP $ P.fail "expected integer"
+    Nothing -> liftP $ Parsec.fail "expected integer"
 
 -- | Parse a number (decimal)
 pNumber :: TidalParser Number

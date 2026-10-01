@@ -22,46 +22,39 @@ module Tidal.Parse.Class
 import Prelude
 
 import Control.Alt ((<|>))
-import Control.Monad.State (StateT)
-import Control.Monad.State.Trans (mapStateT)
-import Control.Monad.Trans.Class (lift)
+import Haskell.Parsec (Parsec, char, satisfy, alphaNum, digit, letter)
+import Haskell.Parsec as Parsec
 import Data.Tuple (Tuple(..))
 import Data.Array as Array
 import Data.Char (toCharCode, fromCharCode)
-import Data.Identity (Identity)
 import Data.Int as Int
-import Data.Maybe (Maybe(..))
-import Data.Rational (Rational, (%))
+import Data.Maybe (Maybe(..), fromMaybe)
+import Data.Number as Number
+import Data.Rational (Rational)
 import Data.String.CodeUnits as SCU
-import Text.Parsing.Parser (ParserT)
-import Text.Parsing.Parser as P
-import Text.Parsing.Parser.Combinators as PC
-import Text.Parsing.Parser.String (char, satisfy)
-import Text.Parsing.Parser.Token (alphaNum, digit, letter)
 import Tidal.AST.Types (Located(..), TPat(..), SourceSpan)
 import Tidal.Chords (Modifier(..), Modifiers(..), lookupChord, applyModifiers)
 import Tidal.Pattern.Types (Note, mkNote)
 import Tidal.Parse.Numbers (parseIntNote, parseModifiers, pRatio)
 import Tidal.Parse.State (ParseState, currentPos, mkSourceSpan)
 
--- | The parser monad: Parser with state for seed generation
--- |
--- | StateT provides the seed counter, ParserT provides parsing.
-type TidalParser = StateT ParseState (ParserT String Identity)
+-- | The parser monad: Haskell's Parsec (`Haskell.Parsec`), its user state
+-- | the seed counter, as in Tidal's `Parsec String Int`.
+type TidalParser = Parsec ParseState
 
 -- | Parse a decimal number (purerl-compatible replacement for Parsing.String.Basic.number)
-number :: forall m. Monad m => ParserT String m Number
+number :: TidalParser Number
 number = do
-  intPart <- Array.some digit
-  fracPart <- PC.option [] do
+  intPart <- Parsec.many1 digit
+  fracPart <- Parsec.option [] do
     _ <- char '.'
-    Array.some digit
+    Parsec.many1 digit
   let intStr = SCU.fromCharArray intPart
       fracStr = SCU.fromCharArray fracPart
       numStr = if Array.null fracPart then intStr else intStr <> "." <> fracStr
   case Int.fromString intStr of
     Just _ -> pure $ unsafeParseNumber numStr
-    Nothing -> P.fail "expected number"
+    Nothing -> Parsec.fail "expected number"
   where
     -- Safe because we've validated the format
     unsafeParseNumber :: String -> Number
@@ -69,12 +62,13 @@ number = do
       Just n -> Int.toNumber n
       Nothing -> readFloat s
 
--- | Foreign import for reading floats (will need FFI)
-foreign import readFloat :: String -> Number
+-- | Validated above, so `fromString` cannot fail here.
+readFloat :: String -> Number
+readFloat s = fromMaybe 0.0 (Number.fromString s)
 
--- | Lift a parser operation into TidalParser
-liftP :: forall a. ParserT String Identity a -> TidalParser a
-liftP = lift
+-- | The identity, as in `Tidal.Parse.Combinators`.
+liftP :: forall a. TidalParser a -> TidalParser a
+liftP = identity
 
 -- | Wrap a parser to capture source location
 located :: forall a. TidalParser a -> TidalParser (Located a)
@@ -125,7 +119,7 @@ instance AtomParseable Modifiers where
 -- | parser is tried first, falling back to the plain sample-name form.
 instance AtomParseable String where
   atomParser = located stringAtom
-  patternParser = mapStateT PC.try stringChordParser
+  patternParser = Parsec.try stringChordParser
               <|> (TPat_Atom <$> located stringAtom)
 
 -- | Core string atom parser
@@ -156,21 +150,21 @@ stringAtom = signedNumAtom <|> regularAtom
     -- enough to "the minus didn't take" to be blamed on the module.
     -- Positive fractions were always fine (`regularAtom` accepts `.`),
     -- which is why this survived: it only bit the signed half.
-    signedNumAtom = liftP $ PC.try do
+    signedNumAtom = liftP $ Parsec.try do
       minus <- char '-'
       d0 <- digit
-      ds <- Array.many digit
-      frac <- PC.option [] $ PC.try do
+      ds <- Parsec.many digit
+      frac <- Parsec.option [] $ Parsec.try do
         dot <- char '.'
         f0 <- digit
-        fs <- Array.many digit
+        fs <- Parsec.many digit
         pure $ Array.cons dot (Array.cons f0 fs)
       pure $ SCU.fromCharArray
         (Array.cons minus (Array.cons d0 ds) <> frac)
 
     regularAtom = do
       first <- liftP alphaNum
-      rest <- liftP $ Array.many validChar
+      rest <- liftP $ Parsec.many validChar
       pure $ SCU.fromCharArray (Array.cons first rest)
 
     validChar = alphaNum <|> satisfy \c ->
@@ -194,19 +188,19 @@ stringChordParser = do
   Tuple span (Tuple rootPitch intervals) <- spannedClass do
     rootPitch <- optionTC 60 pNoteRootMidi   -- default = c4 = 60
     _ <- liftP $ char '\''
-    chordName <- liftP $ Array.some (alphaNum <|> satisfy \c -> c == '7' || c == '9')
+    chordName <- liftP $ Parsec.many1 (alphaNum <|> satisfy \c -> c == '7' || c == '9')
     let name = SCU.fromCharArray chordName
     case lookupChord name of
       Just ints -> do
-        mods <- liftP $ Array.many parseChordMods
+        mods <- liftP $ Parsec.many parseChordMods
         pure $ Tuple rootPitch (applyModifiers (Array.concat mods) ints)
-      Nothing -> liftP $ P.fail $ "unknown chord: " <> name
+      Nothing -> liftP $ Parsec.fail $ "unknown chord: " <> name
   let names = map (\interval -> stringAtomFromPitch span (rootPitch + interval)) intervals
   case Array.length names of
-    0 -> liftP $ P.fail "empty chord"
+    0 -> liftP $ Parsec.fail "empty chord"
     1 -> case Array.head names of
            Just n -> pure n
-           Nothing -> liftP $ P.fail "empty chord"
+           Nothing -> liftP $ Parsec.fail "empty chord"
     _ -> pure $ TPat_Stack span names
   where
     stringAtomFromPitch :: SourceSpan -> Int -> TPat String
@@ -215,52 +209,52 @@ stringChordParser = do
     -- Parse note root using runtime convention: c4 = 60.
     -- Accepts `s`/`f`/`n` (Tidal accidentals) and `#` (musical sharp).
     pNoteRootMidi :: TidalParser Int
-    pNoteRootMidi = liftP $ PC.try do
+    pNoteRootMidi = liftP $ Parsec.try do
       base <- noteBaseParser
-      mods <- Array.many noteModParserExt
-      oct <- PC.option 4 (Int.round <$> number)
+      mods <- Parsec.many noteModParserExt
+      oct <- Parsec.option 4 (Int.round <$> number)
       pure $ (oct + 1) * 12 + base + Array.foldl (+) 0 mods
 
     -- Parse a chord-modifier group: 'i, 'ii, 'i2, 'o, 'd1, '5
-    parseChordMods :: ParserT String Identity (Array Modifier)
+    parseChordMods :: TidalParser (Array Modifier)
     parseChordMods = do
       _ <- char '\''
       pInvertMany <|> pInvertN <|> pOpen <|> pDrop <|> pRange
 
-    pInvertMany :: ParserT String Identity (Array Modifier)
-    pInvertMany = PC.try do
-      is <- Array.some (char 'i')
-      PC.notFollowedBy digit
+    pInvertMany :: TidalParser (Array Modifier)
+    pInvertMany = Parsec.try do
+      is <- Parsec.many1 (char 'i')
+      Parsec.notFollowedBy digit
       pure $ Array.replicate (Array.length is) Invert
 
-    pInvertN :: ParserT String Identity (Array Modifier)
-    pInvertN = PC.try do
+    pInvertN :: TidalParser (Array Modifier)
+    pInvertN = Parsec.try do
       _ <- char 'i'
       n <- pPosInt
       pure $ Array.replicate n Invert
 
-    pOpen :: ParserT String Identity (Array Modifier)
+    pOpen :: TidalParser (Array Modifier)
     pOpen = do
-      os <- Array.some (char 'o')
+      os <- Parsec.many1 (char 'o')
       pure $ Array.replicate (Array.length os) Open
 
-    pDrop :: ParserT String Identity (Array Modifier)
+    pDrop :: TidalParser (Array Modifier)
     pDrop = do
       _ <- char 'd'
       n <- pPosInt
       pure [Drop n]
 
-    pRange :: ParserT String Identity (Array Modifier)
+    pRange :: TidalParser (Array Modifier)
     pRange = do
       n <- pPosInt
       pure [Range n]
 
-    pPosInt :: ParserT String Identity Int
+    pPosInt :: TidalParser Int
     pPosInt = do
-      digits <- Array.some digit
+      digits <- Parsec.many1 digit
       case Int.fromString (SCU.fromCharArray digits) of
         Just n -> pure n
-        Nothing -> P.fail "expected integer"
+        Nothing -> Parsec.fail "expected integer"
 
     spannedClass :: forall a. TidalParser a -> TidalParser (Tuple SourceSpan a)
     spannedClass p = do
@@ -274,7 +268,7 @@ stringChordParser = do
 
 -- | Note modifier parser including `#` (sharp) and the Tidal-style
 -- | `s`/`f`/`n` accidentals.  Used by `stringChordParser`'s root parser.
-noteModParserExt :: ParserT String Identity Int
+noteModParserExt :: TidalParser Int
 noteModParserExt = do
   c <- satisfy \x -> x == 's' || x == 'f' || x == 'n' || x == '#'
   pure $ case c of
@@ -376,9 +370,8 @@ instance AtomParseable Note where
   -- | Pattern parser for Note tries chord syntax first, then single notes
   patternParser = tryT chordParser <|> (TPat_Atom <$> located noteAtomCore)
     where
-      -- Try combinator through StateT
       tryT :: forall a. TidalParser a -> TidalParser a
-      tryT = mapStateT PC.try
+      tryT = Parsec.try
 
       -- Parse chord: c'major, e'minor, 'major
       -- With optional modifiers: c'major'i, c'major'o, c'major'5, c'major'd1
@@ -387,68 +380,68 @@ instance AtomParseable Note where
         Tuple span (Tuple root intervals) <- spanned do
           root <- optionT 0 pNoteRoot
           _ <- liftP $ char '\''
-          chordName <- liftP $ Array.some (alphaNum <|> satisfy \c -> c == '7' || c == '9')
+          chordName <- liftP $ Parsec.many1 (alphaNum <|> satisfy \c -> c == '7' || c == '9')
           let name = SCU.fromCharArray chordName
           case lookupChord name of
             Just ints -> do
               -- Parse optional modifiers (each prefixed with ')
-              mods <- liftP $ Array.many parseModifierGroup
+              mods <- liftP $ Parsec.many parseModifierGroup
               pure $ Tuple root (applyModifiers (Array.concat mods) ints)
-            Nothing -> liftP $ P.fail $ "unknown chord: " <> name
+            Nothing -> liftP $ Parsec.fail $ "unknown chord: " <> name
         let notes = map (\interval -> noteAtomPat span (root + interval)) intervals
         case Array.length notes of
-          0 -> liftP $ P.fail "empty chord"
+          0 -> liftP $ Parsec.fail "empty chord"
           1 -> case Array.head notes of
                  Just n -> pure n
-                 Nothing -> liftP $ P.fail "empty chord"
+                 Nothing -> liftP $ Parsec.fail "empty chord"
           _ -> pure $ TPat_Stack span notes
 
       -- Parse a modifier group: 'i, 'ii, 'i2, 'o, 'd1, '5
-      parseModifierGroup :: ParserT String Identity (Array Modifier)
+      parseModifierGroup :: TidalParser (Array Modifier)
       parseModifierGroup = do
         _ <- char '\''
         parseInvertMany <|> parseInvertN <|> parseOpen <|> parseDrop <|> parseRange
 
       -- Parse multiple 'i' characters: 'ii = two inversions
-      parseInvertMany :: ParserT String Identity (Array Modifier)
-      parseInvertMany = PC.try do
-        is <- Array.some (char 'i')
-        PC.notFollowedBy digit  -- Not 'i2' form
+      parseInvertMany :: TidalParser (Array Modifier)
+      parseInvertMany = Parsec.try do
+        is <- Parsec.many1 (char 'i')
+        Parsec.notFollowedBy digit  -- Not 'i2' form
         pure $ Array.replicate (Array.length is) Invert
 
       -- Parse 'i2' form: 'i followed by a number
-      parseInvertN :: ParserT String Identity (Array Modifier)
-      parseInvertN = PC.try do
+      parseInvertN :: TidalParser (Array Modifier)
+      parseInvertN = Parsec.try do
         _ <- char 'i'
         n <- pInteger
         pure $ Array.replicate n Invert
 
       -- Parse 'o' for open voicing
-      parseOpen :: ParserT String Identity (Array Modifier)
+      parseOpen :: TidalParser (Array Modifier)
       parseOpen = do
-        os <- Array.some (char 'o')
+        os <- Parsec.many1 (char 'o')
         pure $ Array.replicate (Array.length os) Open
 
       -- Parse 'd1', 'd2' for drop voicing
-      parseDrop :: ParserT String Identity (Array Modifier)
+      parseDrop :: TidalParser (Array Modifier)
       parseDrop = do
         _ <- char 'd'
         n <- pInteger
         pure [Drop n]
 
       -- Parse a number alone as range
-      parseRange :: ParserT String Identity (Array Modifier)
+      parseRange :: TidalParser (Array Modifier)
       parseRange = do
         n <- pInteger
         pure [Range n]
 
       -- Parse a positive integer
-      pInteger :: ParserT String Identity Int
+      pInteger :: TidalParser Int
       pInteger = do
-        digits <- Array.some digit
+        digits <- Parsec.many1 digit
         case Int.fromString (SCU.fromCharArray digits) of
           Just n -> pure n
-          Nothing -> P.fail "expected integer"
+          Nothing -> Parsec.fail "expected integer"
 
       -- Create a single note atom pattern
       noteAtomPat :: SourceSpan -> Int -> TPat Note
@@ -456,10 +449,10 @@ instance AtomParseable Note where
 
       -- Parse root note: c, d, e, f, g, a, b with optional accidentals and octave
       pNoteRoot :: TidalParser Int
-      pNoteRoot = liftP $ PC.try do
+      pNoteRoot = liftP $ Parsec.try do
         base <- noteBaseParser
-        mods <- Array.many noteModParser
-        oct <- PC.option 5 (Int.round <$> number)
+        mods <- Parsec.many noteModParser
+        oct <- Parsec.option 5 (Int.round <$> number)
         pure $ base + Array.foldl (+) 0 mods + (oct - 5) * 12
 
       -- Option combinator
@@ -479,23 +472,23 @@ noteAtomCore :: TidalParser Note
 noteAtomCore = noteName <|> noteNumber
   where
     -- Parse note name: c, cs, df, etc. with optional octave
-    noteName = liftP $ PC.try do
+    noteName = liftP $ Parsec.try do
       base <- noteBaseParser
-      mods <- Array.many noteModParser
-      oct <- PC.option 5 (Int.round <$> number)
+      mods <- Parsec.many noteModParser
+      oct <- Parsec.option 5 (Int.round <$> number)
       let pitch = base + Array.foldl (+) 0 mods + (oct - 5) * 12
       pure $ mkNote pitch
 
     -- MIDI note number (integer)
     noteNumber = do
       sign <- (liftP (char '-') $> (-1)) <|> pure 1
-      digits <- liftP $ Array.some digit
+      digits <- liftP $ Parsec.many1 digit
       case Int.fromString (SCU.fromCharArray digits) of
         Just n -> pure $ mkNote (sign * n)
-        Nothing -> liftP $ P.fail "expected note number"
+        Nothing -> liftP $ Parsec.fail "expected note number"
 
 -- | Base note parser: c=0, d=2, e=4, f=5, g=7, a=9, b=11
-noteBaseParser :: ParserT String Identity Int
+noteBaseParser :: TidalParser Int
 noteBaseParser = do
   c <- letter
   case toLowerHelper c of
@@ -506,10 +499,10 @@ noteBaseParser = do
     'g' -> pure 7
     'a' -> pure 9
     'b' -> pure 11
-    _   -> P.fail "expected note name (c, d, e, f, g, a, b)"
+    _   -> Parsec.fail "expected note name (c, d, e, f, g, a, b)"
 
 -- | Note modifier parser: s=+1 (sharp), f=-1 (flat), n=0 (natural)
-noteModParser :: ParserT String Identity Int
+noteModParser :: TidalParser Int
 noteModParser = do
   c <- satisfy \x -> x == 's' || x == 'f' || x == 'n'
   pure $ case c of

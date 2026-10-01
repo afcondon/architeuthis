@@ -89,4 +89,30 @@ golden =
   , { input: "timeToRand -1/3", output: "181819923" }
   , { input: "timeToRand 123456789/1000", output: "26010616" }
   , { input: "timeToRand 1000000007/3", output: "60731477" }
+  , { input: "parsec stringAlt ab", output: "Right \"ab\"" }
+  , { input: "parsec stringAlt ax", output: "Left (line 1, column 1):\nunexpected \"x\"\nexpecting \"ab\"" }
+  , { input: "parsec stringAlt q", output: "Left (line 1, column 1):\nunexpected \"q\"\nexpecting \"ab\" or \"ax\"" }
+  , { input: "parsec tryStringAlt ax", output: "Right \"ax\"" }
+  , { input: "parsec digitsEof 123", output: "Right \"123\"" }
+  , { input: "parsec digitsEof 12a", output: "Left (line 1, column 3):\nunexpected 'a'\nexpecting digit or end of input" }
+  , { input: "parsec digitsEof _", output: "Left (line 1, column 1):\nunexpected \" \"\nexpecting digit" }
+  , { input: "parsec lookAheadThen abc", output: "Right \"abc\"" }
+  , { input: "parsec lookAheadThen abd", output: "Left (line 1, column 1):\nunexpected \"d\"\nexpecting \"abc\"" }
+  , { input: "parsec commaList a,bc,d", output: "Right [\"a\",\"bc\",\"d\"]" }
+  , { input: "parsec commaList a,,b", output: "Left (line 1, column 3):\nunexpected \",\"\nexpecting letter" }
+  , { input: "parsec labelled x", output: "Right 'x'" }
+  , { input: "parsec labelled 7", output: "Right '7'" }
+  , { input: "parsec labelled q", output: "Left (line 1, column 1):\nunexpected \"q\"\nexpecting an x or digit" }
+  , { input: "parsec column __^_^x", output: "Right (1,17)" }
+  , { input: "parsec column ^^", output: "Right (1,17)" }
+  , { input: "parsec keyword let", output: "Right \"let\"" }
+  , { input: "parsec keyword lets", output: "Left (line 1, column 5):\nunexpected 's'" }
+  , { input: "parsec keyword le", output: "Left (line 1, column 1):\nunexpected end of input\nexpecting \"let\"" }
+  , { input: "parsec spacesThen __abc", output: "Right \"abc\"" }
+  , { input: "parsec spacesThen __", output: "Left (line 1, column 3):\nunexpected end of input\nexpecting space or letter" }
+  , { input: "parsec optionDigits 42", output: "Right \"42\"" }
+  , { input: "parsec optionDigits x", output: "Left (line 1, column 1):\nunexpected 'x'\nexpecting digit or end of input" }
+  , { input: "parsec choiceStrings bar", output: "Right \"bar\"" }
+  , { input: "parsec choiceStrings fob", output: "Left (line 1, column 1):\nunexpected \"b\"\nexpecting \"foo\"" }
+  , { input: "parsec choiceStrings zzz", output: "Left (line 1, column 1):\nunexpected \"z\"\nexpecting \"foo\" or \"bar\"" }
   ]

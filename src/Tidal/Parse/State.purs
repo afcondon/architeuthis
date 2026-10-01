@@ -1,7 +1,6 @@
--- | Parser state for mini-notation parsing
--- |
--- | Unlike Tidal's Haskell version where the seed is hidden in Parsec state,
--- | we use an explicit record type for clarity.
+-- | Parser state for mini-notation parsing: Parsec's user state, as in
+-- | Tidal's `Parser = Parsec String Int`, as a record (the seed counter,
+-- | plus the file name). Like Parsec's, it rolls back on backtracking.
 module Tidal.Parse.State
   ( ParseState
   , initialState
@@ -12,9 +11,7 @@ module Tidal.Parse.State
 
 import Prelude
 
-import Control.Monad.State (class MonadState, get, modify)
-import Text.Parsing.Parser as P
-import Text.Parsing.Parser.Pos (Position(..))
+import Haskell.Parsec (Parsec, getPosition, getState, modifyState, sourceColumn, sourceLine)
 import Tidal.Core.Types (Seed(..), SourcePos, SourceSpan)
 
 -- | Parser state
@@ -37,22 +34,15 @@ initialState fileName =
 -- |
 -- | Each `?` and `|` operator needs a unique seed for deterministic
 -- | pseudo-randomness. Seeds increment monotonically.
-newSeed :: forall m. MonadState ParseState m => m Seed
+newSeed :: Parsec ParseState Seed
 newSeed = do
-  st <- get
-  _ <- modify \s -> s { nextSeed = s.nextSeed + 1 }
+  st <- getState
+  modifyState \s -> s { nextSeed = s.nextSeed + 1 }
   pure $ Seed st.nextSeed
 
--- | Convert parsing Position to our SourcePos
-positionToSourcePos :: Position -> SourcePos
-positionToSourcePos (Position { line, column }) =
-  { line, column }
-
--- | Get current source position from parser
--- |
--- | This needs to be called within the parser monad
-currentPos :: forall m. Monad m => P.ParserT String m SourcePos
-currentPos = positionToSourcePos <$> P.position
+-- | The current source position, as Parsec counts it (from 1, 1).
+currentPos :: forall u. Parsec u SourcePos
+currentPos = (\p -> { line: sourceLine p, column: sourceColumn p }) <$> getPosition
 
 -- | Create a SourceSpan from start and end positions
 mkSourceSpan :: SourcePos -> SourcePos -> SourceSpan

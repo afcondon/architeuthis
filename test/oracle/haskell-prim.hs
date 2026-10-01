@@ -4,6 +4,8 @@
 --   ../limulus/ghc-tidal/bin/runghc test/oracle/haskell-prim.hs \
 --     < test/oracle/haskell-prim.txt > test/Test/Oracle/HaskellPrimGolden.purs
 import Data.Bits (shiftL, shiftR)
+import Text.Parsec hiding (count)
+import Text.Parsec.String (Parser)
 import Data.List (intercalate)
 import Data.Ratio ((%))
 import Sound.Tidal.UI (timeToIntSeed, timeToRand, xorwise)
@@ -45,7 +47,31 @@ eval ["round", r] = show (round (rational r) :: Integer)
 eval ["timeToIntSeed", r] = show (timeToIntSeed (rational r))
 -- Exact: every value is k / 2^29, so print k.
 eval ["timeToRand", r] = show (truncate ((timeToRand (rational r) :: Double) * 536870912) :: Integer)
+eval ["parsec", name, input] = parsec name (map unescape input)
+  where
+    unescape '^' = '\t'
+    unescape '_' = ' '
+    unescape c = c
 eval c = error ("unknown case: " ++ unwords c)
+
+-- The same table as Test.HaskellPrimSpec's.
+parsec :: String -> String -> String
+parsec name input = case name of
+  "stringAlt" -> run (string "ab" <|> string "ax")
+  "tryStringAlt" -> run (try (string "ab") <|> string "ax")
+  "digitsEof" -> run (many1 digit <* eof)
+  "lookAheadThen" -> run (lookAhead (string "ab") *> string "abc")
+  "commaList" -> run (sepBy (many1 letter) (char ',') <* eof)
+  "labelled" -> run ((char 'x' <?> "an x") <|> digit)
+  "column" -> run (many (oneOf " \t") *> ((\p -> (sourceLine p, sourceColumn p)) <$> getPosition))
+  "keyword" -> run (string "let" <* notFollowedBy alphaNum)
+  "spacesThen" -> run (spaces *> many1 letter <* eof)
+  "optionDigits" -> run (option "none" (many1 digit) <* eof)
+  "choiceStrings" -> run (choice [string "foo", string "bar"] <* eof)
+  _ -> error ("unknown parser: " ++ name)
+  where
+    run :: Show a => Parser a -> String
+    run p = show (parse p "" input)
 
 main :: IO ()
 main = do
