@@ -1973,6 +1973,10 @@ safe_parse(Text) ->
 websocket_info({stage_broadcast, Bin}, State) ->
     %% A change on the stage made by another page (tidal_stage).
     {reply, {text, Bin}, State};
+websocket_info({sync_broadcast, Bin}, State) ->
+    %% A change the rig made that this page must follow in lockstep
+    %% (tidal_link_anchor:sync_broadcast/1), e.g. an `odonus` move.
+    {reply, {text, Bin}, State};
 websocket_info({anchor_broadcast, Bin}, State) ->
     %% Forwarded Link anchor from tidal_link_anchor — push it to this
     %% subscribed browser client as a text frame (Atlantis Sync Protocol).

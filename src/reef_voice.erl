@@ -44,6 +44,9 @@
 %% re-sync) — re-snap to now rather than waiting out the gap in silence. Normal
 %% lead is only the lookahead (~2-3 steps), so this is comfortably clear of it.
 -define(SNAP_AHEAD, 8).
+%% How far past the last computed step a move is tagged (see the {move, _}
+%% clause): Triggerfish tags its own gestures inputBufferSteps (2) ahead.
+-define(MOVE_LEAD_STEPS, 2).
 %% Default base channel: heads emit on BASE_CHANNEL + headIdx → 12/13/14/15, one
 %% MIDI channel per head so they're separable in Ableton (per-voice recording,
 %% frontend-vs-backend comparison, golden capture).
@@ -227,13 +230,21 @@ loop(St) ->
             %% on the next step to be computed, and a `for n` restores the settings it
             %% changed n bars later. Scheduled against the current state, so the
             %% restore puts back what was there before the move.
+            %% Tagged two steps past this voice's lookahead, as the frontend tags
+            %% its own gestures, so a following page receives each one before
+            %% it is due and applies it on the same step (lockstep: mutation
+            %% threads a shared seed, so a step's difference would diverge).
             Sched = 'reef_move@ps':schedule(Move, maps:get(sim, St)),
-            T = maps:get(last_step, St) + 1,
+            T = maps:get(last_step, St) + ?MOVE_LEAD_STEPS,
             StepsPerBar = round(4 / maps:get(step_beats, St)),
             Now = [{T, I} || I <- array:to_list(maps:get(now, Sched))],
             Later = [{T + Bars * StepsPerBar, I}
                      || #{bars := Bars, inputs := Is} <- array:to_list(maps:get(later, Sched)),
                         I <- array:to_list(Is)],
+            lists:foreach(fun({Tick, I}) ->
+                              Json = 'reef_protocol@ps':encodeTagged(#{tick => Tick, input => I}),
+                              tidal_link_anchor:sync_broadcast(<<"reef-input ", Json/binary>>)
+                          end, Now ++ Later),
             Pending = maps:get(pending, St),
             loop(St#{pending => Pending ++ Now ++ Later});
         {set_step_beats, B} when is_number(B), B > 0 ->

@@ -20,7 +20,7 @@
 
 -export([start/0, start_link/0, stop/0,
          info/0, cycle_at/1, beat_at/1, tempo/0, has_anchor/0,
-         scheduler_clock/2]).
+         scheduler_clock/2, sync_broadcast/1]).
 
 -define(DEFAULT_PORT, 57121).
 -define(NAME, ?MODULE).
@@ -225,6 +225,11 @@ loop(State) ->
             From ! {Ref, Reply},
             loop(State);
 
+        {sync_broadcast, Bin} ->
+            lists:foreach(fun(Pid) -> Pid ! {sync_broadcast, Bin} end,
+                          sets:to_list(maps:get(subscribers, State, sets:new()))),
+            loop(State);
+
         {subscribe, Pid} when is_pid(Pid) ->
             %% A WS handler wants the anchor stream. Monitor it so we
             %% prune the subscriber set when the connection dies, and
@@ -344,4 +349,15 @@ decode_string(Bin) ->
                 false ->
                     error
             end
+    end.
+
+
+%% Send a frame to every page subscribed to the Atlantis sync channel (the
+%% pages that took the anchor stream: Binnacle apps). For changes the rig makes
+%% that the pages must follow in lockstep, such as an `odonus` move's tagged
+%% gestures. Fire-and-forget; a no-op if the listener isn't running.
+sync_broadcast(Bin) when is_binary(Bin) ->
+    case whereis(?NAME) of
+        undefined -> ok;
+        Pid -> Pid ! {sync_broadcast, Bin}, ok
     end.
