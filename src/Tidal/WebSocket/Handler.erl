@@ -54,6 +54,10 @@ websocket_handle(_Frame, State) ->
 %% setcps), read by Tidal.Line. Its `hush` is Tidal's (the d1..d16 streams);
 %% the bare `hush` below stays the whole rig's.
 try_parse_prefixed(<<"tidal ", Rest/binary>>) -> {tidal_line, Rest};
+%% odonus <move> — a move on the running Odonus (Reef.Move): several gestures
+%% landing on one step, e.g. `odonus $ unison # phase 2`. Also reached as
+%% `tidal odonus $ ...`, which is how Limulus sends a block.
+try_parse_prefixed(<<"odonus ", _/binary>> = Line) -> {tidal_line, Line};
 try_parse_prefixed(<<"hush">>) -> {hush};
 try_parse_prefixed(<<"hush ", _/binary>>) -> {hush};
 try_parse_prefixed(<<"silence">>) -> {hush};
@@ -1901,6 +1905,32 @@ handle_pattern_message(Text, State) ->
 %% Run one block of Tidal (Tidal.Line) and say what happened, as the reply
 %% frame. A refusal names its reason; nothing half-runs.
 tidal_line(Block) ->
+    case string:trim(Block, leading) of
+        <<"odonus", _/binary>> = Line -> odonus_line(Line);
+        _ -> tidal_pattern_line(Block)
+    end.
+
+%% A move on the Odonus voice: parsed by the shared Reef.Move, applied by
+%% reef_voice on its next step (and restored after n bars, for `for n`).
+odonus_line(Line) ->
+    try 'reef_move@ps':parse(Line) of
+        {left, Reason} ->
+            <<"ERR: odonus: ", Reason/binary>>;
+        {right, Move} ->
+            case whereis(reef_voice) of
+                undefined ->
+                    <<"ERR: odonus: no Odonus voice is running (start Odonus from Triggerfish)">>;
+                Pid ->
+                    Pid ! {move, Move},
+                    N = array:size('reef_move@ps':inputsOf(Move)),
+                    iolist_to_binary(io_lib:format("OK: odonus (~p gestures)", [N]))
+            end
+    catch
+        Class:Why ->
+            iolist_to_binary(io_lib:format("ERR: odonus: ~p:~p", [Class, Why]))
+    end.
+
+tidal_pattern_line(Block) ->
     try ('tidal_line@ps':parseLine(Block)) of
         {right, {play, N, Pattern}} ->
             case tidal_dirt_voice_sup:set(N, Pattern) of

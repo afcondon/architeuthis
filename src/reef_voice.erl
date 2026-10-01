@@ -133,7 +133,10 @@ do_start(Odo, Channel, StepBeats) ->
              spread => 0.5,
              bias => 0.5,
              odo => Odo,
-             seed => 'reef_marbles@ps':seedFrom(1) },
+             seed => 'reef_marbles@ps':seedFrom(1),
+             %% Reef.Gen's SimState gained `frozen` (de207e8, 2026-07-09); without
+             %% it stepTick's clause never matched and this path crashed on step 1.
+             frozen => false },
     do_start_sim(Sim, Channel, StepBeats, -1).
 
 %% Replace any running voice, then spawn a fresh clock-locked one from a full
@@ -219,6 +222,20 @@ loop(St) ->
         {apply_input, Tick, Input} ->
             Pending = maps:get(pending, St),
             loop(St#{pending => Pending ++ [{Tick, Input}]});
+        {move, Move} ->
+            %% A move (Reef.Move, from an `odonus` line): its gestures land together
+            %% on the next step to be computed, and a `for n` restores the settings it
+            %% changed n bars later. Scheduled against the current state, so the
+            %% restore puts back what was there before the move.
+            Sched = 'reef_move@ps':schedule(Move, maps:get(sim, St)),
+            T = maps:get(last_step, St) + 1,
+            StepsPerBar = round(4 / maps:get(step_beats, St)),
+            Now = [{T, I} || I <- array:to_list(maps:get(now, Sched))],
+            Later = [{T + Bars * StepsPerBar, I}
+                     || #{bars := Bars, inputs := Is} <- array:to_list(maps:get(later, Sched)),
+                        I <- array:to_list(Is)],
+            Pending = maps:get(pending, St),
+            loop(St#{pending => Pending ++ Now ++ Later});
         {set_step_beats, B} when is_number(B), B > 0 ->
             %% STEP LENGTH sync (lockstep P4c): the frontend's STEP LENGTH divides
             %% the 1/16 grid; match it so we step at the same rate and share the same
