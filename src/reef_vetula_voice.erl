@@ -8,9 +8,9 @@
 %%     `renderMidiAt`) and schedule the notes on the rig's own Vetula channels. This is
 %%     the self-contained MIDI leg — no Odonus, so it validates the scheduler's MIDI
 %%     sync against the browser in isolation.
-%%   • → odo voices (V1, deferred-but-live): conduct reef_voice's chord overlay by
-%%     pre-sending a tick-tagged FollowChord on each chord change. Dormant unless a → odo
-%%     voice exists AND reef_voice is running.
+%%   • → odo voices sound nothing: Odonus follows Vetula through its harmony pattern
+%%     (Reef.Vetula.Harmony, set by the frontend as SetHarmony; reef_voice samples it).
+%%     The FollowChord pre-send that lived here retired 2026-10-01.
 %%
 %% The scheduler is a PURE FUNCTION OF THE ABSOLUTE PULSE (the same Link 1/16 index
 %% reef_voice / reef_balistes_voice ride), so there is no seed and no accumulating
@@ -21,9 +21,7 @@
 
 %% Scheduler poll interval (ms).
 -define(POLL_MS, 25).
-%% Schedule this far ahead so link-spike has lead time (mirrors the other voices). Also
-%% covers the → odo pre-send margin (FollowChord must reach reef_voice's `pending`
-%% before reef_voice — 200ms lookahead — consumes that pulse).
+%% Schedule this far ahead so link-spike has lead time (mirrors the other voices).
 -define(LOOKAHEAD_MS, 450.0).
 %% Model step length in beats. 0.25 = a 1/16 note (Vetula's pulse = the shared grid).
 -define(STEP_BEATS, 0.25).
@@ -58,7 +56,7 @@ start_perf_json(Json, StepBeats) ->
                         {ok, Sock} = gen_udp:open(0, [binary]),
                         erlang:send_after(?POLL_MS, self(), poll),
                         loop(#{ socket => Sock, step_beats => StepBeats, perf => Perf,
-                                last_step => -1, cursor => -1 })
+                                last_step => -1 })
                     end),
                     catch register(reef_vetula_voice, NewPid),
                     {ok, NewPid}
@@ -86,11 +84,8 @@ loop(St) ->
             gen_udp:close(maps:get(socket, St));
         {set_perf, Perf} ->
             %% Live re-push: swap the performance, keep last_step so the read-head
-            %% continues on the same Link pulse. Reset cursor to -1 so the next drained
-            %% pulse ALWAYS re-conducts the → odo overlay (a swap to a different
-            %% progression while the read-head sits on the same cursor INDEX would
-            %% otherwise leave the rig on the stale chord until the next boundary).
-            loop(St#{perf => Perf, cursor => -1});
+            %% continues on the same Link pulse.
+            loop(St#{perf => Perf});
         poll ->
             St2 = tick(St),
             erlang:send_after(?POLL_MS, self(), poll),
@@ -119,8 +114,8 @@ tick(St) ->
             St
     end.
 
-%% Walk each pulse within the horizon: (1) conduct any → odo voice (FollowChord on a
-%% chord change) and (2) emit every → midi voice's notes at the pulse's wall time.
+%% Walk each pulse within the horizon, emitting every → midi voice's notes at the
+%% pulse's wall time.
 drain(St, Step, Horizon, AnchorUs, BeatAtAnchor, Tempo) ->
     StepBeats = maps:get(step_beats, St),
     StepBeat = Step * StepBeats,
@@ -129,18 +124,9 @@ drain(St, Step, Horizon, AnchorUs, BeatAtAnchor, Tempo) ->
             St;
         true ->
             Perf = maps:get(perf, St),
-            %% (1) → odo conducting. odoCursorAt holds the previous cursor across rests;
-            %% a change means the → odo voice moved to a new chord, so pre-send
-            %% reef_voice a tick-tagged FollowChord (it applies it on the tagged pulse).
-            Prev = maps:get(cursor, St),
-            Cur = 'reef_vetula_perf@ps':odoCursorAt(Perf, Step, Prev),
-            case (Cur =/= Prev) andalso is_pid(whereis(reef_voice)) of
-                true ->
-                    Pcs = 'reef_vetula_perf@ps':odoPcsAt(Perf, Cur),
-                    Input = 'reef_input@ps':mkFollowChord(Pcs),
-                    reef_voice ! {apply_input, Step, Input};
-                false -> ok
-            end,
+            %% → odo voices sound nothing here: Odonus follows Vetula through its
+            %% harmony pattern (SetHarmony, from the frontend; sampled by reef_voice).
+            %% The FollowChord conduct that lived here retired 2026-10-01.
             %% (2) → midi emit. Invert the affine Link map for this pulse's wall time,
             %% then schedule each rendered note (gated) on its rig channel.
             WallUs = round(AnchorUs + (StepBeat - BeatAtAnchor) * 60000000.0 / Tempo),
@@ -151,7 +137,7 @@ drain(St, Step, Horizon, AnchorUs, BeatAtAnchor, Tempo) ->
             Chs = array:to_list('reef_vetula_perf@ps':midiChannels(Perf)),
             Evs = array:to_list('reef_vetula_perf@ps':renderMidiAt(Perf, Step)),
             lists:foreach(fun(E) -> emit_midi(Sock, E, WallUs, StepMs, Chs) end, Evs),
-            drain(St#{cursor => Cur, last_step => Step}, Step + 1, Horizon,
+            drain(St#{last_step => Step}, Step + 1, Horizon,
                   AnchorUs, BeatAtAnchor, Tempo)
     end.
 
