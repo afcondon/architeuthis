@@ -7,60 +7,30 @@
 -- | quoted string), so a failure shows the whole difference at once.
 -- |
 -- | Unlike the older specs, a failure here fails the run.
-module Test.ControlSpec (runControlTests, render) where
+module Test.ControlSpec (runControlTests) where
 
 import Prelude hiding ((#))
 
-import Data.Ord (abs)
 
 import Data.Array (length, filter)
 import Data.Either (Either(..))
-import Data.Map as Map
 import Data.Maybe (Maybe(..))
-import Haskell.Rational (Rational, denominator, numerator, fromInt)
-import Data.Int as Int
-import Data.String (joinWith)
-import Data.String as String
+import Haskell.Rational (fromInt)
 import Data.Traversable (for)
-import Data.Tuple (Tuple(..))
 import Effect (Effect)
 import Effect.Console (log)
 import Effect.Exception (throw)
+import Tidal.Conformance (render)
 import Tidal.Controls (control, lookupControl, (#), (|<))
 import Tidal.Pattern.Core (queryArc)
 import Tidal.Pattern.Mini (parseMiniPattern)
-import Tidal.Pattern.Types (Arc(..), ControlPattern, Event(..), Value(..), silence)
+import Tidal.Pattern.Types (ControlPattern, silence)
 
 -- | A control applied to a mini-notation string, as the line language does.
 ctl :: String -> String -> ControlPattern
 ctl name src = case parseMiniPattern src, lookupControl name of
   Right p, Just k -> control k p
   _, _ -> silence
-
-render :: Event (Map.Map String Value) -> String
-render = case _ of
-  Digital e -> arc e.whole <> "|" <> arc e.part <> "|" <> values e.value
-  Analog e -> "~|" <> arc e.part <> "|" <> values e.value
-  where
-  arc (Arc a) = rat a.start <> "-" <> rat a.stop
-  rat :: Rational -> String
-  rat r = if denominator r == one then show (numerator r) else show (numerator r) <> "/" <> show (denominator r)
-  -- purerl shows Numbers in exponent form; three decimals is enough here.
-  -- Sign handled apart: purerl's Int div truncates, so -0.5 would lose it.
-  num x =
-    let
-      i = Int.round (abs x * 1000.0)
-      frac = show (i `mod` 1000 + 1000)
-    in
-      (if x < 0.0 && i /= 0 then "-" else "") <> show (i / 1000) <> "." <> String.drop 1 frac
-  values m = joinWith "," (map kv (Map.toUnfoldable m :: Array (Tuple String Value)))
-  kv (Tuple k v) = k <> "=" <> case v of
-    VNumber x -> "f" <> num x
-    VNote x -> "n" <> num x
-    VString x -> show x
-    VInt i -> show i
-    VBool b -> show b
-    VRational r -> rat r
 
 cases :: Array { name :: String, pat :: ControlPattern, want :: Array String }
 cases =

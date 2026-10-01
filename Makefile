@@ -14,7 +14,7 @@
 #   make clean        - clean PureScript output
 #   make distclean    - clean everything including deps
 
-.PHONY: all deps ps erl erl-quick test haskell-is-standalone oracle-prim run start clean distclean help
+.PHONY: all deps ps erl erl-quick test haskell-is-standalone oracle-prim oracle-tidal conformance run start clean distclean help
 
 # Default target
 all: erl
@@ -107,16 +107,29 @@ test: erl haskell-is-standalone
 		-eval 'F = test_main@ps:main(), F()' \
 		-s init stop
 
-# The reference-semantics types (src/Haskell/*) know nothing of Tidal, so
-# that they can leave for their own package the day a second port needs them.
+# The reference-semantics types (engine/core/src/Haskell/*) know nothing of
+# Tidal, so that they can leave for their own package the day a second port
+# needs them.
 haskell-is-standalone:
-	@! grep -rn "^import Tidal" src/Haskell || (echo "src/Haskell must not import Tidal.*" && false)
+	@! grep -rn "^import Tidal" engine/core/src/Haskell || (echo "engine/core/src/Haskell must not import Tidal.*" && false)
 
-# Regenerate test/Test/Oracle/HaskellPrimGolden.purs by asking GHC (and Tidal's
-# Sound.Tidal.UI), from the GHC that Limulus boots. Needs ../limulus/ghc-tidal.
+# The engine's conformance suite in every column (engine/columns/*), through
+# polyglot-template's poly: GHC, the BEAM and JS must agree case for case.
+POLY ?= ../../../polyglot/polyglot-template/bin/poly
+conformance:
+	cd engine && $(abspath $(POLY)) run all
+
+# Regenerate the engine's GHC golden (Tidal.Conformance.HaskellGolden) by
+# asking GHC, Tidal's Sound.Tidal.UI and Text.Parsec, from the GHC that
+# Limulus boots. Needs ../limulus/ghc-tidal.
 oracle-prim:
-	../limulus/ghc-tidal/bin/runghc test/oracle/haskell-prim.hs \
-		< test/oracle/haskell-prim.txt > test/Test/Oracle/HaskellPrimGolden.purs
+	../limulus/ghc-tidal/bin/runghc engine/core/oracle/haskell-prim.hs \
+		< engine/core/oracle/haskell-prim.txt > engine/core/src/Tidal/Conformance/HaskellGolden.purs
+
+# Regenerate the engine's Tidal golden (Tidal.Conformance.TidalGolden) from a
+# GHCi running Tidal behind Limulus (:3036).
+oracle-tidal:
+	node engine/core/oracle/generate.mjs
 
 # EUnit tests for the hand-written Erlang modules (the PureScript suite
 # above cannot reach them). Currently the step-window clamp, whose

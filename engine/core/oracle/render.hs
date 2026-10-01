@@ -1,7 +1,7 @@
 -- Renders Haskell Tidal events in the form purerl-tidal's specs use:
 -- whole|part|key=value,... with values tagged f (float), n (note), quoted
 -- strings and bare ints, three decimals. Load into a Tidal GHCi session
--- (Limulus's, for one) with `:script test/ghci/render.hs`, then:
+-- (Limulus's, for one) with `:script engine/core/oracle/render.hs`, then:
 --   render (s "bd*2" # n "1 2 3") 0 1
 import qualified Data.Map.Strict as RenderMap
 import Text.Printf (printf)

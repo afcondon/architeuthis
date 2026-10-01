@@ -1,7 +1,7 @@
 # Mini-notation cases for the GHCi oracle: <from> <to> <control-pattern expression>.
 # The first block is extracted from Tidal's tidal-core/test/Sound/Tidal/ParseTest.hs
 # (each literal at its type's control: String vowel, Double gain, Int orbit, Note n);
-# the second is purerl-tidal's own. Regenerate goldens with test/oracle/generate.mjs.
+# the second is purerl-tidal's own. Regenerate goldens with oracle/generate.mjs.
 0 12 vowel "a b c"
 0 2 orbit "0 1 2 3 4 5 6 7 8 0 10 20 30 40 50"
 0 1 vowel "[bd sd] hh"

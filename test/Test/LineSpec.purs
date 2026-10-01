@@ -21,7 +21,7 @@ import Data.Traversable (for)
 import Effect (Effect)
 import Effect.Console (log)
 import Effect.Exception (throw)
-import Test.ControlSpec (render)
+import Tidal.Conformance (render)
 import Tidal.Line (Command(..), parseLine)
 import Tidal.Pattern.Core (queryArc)
 

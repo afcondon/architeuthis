@@ -20,7 +20,7 @@ import Prelude
 import Data.Tuple (snd)
 import Haskell.Int (shiftL, shiftR, xor)
 import Haskell.Int as H
-import Haskell.Rational (Rational, ratio)
+import Haskell.Rational (Rational)
 import Haskell.Rational as Rational
 
 -- | `xorwise`: Marsaglia's xorshift on a 64-bit `Int`.

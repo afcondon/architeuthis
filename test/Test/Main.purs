@@ -8,8 +8,7 @@ import Effect.Console (log)
 import Test.BranchedSpec (runBranchedTests)
 import Test.ControlSpec (runControlTests)
 import Test.LineSpec (runLineTests)
-import Test.HaskellPrimSpec (runHaskellPrimTests)
-import Test.OracleSpec (runOracleTests)
+import Tidal.Conformance.Main (runConformance)
 import Test.DejaVuSpec (runDejaVuTests)
 import Test.FugueSpec (runFugueTests)
 import Test.GranularSpec (runGranularTests)
@@ -169,8 +168,7 @@ main = do
   -- Run control pattern tests
   runControlTests
   runLineTests
-  runHaskellPrimTests
-  runOracleTests
+  runConformance
 
   -- Run the granular read-head vocabulary tests (C0, Conspicillum)
   runGranularTests

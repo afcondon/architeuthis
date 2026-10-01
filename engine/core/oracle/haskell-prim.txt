@@ -1,6 +1,6 @@
 # Cases for the reference-semantics types (src/Haskell/*), as GHC computes
-# them. `haskell-prim.hs` turns this into test/Test/Oracle/HaskellPrimGolden.purs;
-# Test.HaskellPrimSpec computes the same with Haskell.Integer, Haskell.Int and
+# them. `haskell-prim.hs` turns this into src/Tidal/Conformance/HaskellGolden.purs;
+# Tidal.Conformance computes the same with Haskell.Integer, Haskell.Int and
 # Haskell.Rational. Integers are decimal, rationals n/d.
 #
 # Integer division, every sign combination, and past 64 bits.
@@ -93,7 +93,7 @@ timeToRand -1/3
 timeToRand 123456789/1000
 timeToRand 1000000007/3
 # Parsec: `parsec NAME INPUT` runs the named parser (the same table in
-# haskell-prim.hs and Test.HaskellPrimSpec) on INPUT, where `^` stands for a
+# haskell-prim.hs and Tidal.Conformance) on INPUT, where `^` stands for a
 # tab and `_` for a space, and shows the Either as Haskell shows it.
 parsec stringAlt ab
 parsec stringAlt ax

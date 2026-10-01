@@ -1,0 +1,14 @@
+# The JS lowering of the engine: the registry package set, the stock backend.
+# The engine's js-bigints resolves to the registry's here.
+package:
+  name: tidal-engine-column-node
+  dependencies:
+    - effect
+    - prelude
+    - tidal-engine
+workspace:
+  packageSet:
+    registry: 77.13.1
+  extraPackages:
+    tidal-engine:
+      path: ../../core

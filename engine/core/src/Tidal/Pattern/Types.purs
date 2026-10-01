@@ -67,9 +67,9 @@ import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Newtype (class Newtype)
-import Haskell.Rational (Rational, fromInt, toNumber)
+import Haskell.Rational (Rational, fromInt)
 import Haskell.Integer as Integer
-import Haskell.Rational (floor, fromInt, toNumber) as Rational
+import Haskell.Rational (floor, fromInt) as Rational
 import Tidal.Core.Types (Time, SourceSpan, emptySpan, Seed, ControlName)
 
 -------------------------------------------------------------------------------

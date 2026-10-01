@@ -1,36 +1,115 @@
--- | **The reference-semantics types against GHC.**
+-- | **The engine against its references: Haskell Tidal, and GHC.**
 -- |
--- | Every case in `Test.Oracle.HaskellPrimGolden` was computed by GHC, and
--- | the randomness cases by Tidal's own `Sound.Tidal.UI`
--- | (test/oracle/haskell-prim.hs, from test/oracle/haskell-prim.txt). Each is
--- | computed here with `Haskell.Integer`, `Haskell.Int` and
--- | `Haskell.Rational` and printed as Haskell's `show` prints it; the two
--- | strings must be equal. A difference fails the run.
-module Test.HaskellPrimSpec (runHaskellPrimTests) where
+-- | Pure, so every column runs the same comparison on its own backend
+-- | (`Tidal.Conformance.Main`); the claim is that GHC, the BEAM and JS give
+-- | the same answers, case for case.
+-- |
+-- | - `tidal`: every case in `Tidal.Conformance.TidalGolden` was rendered by
+-- |   GHCi running Tidal (oracle/generate.mjs, from oracle/corpus.txt:
+-- |   Tidal's own ParseTest cases first, then ours). Each is read here as a
+-- |   line, queried over the same arc and rendered the same way; the event
+-- |   lists must be equal, fragments and all, in any order, and a case Tidal
+-- |   refused must be refused here too.
+-- | - `haskell`: every case in `Tidal.Conformance.HaskellGolden` was computed
+-- |   by GHC, the randomness by Tidal's own `Sound.Tidal.UI` and the parsers
+-- |   by `Text.Parsec` (oracle/haskell-prim.hs, from oracle/haskell-prim.txt).
+-- |   Each is computed here with the `Haskell.*` types and printed as
+-- |   Haskell's `show` prints it.
+module Tidal.Conformance
+  ( Result
+  , tidal
+  , haskell
+  , render
+  , tidalVersion
+  ) where
 
-import Prelude
+import Prelude hiding ((#))
 
-import Data.Array (filter, length)
-import Data.Either (Either(..))
-import Data.Maybe (Maybe(..), maybe)
-import Data.String (Pattern(..), Replacement(..), replaceAll, split)
-import Data.String.CodeUnits (fromCharArray)
-import Data.Traversable (for)
-import Data.Tuple (Tuple(..))
-import Effect (Effect)
-import Effect.Console (log)
 import Control.Alt ((<|>))
-import Effect.Exception (throw)
+import Data.Array (sort)
+import Data.Either (Either(..))
+import Data.Int as Int
+import Data.Map as Map
+import Data.Maybe (Maybe(..), maybe)
+import Data.Ord (abs)
+import Data.String (Pattern(..), Replacement(..), joinWith, replaceAll, split)
+import Data.String as String
+import Data.String.CodeUnits (fromCharArray)
+import Data.Tuple (Tuple(..))
 import Haskell.Int as H
-import Haskell.Parsec (ParseError, Parsec, alphaNum, char, choice, digit, eof, getPosition, letter, lookAhead, many, many1, notFollowedBy, oneOf, option, sepBy, sourceColumn, sourceLine, spaces, string, try, (<?>))
-import Haskell.Parsec as Parsec
 import Haskell.Integer (Integer)
 import Haskell.Integer as Integer
-import Haskell.Rational (Rational, ratio)
+import Haskell.Parsec (ParseError, Parsec, alphaNum, char, choice, digit, eof, getPosition, letter, lookAhead, many, many1, notFollowedBy, oneOf, option, sepBy, sourceColumn, sourceLine, spaces, string, try, (<?>))
+import Haskell.Parsec as Parsec
+import Haskell.Rational (Rational, denominator, fromInt, numerator, ratio)
 import Haskell.Rational as Rational
 import JS.BigInt as BigInt
-import Test.Oracle.HaskellPrimGolden (golden)
+import Tidal.Conformance.HaskellGolden as HaskellGolden
+import Tidal.Conformance.TidalGolden as TidalGolden
+import Tidal.Line (Command(..), parseLine)
+import Tidal.Pattern.Core (queryArc)
 import Tidal.Pattern.Random (timeToIntSeed, timeToRand, xorwise)
+import Tidal.Pattern.Types (Arc(..), Event(..), Value(..))
+
+-- | One case: what the reference said, and what we say.
+type Result = { input :: String, expected :: String, actual :: String }
+
+tidalVersion :: String
+tidalVersion = TidalGolden.tidalVersion
+
+-- | The Tidal corpus, compared.
+tidal :: Array Result
+tidal = map compare1 TidalGolden.golden
+  where
+  compare1 g =
+    let
+      ours = case parseLine ("d1 $ " <> g.expr) of
+        Right (Play _ p) -> Just (sort (map render (queryArc p (fromInt g.from) (fromInt g.to))))
+        _ -> Nothing
+    in
+      { input: g.expr <> "  over " <> show g.from <> ".." <> show g.to
+      , expected: events (map sort g.events)
+      , actual: events ours
+      }
+  events = maybe "refused" show
+
+-- | The reference-semantics types, compared.
+haskell :: Array Result
+haskell = map compare1 HaskellGolden.golden
+  where
+  compare1 g =
+    { input: g.input
+    , expected: g.output
+    , actual: maybe "(no answer)" identity (eval (split (Pattern " ") g.input))
+    }
+
+-- | An event as oracle/render.hs renders it in GHCi:
+-- | `whole|part|key=value,...`, values tagged f (float) and n (note),
+-- | strings quoted, ints bare, three decimals.
+render :: Event (Map.Map String Value) -> String
+render = case _ of
+  Digital e -> arc e.whole <> "|" <> arc e.part <> "|" <> values e.value
+  Analog e -> "~|" <> arc e.part <> "|" <> values e.value
+  where
+  arc (Arc a) = rat a.start <> "-" <> rat a.stop
+  rat :: Rational -> String
+  rat r = if denominator r == one then show (numerator r) else show (numerator r) <> "/" <> show (denominator r)
+  -- purerl shows Numbers in exponent form; three decimals is enough here.
+  -- Sign handled apart: purerl's Int div truncates, so -0.5 would lose it.
+  num x =
+    let
+      i = Int.round (abs x * 1000.0)
+      frac = show (i `mod` 1000 + 1000)
+    in
+      (if x < 0.0 && i /= 0 then "-" else "") <> show (i / 1000) <> "." <> String.drop 1 frac
+  values m = joinWith "," (map kv (Map.toUnfoldable m :: Array (Tuple String Value)))
+  kv (Tuple k v) = k <> "=" <> case v of
+    VNumber x -> "f" <> num x
+    VNote x -> "n" <> num x
+    VString x -> show x
+    VInt i -> show i
+    VBool b -> show b
+    VRational r -> rat r
 
 integer :: String -> Maybe Integer
 integer = map Integer.fromBigInt <<< BigInt.fromString
@@ -108,20 +187,3 @@ showEither :: forall a. (a -> String) -> Either ParseError a -> String
 showEither sh = case _ of
   Left e -> "Left " <> show e
   Right a -> "Right " <> sh a
-
-runHaskellPrimTests :: Effect Unit
-runHaskellPrimTests = do
-  log ""
-  log "=========================================="
-  log "  Haskell.* against GHC"
-  log "=========================================="
-  log ""
-  results <- for golden \g -> do
-    let ours = eval (split (Pattern " ") g.input)
-    if ours == Just g.output then pure true
-    else do
-      log ("  DIFF  " <> g.input <> "\n        GHC:  " <> g.output <> "\n        ours: " <> maybe "(no answer)" identity ours)
-      pure false
-  let same = length (filter identity results)
-  log ("  " <> show same <> " of " <> show (length results) <> " cases identical to GHC")
-  when (same /= length results) (throw "Haskell.* differs from GHC")
