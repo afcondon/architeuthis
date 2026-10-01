@@ -10,7 +10,6 @@
 -- | neither backend, and the time arithmetic on an exact `Rational`.
 module Tidal.Pattern.Random
   ( timeToRand
-  , timeToRandAt
   , timeToIntSeed
   , intSeedToRand
   , xorwise
@@ -18,12 +17,10 @@ module Tidal.Pattern.Random
 
 import Prelude
 
-import Data.Rational as Data.Rational
 import Data.Tuple (snd)
 import Haskell.Int (shiftL, shiftR, xor)
 import Haskell.Int as H
-import Haskell.Integer as Integer
-import Haskell.Rational (Rational, (%))
+import Haskell.Rational (Rational, ratio)
 import Haskell.Rational as Rational
 
 -- | `xorwise`: Marsaglia's xorshift on a 64-bit `Int`.
@@ -57,9 +54,3 @@ intSeedToRand seed = H.toNumber (H.mod seed (H.fromInt seedRange)) / H.toNumber 
 -- | in [0, 1).
 timeToRand :: Rational -> Number
 timeToRand t = if t == zero then 0.5 else intSeedToRand (timeToIntSeed t)
-
--- | `timeToRand` at a time of the engine's type, until the engine moves onto
--- | `Haskell.Rational` itself.
-timeToRandAt :: Data.Rational.Rational -> Number
-timeToRandAt t =
-  timeToRand (Integer.fromInt (Data.Rational.numerator t) % Integer.fromInt (Data.Rational.denominator t))

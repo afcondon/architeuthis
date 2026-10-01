@@ -62,7 +62,7 @@ import Prelude
 import Data.Array as Array
 import Data.Int as Int
 import Data.Maybe (Maybe(..))
-import Data.Rational (fromInt)
+import Haskell.Rational (fromInt)
 import Foreign (Foreign)
 import Unsafe.Coerce (unsafeCoerce)
 

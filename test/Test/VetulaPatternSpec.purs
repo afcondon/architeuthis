@@ -13,7 +13,7 @@ import Effect (Effect)
 import Effect.Console (log)
 
 import Tidal.Notation (toPattern)
-import Data.Rational (fromInt)
+import Haskell.Rational (fromInt)
 import Tidal.Pattern.Core (firstCycle, queryArc)
 import Tidal.Pattern.Types (eventValue)
 import Tidal.Pitch (PitchedNote12(..))

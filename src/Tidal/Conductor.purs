@@ -25,8 +25,8 @@ import Prelude
 import Data.Int as Int
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
-import Data.Rational (Rational, fromInt)
-import Data.Rational as R
+import Haskell.Rational (Rational, fromInt)
+import Haskell.Rational as R
 
 import Calypso.Prelude (AnyPart(..), DrumKit, Instrument, Section)
 import Tidal.Pattern.Core (queryArcWith)

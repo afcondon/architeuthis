@@ -53,7 +53,7 @@ import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Tidal.Pattern.Core (queryArcWith)
 import Tidal.Pattern.Types (ControlMap, Event(..), Pattern, Value(..))
-import Data.Rational (fromInt)
+import Haskell.Rational (fromInt)
 
 -- ---------------------------------------------------------------------------
 -- BalistesConfig — seven Pattern Int slots

@@ -111,11 +111,13 @@ import Data.Maybe (Maybe(..))
 import Data.Number as Number
 import Data.Ord (comparing)
 import Data.Foldable (foldl)
-import Data.Rational (Rational, fromInt, toNumber)
+import Haskell.Rational (Rational, fromInt, toNumber)
 import Data.Tuple (Tuple(..), fst)
 import Partial.Unsafe (unsafeCrashWith)
-import Tidal.Pattern.Random (timeToRandAt)
-import Math (cos, floor, pi, sin, sqrt)
+import Tidal.Pattern.Random (timeToRand)
+import Haskell.Double (cos, pi, sin, sqrt)
+import Haskell.Double as Double
+import Haskell.Integer as Integer
 import Tidal.Core.Types (Time)
 import Tidal.Notation (class Notation, toPattern)
 import Tidal.Pattern.Types
@@ -187,7 +189,7 @@ wholeCycle t = Arc { start: sam t, stop: nextSam t }
 
 -- | Floor a time to integer (as Rational)
 floorTime :: Time -> Time
-floorTime t = fromInt (Int.floor (toNumber t))
+floorTime t = fromInt (floorR t)
 
 -------------------------------------------------------------------------------
 -- Time manipulation
@@ -255,8 +257,8 @@ repeatEvery n pat
         -- in the query arc.  An iteration k maps inner [0, n) to
         -- output [k*n, (k+1)*n); for it to overlap qArc we need
         -- k*n < q.stop AND (k+1)*n > q.start.
-        qStartInt = Int.floor (toNumber q.start)
-        qStopInt = Int.floor (toNumber q.stop) + 1
+        qStartInt = floorR q.start
+        qStopInt = floorR q.stop + 1
         kMin = (qStartInt `div` n) - 1
         kMax = (qStopInt `div` n) + 1
         eventsForIter k =
@@ -467,7 +469,7 @@ every n f notation
           in query p (State st { arc = cycleArc })
       in Array.concatMap processOneCycle cycleArcs
   where
-    floorInt t = Int.floor (toNumber t)
+    floorInt t = floorR t
 
 -- | Apply a function when cycle modulo matches
 -- |
@@ -485,7 +487,7 @@ whenMod n pred f pat = pattern \(State st) ->
       in query p (State st { arc = cycleArc })
   in Array.concatMap processOneCycle cycleArcs
   where
-    floorInt t = Int.floor (toNumber t)
+    floorInt t = floorR t
 
 -- | Iterate through a pattern
 -- |
@@ -505,7 +507,7 @@ iter n pat
           in query p (State st { arc = cycleArc })
       in Array.concatMap processOneCycle cycleArcs
   where
-    floorInt t = Int.floor (toNumber t)
+    floorInt t = floorR t
 
 -- | Reverse iteration through a pattern
 -- |
@@ -524,7 +526,7 @@ iter' n pat
           in query p (State st { arc = cycleArc })
       in Array.concatMap processOneCycle cycleArcs
   where
-    floorInt t = Int.floor (toNumber t)
+    floorInt t = floorR t
 
 -- | Linger on the first part of a pattern
 -- |
@@ -849,6 +851,10 @@ queryArcWith controls pat start stop =
 -- Oscillators (continuous patterns)
 -------------------------------------------------------------------------------
 
+-- | Tidal's `mod' x 1` on a Double: `x - fromInteger (floor x)`.
+frac :: Number -> Number
+frac x = x - Integer.toNumber (Double.floor x)
+
 -- | Sine wave oscillator, 0 to 1 over each cycle
 sine :: Pattern Number
 sine = pattern \(State st) ->
@@ -856,7 +862,7 @@ sine = pattern \(State st) ->
     Arc { start, stop } = st.arc
     midpoint = toNumber $ (start + stop) / fromInt 2
     -- cyclePos gives 0-1 within cycle
-    pos = midpoint - floor midpoint
+    pos = frac midpoint
     -- sine from 0-1: (sin(2*pi*t) + 1) / 2
     value = (sin (2.0 * pi * pos) + 1.0) / 2.0
   in
@@ -868,7 +874,7 @@ cosine = pattern \(State st) ->
   let
     Arc { start, stop } = st.arc
     midpoint = toNumber $ (start + stop) / fromInt 2
-    pos = midpoint - floor midpoint
+    pos = frac midpoint
     value = (cos (2.0 * pi * pos) + 1.0) / 2.0
   in
     [ Analog { context: emptyContext, part: st.arc, value } ]
@@ -879,7 +885,7 @@ saw = pattern \(State st) ->
   let
     Arc { start, stop } = st.arc
     midpoint = toNumber $ (start + stop) / fromInt 2
-    value = midpoint - floor midpoint
+    value = frac midpoint
   in
     [ Analog { context: emptyContext, part: st.arc, value } ]
 
@@ -889,7 +895,7 @@ isaw = pattern \(State st) ->
   let
     Arc { start, stop } = st.arc
     midpoint = toNumber $ (start + stop) / fromInt 2
-    value = 1.0 - (midpoint - floor midpoint)
+    value = 1.0 - (frac midpoint)
   in
     [ Analog { context: emptyContext, part: st.arc, value } ]
 
@@ -899,7 +905,7 @@ tri = pattern \(State st) ->
   let
     Arc { start, stop } = st.arc
     midpoint = toNumber $ (start + stop) / fromInt 2
-    pos = midpoint - floor midpoint
+    pos = frac midpoint
     -- Triangle: rises 0-0.5, falls 0.5-1
     value = if pos < 0.5
             then pos * 2.0
@@ -913,7 +919,7 @@ square = pattern \(State st) ->
   let
     Arc { start, stop } = st.arc
     midpoint = toNumber $ (start + stop) / fromInt 2
-    pos = midpoint - floor midpoint
+    pos = frac midpoint
     value = if pos < 0.5 then 0.0 else 1.0
   in
     [ Analog { context: emptyContext, part: st.arc, value } ]
@@ -926,7 +932,7 @@ expSaw = pattern \(State st) ->
   let
     Arc { start, stop } = st.arc
     midpoint = toNumber $ (start + stop) / fromInt 2
-    pos = midpoint - floor midpoint
+    pos = frac midpoint
     value = pos * pos
   in
     [ Analog { context: emptyContext, part: st.arc, value } ]
@@ -939,7 +945,7 @@ iexpSaw = pattern \(State st) ->
   let
     Arc { start, stop } = st.arc
     midpoint = toNumber $ (start + stop) / fromInt 2
-    pos = midpoint - floor midpoint
+    pos = frac midpoint
     inv = 1.0 - pos
     value = inv * inv
   in
@@ -952,7 +958,7 @@ logSaw = pattern \(State st) ->
   let
     Arc { start, stop } = st.arc
     midpoint = toNumber $ (start + stop) / fromInt 2
-    pos = midpoint - floor midpoint
+    pos = frac midpoint
     value = sqrt pos
   in
     [ Analog { context: emptyContext, part: st.arc, value } ]
@@ -964,7 +970,7 @@ ilogSaw = pattern \(State st) ->
   let
     Arc { start, stop } = st.arc
     midpoint = toNumber $ (start + stop) / fromInt 2
-    pos = midpoint - floor midpoint
+    pos = frac midpoint
     value = 1.0 - sqrt pos
   in
     [ Analog { context: emptyContext, part: st.arc, value } ]
@@ -973,7 +979,7 @@ ilogSaw = pattern \(State st) ->
 -- | `timeToRand` of the query's start, so it is a function of time alone.
 rand :: Pattern Number
 rand = pattern \(State st) ->
-  [ Analog { context: emptyContext, part: st.arc, value: timeToRandAt (arcStart st.arc) } ]
+  [ Analog { context: emptyContext, part: st.arc, value: timeToRand (arcStart st.arc) } ]
 
 -- | Haskell Tidal's `irand`: `floor (rand * n)`.
 irand :: Int -> Pattern Int

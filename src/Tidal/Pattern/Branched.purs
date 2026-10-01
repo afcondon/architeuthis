@@ -44,17 +44,16 @@ module Tidal.Pattern.Branched
 import Prelude
 
 import Data.Array as Array
-import Data.Int as Int
 import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Newtype (class Newtype)
-import Data.Rational (toNumber)
 import Data.Tuple (Tuple(..), fst, snd)
 import Tidal.Core.Types (Time)
 import Tidal.Pattern.Core (sam, stack)
 import Tidal.Pattern.Types
   ( Arc(..)
+  , floorR
   , Pattern
   , State(..)
   , arcStart
@@ -252,4 +251,4 @@ cyclesInArc (Arc { start, stop }) =
   in go [] startCycle
 
 floorInt :: Time -> Int
-floorInt t = Int.floor (toNumber t)
+floorInt t = floorR t

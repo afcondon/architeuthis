@@ -60,7 +60,7 @@ import Data.Maybe (Maybe(..), fromMaybe)
 import Tidal.Pattern.Core (queryArcWith)
 import Tidal.Pattern.Types (ControlMap, Event(..), Pattern, Value(..))
 import Data.Int as Int
-import Data.Rational (fromInt)
+import Haskell.Rational (fromInt)
 import Tidal.Scales (Scale, Distribution(..), applyDistribution, cChromatic, shiftDegreesInScale)
 import Tidal.LiveControl (liveBoolArrayOr)
 

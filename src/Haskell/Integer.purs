@@ -18,6 +18,7 @@ module Haskell.Integer
   , fromBigInt
   , toBigInt
   , toNumber
+  , toInt
   , quot
   , rem
   , quotRem
@@ -32,6 +33,7 @@ module Haskell.Integer
 
 import Prelude hiding (div, mod, gcd)
 
+import Data.Maybe (Maybe(..))
 import Data.Tuple (Tuple(..), fst, snd)
 import JS.BigInt (BigInt)
 import JS.BigInt as BigInt
@@ -58,6 +60,14 @@ fromBigInt = Integer
 
 toBigInt :: Integer -> BigInt
 toBigInt (Integer n) = n
+
+-- | To a PureScript `Int`, which is 32 bits on JS: a value outside that
+-- | range is an error rather than a silent wrap, since no Haskell type
+-- | corresponds to it.
+toInt :: Integer -> Int
+toInt (Integer n) = case BigInt.toInt n of
+  Just i -> i
+  Nothing -> unsafeCrashWith ("Haskell.Integer.toInt: " <> BigInt.toString n <> " is outside Int")
 
 -- | `fromIntegral :: Integer -> Double`: exact below 2^53, nearest above.
 toNumber :: Integer -> Number

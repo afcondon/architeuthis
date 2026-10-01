@@ -79,7 +79,7 @@ module Tidal.Fugue
 
 import Prelude
 
-import Data.Rational (Rational, fromInt, (%))
+import Haskell.Rational (Rational, fromInt, (%))
 
 import Tidal.Notation (class Notation, toPattern)
 import Tidal.Pattern.Core (fast, rev)

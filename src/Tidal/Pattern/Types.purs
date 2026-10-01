@@ -67,8 +67,9 @@ import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Newtype (class Newtype)
-import Data.Rational (Rational, fromInt, toNumber)
-import Data.Rational (denominator, fromInt, numerator, toNumber) as Rational
+import Haskell.Rational (Rational, fromInt, toNumber)
+import Haskell.Integer as Integer
+import Haskell.Rational (floor, fromInt, toNumber) as Rational
 import Tidal.Core.Types (Time, SourceSpan, emptySpan, Seed, ControlName)
 
 -------------------------------------------------------------------------------
@@ -272,7 +273,7 @@ instance tidalEnumString :: TidalEnum String where
 instance tidalEnumRational :: TidalEnum Rational where
   enumRange from to = map fromInt (enumRange (rationalToInt from) (rationalToInt to))
     where
-      rationalToInt r = Int.floor (toNumber r)
+      rationalToInt r = floorR r
   addSemitones k x = x + fromInt k
 
 -- | Primitive values for control patterns
@@ -542,8 +543,9 @@ cycleArcsInArc (Arc { start, stop }) =
 sect :: Arc -> Arc -> Arc
 sect (Arc a) (Arc b) = Arc { start: max a.start b.start, stop: min a.stop b.stop }
 
+-- | Haskell's `floor` on a time, exact, as a cycle number.
 floorR :: Rational -> Int
-floorR r = floorDiv (Rational.numerator r) (Rational.denominator r)
+floorR = Integer.toInt <<< Rational.floor
 
 ceilR :: Rational -> Int
 ceilR r = negate (floorR (negate r))
@@ -568,4 +570,4 @@ sam t =
 
 -- | Floor as Rational
 floorTime :: Time -> Time
-floorTime t = Rational.fromInt (Int.floor (Rational.toNumber t))
+floorTime t = Rational.fromInt (floorR t)

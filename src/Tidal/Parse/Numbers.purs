@@ -28,7 +28,9 @@ import Haskell.Parsec (Parsec, fail, char, satisfy, digit, letter)
 import Haskell.Parsec as Parsec
 import Tidal.Parse.State (ParseState)
 import Data.Int as Int
-import Data.Rational (Rational, denominator, fromInt, numerator, toNumber, (%))
+import Haskell.Integer (Integer)
+import Haskell.Integer as Integer
+import Haskell.Rational (Rational, denominator, fromInteger, numerator, ratio, toNumber, (%))
 import Data.String.CodeUnits as SCU
 import Tidal.Chords (Modifier(..))
 
@@ -89,11 +91,11 @@ pFraction :: Rational -> P Rational
 pFraction n = do
   _ <- char '%'
   d <- pInteger
-  if denominator n == 1 && d /= 0 then pure (numerator n % d) else fail "fractions need int numerator and denominator"
+  if denominator n == one && d /= zero then pure (ratio (numerator n) d) else fail "fractions need int numerator and denominator"
 
 -- | `intOrFloat`: `try pFloat <|> pInteger`, exactly.
 intOrFloat :: P Rational
-intOrFloat = Parsec.try pFloat <|> (fromInt <$> pInteger)
+intOrFloat = Parsec.try pFloat <|> (fromInteger <$> pInteger)
 
 -- | `pFloat`: digits, then optionally `.digits`, then optionally
 -- | `e[-]digits`. A `.` or `e` not followed by digits fails the whole float
@@ -106,19 +108,26 @@ pFloat = do
     _ <- char 'e'
     neg <- Parsec.option false (char '-' $> true)
     ds <- Parsec.many1 digit
-    pure (if neg then negate (digitsInt ds) else digitsInt ds)
+    pure (if neg then negate (Integer.toInt (digits ds)) else Integer.toInt (digits ds))
   let
-    mantissa = fromInt (digitsInt (i <> d)) / fromInt (pow10 (Array.length d))
-  pure (if e >= 0 then mantissa * fromInt (pow10 e) else mantissa / fromInt (pow10 (negate e)))
+    mantissa = fromInteger (digits (i <> d)) / fromInteger (pow10 (Array.length d))
+  pure (if e >= 0 then mantissa * fromInteger (pow10 e) else mantissa / fromInteger (pow10 (negate e)))
 
-pInteger :: P Int
-pInteger = digitsInt <$> Parsec.many1 digit
+-- | Digits read as an `Integer`, so a long literal is exact on JS too.
+pInteger :: P Integer
+pInteger = digits <$> Parsec.many1 digit
 
-digitsInt :: Array Char -> Int
-digitsInt = foldl (\acc c -> acc * 10 + (toCharCode c - toCharCode '0')) 0
+-- | A small count (an octave, a drop, an inversion).
+pInt :: P Int
+pInt = Integer.toInt <$> pInteger
 
-pow10 :: Int -> Int
-pow10 k = foldl (\acc _ -> acc * 10) 1 (Array.replicate k unit)
+digits :: Array Char -> Integer
+digits = foldl (\acc c -> acc * ten + Integer.fromInt (toCharCode c - toCharCode '0')) zero
+  where
+  ten = Integer.fromInt 10
+
+pow10 :: Int -> Integer
+pow10 k = foldl (\acc _ -> acc * Integer.fromInt 10) one (Array.replicate k unit)
 
 -- | `pRatioChar`: one duration letter not followed by a letter.
 ratioChar :: P Rational
@@ -141,7 +150,7 @@ parseNote :: P Number
 parseNote = do
   n <- notenum
   mods <- Parsec.many modifier
-  octave <- Parsec.option 5 pInteger
+  octave <- Parsec.option 5 pInt
   pure (Int.toNumber (n + foldl (+) 0 mods + (octave - 5) * 12))
   where
   notenum = (char 'c' $> 0) <|> (char 'd' $> 2) <|> (char 'e' $> 4) <|> (char 'f' $> 5)
@@ -153,7 +162,7 @@ parseNote = do
 parseModifiers :: P (Array Modifier)
 parseModifiers =
   (map (const Open) <$> Parsec.many1 (char 'o'))
-    <|> (char 'd' *> (pure <<< Drop <$> pInteger))
+    <|> (char 'd' *> (pure <<< Drop <$> pInt))
     <|> (pure <<< Range <$> parseIntNote)
-    <|> Parsec.try (char 'i' *> ((\n -> Array.replicate n Invert) <$> pInteger))
+    <|> Parsec.try (char 'i' *> ((\n -> Array.replicate n Invert) <$> pInt))
     <|> (map (const Invert) <$> Parsec.many1 (char 'i'))

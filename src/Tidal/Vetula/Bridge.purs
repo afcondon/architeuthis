@@ -38,7 +38,7 @@ import Prelude
 import Data.Array (concat, length, mapMaybe, nub, replicate, sort, take, zipWith)
 import Data.Either (Either(..))
 import Data.Maybe (Maybe(..))
-import Data.Rational (fromInt, toNumber)
+import Haskell.Rational (fromInt, toNumber)
 
 import Tidal.Pattern.Core (queryArc)
 import Tidal.Pattern.Types (Arc(..), Event(..), Pattern)

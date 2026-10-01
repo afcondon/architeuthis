@@ -19,7 +19,7 @@ module Test.FugueSpec
 import Prelude
 
 import Data.Array (sortBy, sortWith)
-import Data.Rational (fromInt)
+import Haskell.Rational (fromInt)
 import Effect (Effect)
 import Effect.Console (log)
 

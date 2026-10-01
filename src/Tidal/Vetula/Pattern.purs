@@ -46,7 +46,7 @@ import Prelude
 import Data.Array (cons)
 import Data.Array as Array
 import Data.Maybe (Maybe(..))
-import Data.Rational (fromInt)
+import Haskell.Rational (fromInt)
 import Data.Set as Set
 
 import Tidal.Notation (class Notation)

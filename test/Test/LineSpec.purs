@@ -15,7 +15,7 @@ import Prelude
 import Data.Array (filter, length, sort)
 import Data.Either (Either(..))
 import Data.Maybe (Maybe(..))
-import Data.Rational (fromInt)
+import Haskell.Rational (fromInt)
 import Data.String (Pattern(..), contains)
 import Data.Traversable (for)
 import Effect (Effect)

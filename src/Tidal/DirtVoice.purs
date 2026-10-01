@@ -38,7 +38,7 @@ import Data.Array (mapMaybe)
 import Data.Int as Int
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
-import Data.Rational (Rational, fromInt, toNumber)
+import Haskell.Rational (Rational, fromInt, toNumber)
 import Data.Tuple (Tuple(..))
 import Foreign (Foreign, unsafeToForeign)
 import Tidal.Pattern.Core (queryArc)

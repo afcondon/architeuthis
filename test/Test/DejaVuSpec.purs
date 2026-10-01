@@ -23,7 +23,7 @@ import Prelude
 import Data.Array as Array
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
-import Data.Rational (fromInt)
+import Haskell.Rational (fromInt)
 import Effect (Effect)
 import Effect.Console (log)
 import Tidal.DejaVu (dejaVu)

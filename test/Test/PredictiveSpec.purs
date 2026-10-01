@@ -26,7 +26,7 @@ import Prelude
 import Data.Array as Array
 import Data.Foldable (for_)
 import Data.Maybe (Maybe(..))
-import Data.Rational (Rational, fromInt, toNumber, (%))
+import Haskell.Rational (Rational, fromInt, toNumber, (%))
 import Data.Tuple (Tuple(..))
 import Effect (Effect)
 import Effect.Console (log)

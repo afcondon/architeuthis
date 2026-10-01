@@ -9,7 +9,7 @@ import Data.Array as Array
 import Data.Either (Either(..))
 import Data.Foldable (for_)
 import Data.Maybe (Maybe(..))
-import Data.Rational (Rational, fromInt, (%))
+import Haskell.Rational (Rational, fromInt, (%))
 import Effect (Effect)
 import Effect.Console (log)
 import Tidal.AST.Types (TPat)

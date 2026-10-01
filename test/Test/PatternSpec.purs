@@ -11,7 +11,7 @@ import Data.Either (Either(..))
 import Data.Foldable (for_)
 import Data.Int as Int
 import Data.Maybe (Maybe(..))
-import Data.Rational (Rational, fromInt, toNumber, (%))
+import Haskell.Rational (Rational, fromInt, toNumber, (%))
 import Effect (Effect)
 import Effect.Console (log)
 import Tidal.AST.Types (TPat)

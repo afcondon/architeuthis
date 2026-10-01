@@ -41,8 +41,8 @@ module Tidal.Cell.Prelude
 -- has a few names (append) that would collide; cells import their
 -- own Prelude through the cell template, which is the right place
 -- for it.
-import Data.Rational (Rational, fromInt)
-import Data.Rational (fromInt) as DataRational
+import Haskell.Rational (Rational, fromInt)
+import Haskell.Rational (fromInt) as DataRational
 import Tidal.Pattern.Types
 import Tidal.Pattern.Core
 import Tidal.DejaVu

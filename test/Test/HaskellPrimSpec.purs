@@ -26,7 +26,7 @@ import Haskell.Parsec (ParseError, Parsec, alphaNum, char, choice, digit, eof, g
 import Haskell.Parsec as Parsec
 import Haskell.Integer (Integer)
 import Haskell.Integer as Integer
-import Haskell.Rational (Rational, (%))
+import Haskell.Rational (Rational, ratio)
 import Haskell.Rational as Rational
 import JS.BigInt as BigInt
 import Test.Oracle.HaskellPrimGolden (golden)
@@ -40,7 +40,7 @@ int = map H.fromInteger <<< integer
 
 rational :: String -> Maybe Rational
 rational s = case split (Pattern "/") s of
-  [ n, d ] -> (%) <$> integer n <*> integer d
+  [ n, d ] -> ratio <$> integer n <*> integer d
   _ -> Nothing
 
 smallInt :: String -> Maybe Int

@@ -28,7 +28,7 @@ import Data.Foldable (class Foldable)
 import Data.Traversable (class Traversable)
 
 import Data.Maybe (Maybe)
-import Data.Rational (Rational)
+import Haskell.Rational (Rational)
 import Tidal.Chords (Modifiers)
 import Tidal.Core.Types (SourceSpan, SourcePos, Seed, ControlName, emptySpan)
 

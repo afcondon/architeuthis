@@ -20,7 +20,7 @@ import Prelude
 import Data.Array as Array
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
-import Data.Rational (Rational, denominator, fromInt, numerator)
+import Haskell.Rational (Rational, denominator, fromInt, numerator)
 import Data.String.CodeUnits as String
 import Data.Tuple (Tuple(..))
 import Effect (Effect)
@@ -61,7 +61,7 @@ showRat :: Rational -> String
 showRat r =
   let n = numerator r
       d = denominator r
-  in if d == 1 then show n else show n <> "/" <> show d
+  in if d == one then show n else show n <> "/" <> show d
 
 -- | Pad a string on the left to a given width.
 padLeft :: Int -> String -> String

@@ -54,8 +54,8 @@ import Data.Int as Int
 import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
-import Data.Rational (Rational, fromInt)
-import Data.Rational as R
+import Haskell.Rational (Rational, fromInt)
+import Haskell.Rational as R
 import Data.Tuple (Tuple(..))
 import Tidal.Binding (Binding, ContDest)
 import Tidal.Dispatch.Helpers (samplePatternAtWith)

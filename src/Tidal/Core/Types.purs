@@ -21,8 +21,8 @@ module Tidal.Core.Types
 
 import Prelude
 
-import Data.Rational (Rational, (%), toNumber, fromInt) as RationalExports
-import Data.Rational (Rational)
+import Haskell.Rational (Rational, (%), toNumber, fromInt) as RationalExports
+import Haskell.Rational (Rational)
 import Data.Newtype (class Newtype)
 
 -- | Time is represented as a Rational for exact subdivision

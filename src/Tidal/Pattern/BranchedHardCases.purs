@@ -10,7 +10,7 @@ import Prelude
 
 import Data.Array as Array
 import Data.Map as Map
-import Data.Rational (fromInt)
+import Haskell.Rational (fromInt)
 import Data.Tuple (Tuple(..))
 import Tidal.Pattern.Branched
   ( Branched

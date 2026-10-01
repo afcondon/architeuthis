@@ -69,7 +69,7 @@ import Data.Array as Array
 import Data.Char (toCharCode, fromCharCode)
 import Data.Int as Int
 import Data.Maybe (Maybe(..))
-import Data.Rational (Rational, (%))
+import Haskell.Rational (Rational, (%))
 import Data.String.CodeUnits as SCU
 import Data.Tuple (Tuple(..))
 import Tidal.AST.Types (Located(..), TPat(..), SourceSpan, tpatSpan)

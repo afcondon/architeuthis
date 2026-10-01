@@ -12,7 +12,7 @@ module Tidal.Pattern.BranchedExamples where
 import Prelude
 
 import Data.Map as Map
-import Data.Rational (fromInt)
+import Haskell.Rational (fromInt)
 import Tidal.Pattern.Branched
   ( Branched
   , Voice(..)

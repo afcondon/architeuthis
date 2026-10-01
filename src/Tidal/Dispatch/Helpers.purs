@@ -25,7 +25,7 @@ import Data.Map (Map)
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Number as Number
-import Data.Rational (Rational, fromInt)
+import Haskell.Rational (Rational, fromInt)
 import Data.String.CodeUnits as SCU
 import Data.Tuple (Tuple(..))
 import Tidal.Binding as Binding

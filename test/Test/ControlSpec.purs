@@ -17,7 +17,7 @@ import Data.Array (length, filter)
 import Data.Either (Either(..))
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
-import Data.Rational (Rational, denominator, numerator, fromInt)
+import Haskell.Rational (Rational, denominator, numerator, fromInt)
 import Data.Int as Int
 import Data.String (joinWith)
 import Data.String as String
@@ -44,7 +44,7 @@ render = case _ of
   where
   arc (Arc a) = rat a.start <> "-" <> rat a.stop
   rat :: Rational -> String
-  rat r = if denominator r == 1 then show (numerator r) else show (numerator r) <> "/" <> show (denominator r)
+  rat r = if denominator r == one then show (numerator r) else show (numerator r) <> "/" <> show (denominator r)
   -- purerl shows Numbers in exponent form; three decimals is enough here.
   -- Sign handled apart: purerl's Int div truncates, so -0.5 would lose it.
   num x =

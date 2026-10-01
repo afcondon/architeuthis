@@ -28,7 +28,7 @@ import Prelude
 import Data.Array as Array
 import Data.Foldable (foldl)
 import Data.Maybe (Maybe(..), fromMaybe)
-import Data.Rational (Rational, (%))
+import Haskell.Rational (Rational, (%))
 import Data.Tuple (Tuple(..), snd)
 import Tidal.AST.Types (Located(..), TPat(..))
 import Tidal.Core.Types (Seed(..))

@@ -53,7 +53,7 @@ import Prelude
 import Data.Array as Array
 import Data.Int as Int
 import Data.Maybe (Maybe(..))
-import Data.Rational (fromInt, toNumber) as Rational
+import Haskell.Rational (fromInt, toNumber) as Rational
 import Math (floor)
 import Tidal.Pattern.Types
   ( Pattern, pattern, query, mkArc, mkState

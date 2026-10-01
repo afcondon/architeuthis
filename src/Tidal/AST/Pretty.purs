@@ -16,7 +16,7 @@ import Prelude
 
 import Data.Maybe (Maybe(..))
 import Data.Int as Int
-import Data.Rational (Rational, toNumber)
+import Haskell.Rational (Rational, toNumber)
 import Data.String as String
 import Tidal.AST.Types (TPat(..), Located(..), getValue)
 import Tidal.Chords (Modifier(..), Modifiers(..))

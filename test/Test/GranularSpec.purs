@@ -27,7 +27,7 @@ import Data.Array as Array
 import Data.Foldable (for_)
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
-import Data.Rational (fromInt)
+import Haskell.Rational (fromInt)
 import Effect (Effect)
 import Effect.Console (log)
 import Tidal.Pattern.Core (queryArc)

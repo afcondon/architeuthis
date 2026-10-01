@@ -5,6 +5,10 @@
 -- | `truncate` goes towards zero (via `properFraction`), and `round` sends a
 -- | half to the even neighbour (`round (5 % 2)` is 2).
 -- |
+-- | `%` takes `Int`s, because a PureScript literal is one: `1 % 4` reads as
+-- | it does in Tidal's source, where the literals default to `Integer`. The
+-- | value is exact either way; `ratio` takes `Integer`s.
+-- |
 -- | `toNumber` is `fromRational :: Rational -> Double`. It is exact to
 -- | GHC's correctly-rounded result whenever numerator and denominator are
 -- | below 2^53, which covers Tidal's time; beyond that it may differ in the
@@ -12,6 +16,7 @@
 module Haskell.Rational
   ( Rational
   , ratio
+  , ratioInt
   , (%)
   , numerator
   , denominator
@@ -44,8 +49,8 @@ instance Show Rational where
   show (Rational n d) =
     (if n < zero then "(" <> show n <> ")" else show n) <> " % " <> show d
 
--- | `%`: reduced, the sign moved to the numerator. A zero denominator is
--- | an error, as in Haskell.
+-- | Haskell's `%`: reduced, the sign moved to the numerator. A zero
+-- | denominator is an error, as in Haskell.
 ratio :: Integer -> Integer -> Rational
 ratio n d
   | d == zero = unsafeCrashWith "Ratio has zero denominator"
@@ -56,7 +61,11 @@ ratio n d
       in
         Rational (s * Integer.quot n g) (s * Integer.quot d g)
 
-infixl 7 ratio as %
+-- | `%` at the type of PureScript's literals.
+ratioInt :: Int -> Int -> Rational
+ratioInt n d = ratio (Integer.fromInt n) (Integer.fromInt d)
+
+infixl 7 ratioInt as %
 
 numerator :: Rational -> Integer
 numerator (Rational n _) = n

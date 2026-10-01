@@ -30,7 +30,7 @@ import Data.Char (toCharCode, fromCharCode)
 import Data.Int as Int
 import Data.Maybe (Maybe(..), fromMaybe)
 import Data.Number as Number
-import Data.Rational (Rational)
+import Haskell.Rational (Rational)
 import Data.String.CodeUnits as SCU
 import Tidal.AST.Types (Located(..), TPat(..), SourceSpan)
 import Tidal.Chords (Modifier(..), Modifiers(..), lookupChord, applyModifiers)

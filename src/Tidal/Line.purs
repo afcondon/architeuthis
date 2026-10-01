@@ -33,8 +33,8 @@ import Data.Foldable (foldl)
 import Data.Int as Int
 import Data.Maybe (Maybe(..))
 import Data.Number as Number
-import Data.Rational (Rational, (%))
-import Data.Rational as Rational
+import Haskell.Rational (Rational, (%))
+import Haskell.Rational as Rational
 import Data.String (trim)
 import Data.String as String
 import Data.String.CodeUnits as CU
