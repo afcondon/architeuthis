@@ -109,6 +109,13 @@ init([]) ->
            shutdown => infinity,
            type => supervisor,
            modules => [selene_pattern_voice_sup]},
+         %% Tidal's streams d1..d16 (Limulus), straight to SuperDirt.
+         #{id => tidal_dirt_voice_sup,
+           start => {tidal_dirt_voice_sup, start_link, []},
+           restart => permanent,
+           shutdown => infinity,
+           type => supervisor,
+           modules => [tidal_dirt_voice_sup]},
          #{id => tidal_dispatcher,
            start => {tidal_dispatcher, start_link, []},
            restart => permanent,

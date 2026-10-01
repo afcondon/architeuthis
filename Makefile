@@ -68,6 +68,8 @@ erl-quick:
 	@cp src/purerl_tidal.app.src ebin/purerl_tidal.app
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_voice.erl
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_voice_sup.erl
+	@erlc -disable-feature maybe_expr -o ebin src/tidal_dirt_voice.erl
+	@erlc -disable-feature maybe_expr -o ebin src/tidal_dirt_voice_sup.erl
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_clock.erl
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_dispatcher.erl
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_state_pub.erl

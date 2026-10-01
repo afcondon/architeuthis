@@ -185,6 +185,8 @@ broadcast_compute_window(Window) ->
                  fun virtual_selene_voice_sup:which_voices/0, Window),
     broadcast_to(selene_pattern_voice_sup,
                  fun selene_pattern_voice_sup:which_voices/0, Window),
+    broadcast_to(tidal_dirt_voice_sup,
+                 fun tidal_dirt_voice_sup:which_voices/0, Window),
     ok.
 
 broadcast_to(SupName, WhichFn, Window) ->

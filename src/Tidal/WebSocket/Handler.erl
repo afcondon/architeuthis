@@ -50,6 +50,10 @@ websocket_handle(_Frame, State) ->
 %%   {hush}                                    — silence everything (Tidal-compat)
 %%   {silence_one, Name}                       — clear one voice's pattern
 %%   none                                      — try named-binding dispatch
+%% `tidal <block>`: a block of Tidal as typed in Limulus (d1 $ ..., hush,
+%% setcps), read by Tidal.Line. Its `hush` is Tidal's (the d1..d16 streams);
+%% the bare `hush` below stays the whole rig's.
+try_parse_prefixed(<<"tidal ", Rest/binary>>) -> {tidal_line, Rest};
 try_parse_prefixed(<<"hush">>) -> {hush};
 try_parse_prefixed(<<"hush ", _/binary>>) -> {hush};
 try_parse_prefixed(<<"silence">>) -> {hush};
@@ -932,6 +936,8 @@ handle_pattern_message(Text, State) ->
             tidal_dispatcher:remove_binding(Name),
             Reply = {text, <<"OK: unbind ", Name/binary>>},
             {reply, Reply, State};
+        {tidal_line, Block} ->
+            {reply, {text, tidal_line(Block)}, State};
         {hush} ->
             %% Tidal-voice patterns get cleared; Odonus voices flip
             %% their hush flag so emit_step skips MIDI output (engine
@@ -970,6 +976,9 @@ handle_pattern_message(Text, State) ->
             %% restore. That matches the reef_* singletons above, which hush also
             %% stops outright.
             lists:foreach(fun stop_voice_tree/1, voice_trees()),
+            %% and the Tidal streams d1..d16 (Limulus), silenced as Tidal's
+            %% own hush does, so they resume on the next pattern sent.
+            catch tidal_dirt_voice_sup:hush_all(),
             %% and the ES-9's autonomous generators. Selene polysignals are NOT
             %% voices — once applied they run inside es9-daemon's audio callback
             %% with nothing driving them, so stopping every BEAM voice above
@@ -1887,6 +1896,30 @@ handle_pattern_message(Text, State) ->
                              "and dispatch via `play-armed`. (Bare-binding "
                              "and `:expr` dispatch were retired.)">>},
             {reply, Reply, State}
+    end.
+
+%% Run one block of Tidal (Tidal.Line) and say what happened, as the reply
+%% frame. A refusal names its reason; nothing half-runs.
+tidal_line(Block) ->
+    try ('tidal_line@ps':parseLine(Block)) of
+        {right, {play, N, Pattern}} ->
+            case tidal_dirt_voice_sup:set(N, Pattern) of
+                ok -> <<"OK: d", (integer_to_binary(N))/binary>>;
+                Err -> iolist_to_binary(io_lib:format("ERR: d~p: ~p", [N, Err]))
+            end;
+        {right, {hush}} ->
+            tidal_dirt_voice_sup:hush_all(),
+            <<"OK: hush">>;
+        {right, {setCps, Cps}} ->
+            Bpm = Cps * 240.0,
+            tidal_clock:set_bpm(Bpm),
+            tidal_dispatcher:set_link_tempo(Bpm),
+            iolist_to_binary(io_lib:format("OK: setcps ~p (bpm ~p)", [Cps, Bpm]));
+        {left, Reason} ->
+            <<"ERR: ", Reason/binary>>
+    catch
+        Class:Why ->
+            iolist_to_binary(io_lib:format("ERR: ~p:~p", [Class, Why]))
     end.
 
 %% Wrap the Tidal parser in try/catch so any uncaught exception
