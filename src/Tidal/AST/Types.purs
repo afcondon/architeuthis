@@ -24,6 +24,9 @@ module Tidal.AST.Types
 
 import Prelude
 
+import Data.Foldable (class Foldable)
+import Data.Traversable (class Traversable)
+
 import Data.Maybe (Maybe)
 import Data.Rational (Rational)
 import Tidal.Core.Types (SourceSpan, SourcePos, Seed, ControlName, emptySpan)
@@ -35,6 +38,8 @@ import Tidal.Core.Types (SourceSpan, SourcePos, Seed, ControlName, emptySpan)
 data Located a = Located SourceSpan a
 
 derive instance functorLocated :: Functor Located
+derive instance foldableLocated :: Foldable Located
+derive instance traversableLocated :: Traversable Located
 
 instance showLocated :: Show a => Show (Located a) where
   show (Located _ a) = "(Located _ " <> show a <> ")"
@@ -103,6 +108,8 @@ data TPat a
     -- ^ Range enumeration: 0 .. 7
 
 derive instance functorTPat :: Functor TPat
+derive instance foldableTPat :: Foldable TPat
+derive instance traversableTPat :: Traversable TPat
 
 instance showTPat :: Show a => Show (TPat a) where
   show = case _ of

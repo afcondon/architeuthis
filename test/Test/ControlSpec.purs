@@ -7,7 +7,7 @@
 -- | quoted string), so a failure shows the whole difference at once.
 -- |
 -- | Unlike the older specs, a failure here fails the run.
-module Test.ControlSpec (runControlTests) where
+module Test.ControlSpec (runControlTests, render) where
 
 import Prelude
 
@@ -91,6 +91,15 @@ cases =
   , { name: "aliases write their target's key, at its type"
     , pat: ctl "s" "bd" # ctl "lpf" "100" # ctl "hpq" "0.2" # ctl "orbit" "1" # ctl "vowel" "a"
     , want: [ "0-1|0-1|cutoff=f100.000,hresonance=f0.200,orbit=1,s=\"bd\",vowel=\"a\"" ] }
+  , { name: "floats read duration letters, then note names"
+    , pat: ctl "gain" "e cs6 ef4 1.5"
+    , want: [ "0-1/4|0-1/4|gain=f0.125", "1/4-1/2|1/4-1/2|gain=f13.000", "1/2-3/4|1/2-3/4|gain=f-9.000", "3/4-1|3/4-1|gain=f1.500" ] }
+  , { name: "notes read note names"
+    , pat: ctl "n" "e cs6 ef4 -2 a5"
+    , want: [ "0-1/5|0-1/5|n=n4.000", "1/5-2/5|1/5-2/5|n=n13.000", "2/5-3/5|2/5-3/5|n=n-9.000", "3/5-4/5|3/5-4/5|n=n-2.000", "4/5-1|4/5-1|n=n9.000" ] }
+  , { name: "ints read note names"
+    , pat: ctl "orbit" "1 e"
+    , want: [ "0-1/2|0-1/2|orbit=1", "1/2-1|1/2-1|orbit=4" ] }
   ]
 
 runControlTests :: Effect Unit

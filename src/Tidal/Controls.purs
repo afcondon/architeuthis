@@ -18,6 +18,8 @@ module Tidal.Controls
   , controls
   , lookupControl
   , control
+  , readValue
+  , controlFromMini
   , pS
   , pF
   , pI
@@ -38,15 +40,22 @@ module Tidal.Controls
 
 import Prelude
 
+import Control.Alt ((<|>))
+
 import Data.Array (catMaybes, find, index)
+import Data.Foldable (foldl)
+import Data.Traversable (traverse)
 import Data.Int as Int
 import Data.Map as Map
 import Data.Maybe (Maybe(..))
 import Data.Number as Number
 import Data.String (split)
+import Data.String.CodeUnits as CU
 import Data.String as String
 import Data.Tuple (Tuple(..))
-import Tidal.Pattern.Types (ControlPattern, Pattern, Value(..), ValueMap, applyLeft)
+import Tidal.AST.Types (TPat)
+import Tidal.Eval.Interpret (tpatToPattern)
+import Tidal.Pattern.Types (class TidalEnum, ControlPattern, Pattern, Value(..), ValueMap, applyLeft)
 
 -- | What a control's pattern holds. `Sound` is Tidal's `grp [mS "s", mF "n"]`:
 -- | a string whose `:`-suffix, when it is a number, becomes `n`.
@@ -87,18 +96,86 @@ lookupControl :: String -> Maybe Control
 lookupControl name = find (\k -> k.name == name) controls
 
 -- | A pattern of strings as the control: each string is read at the
--- | control's kind. A number that does not read is dropped, as GHCi would
--- | refuse the literal; the line language checks literals before this.
+-- | control's kind (`readValue`). A string that does not read is dropped;
+-- | the line language refuses such a literal before it gets here.
 control :: Control -> Pattern String -> ControlPattern
 control k = map case k.kind of
-  KString -> one VString <<< Just
   KSound -> grp
-  KFloat -> one VNumber <<< Number.fromString
-  KNote -> one VNote <<< Number.fromString
-  KInt -> one VInt <<< Int.fromString
+  kind -> \v -> Map.fromFoldable (Tuple k.key <$> readValue kind v)
+
+-- | One mini-notation atom read at a kind, as Tidal's `Parseable` instances
+-- | read it. Notes are numbers or note names (`e` 4, `cs6` 13, `ef4` -9);
+-- | ints take note names too; floats also take Tidal's duration letters
+-- | (`e` is an eighth, 0.125), which win over note names.
+readValue :: Kind -> String -> Maybe Value
+readValue kind v = case kind of
+  KString -> Just (VString v)
+  KSound -> Just (VString v)
+  KNote -> VNote <$> readNote v
+  KInt -> VInt <$> readInt v
+  KFloat -> VNumber <$> readFloat v
+
+readNote :: String -> Maybe Number
+readNote v = Number.fromString v <|> noteName v
+
+readInt :: String -> Maybe Int
+readInt v = Int.fromString v <|> (Int.round <$> noteName v)
+
+readFloat :: String -> Maybe Number
+readFloat v = Number.fromString v <|> durationLetter v <|> noteName v
+
+-- | Mini-notation as a control. The atoms are read at the control's kind
+-- | BEFORE the pattern is evaluated, as Tidal parses at the type wanted, so
+-- | that `n "0 .. 3"` counts in numbers. `Nothing` when an atom does not read.
+controlFromMini :: Control -> TPat String -> Maybe ControlPattern
+controlFromMini k tpat = case k.kind of
+  KString -> Just (pS k.key (tpatToPattern tpat))
+  KSound -> Just (map grp (tpatToPattern tpat))
+  KFloat -> pF k.key <$> typed readFloat
+  KNote -> pN k.key <$> typed readNote
+  KInt -> pI k.key <$> typed readInt
   where
-  one :: forall a. (a -> Value) -> Maybe a -> ValueMap
-  one box = Map.fromFoldable <<< map (Tuple k.key <<< box)
+  typed :: forall a. TidalEnum a => (String -> Maybe a) -> Maybe (Pattern a)
+  typed read = traverse read tpat <#> tpatToPattern
+
+-- | Tidal's note names: a letter, any of `s` (sharp), `f` (flat), `n`
+-- | (natural), then an octave, 5 if none. C5 is 0.
+noteName :: String -> Maybe Number
+noteName v = do
+  { head, tail } <- CU.uncons v
+  base <- case head of
+    'c' -> Just 0
+    'd' -> Just 2
+    'e' -> Just 4
+    'f' -> Just 5
+    'g' -> Just 7
+    'a' -> Just 9
+    'b' -> Just 11
+    _ -> Nothing
+  let
+    mods = CU.takeWhile (\ch -> ch == 's' || ch == 'f' || ch == 'n') tail
+    octaveText = CU.drop (CU.length mods) tail
+    shift = foldl (\acc ch -> acc + modifier ch) 0 (CU.toCharArray mods)
+  octave <- if octaveText == "" then Just 5 else Int.fromString octaveText
+  pure (Int.toNumber (base + shift + (octave - 5) * 12))
+  where
+  modifier = case _ of
+    's' -> 1
+    'f' -> -1
+    _ -> 0
+
+-- | Tidal's single-letter durations, read where a number is wanted.
+durationLetter :: String -> Maybe Number
+durationLetter = case _ of
+  "w" -> Just 1.0
+  "h" -> Just 0.5
+  "q" -> Just 0.25
+  "e" -> Just 0.125
+  "s" -> Just 0.0625
+  "t" -> Just (1.0 / 3.0)
+  "f" -> Just 0.2
+  "x" -> Just (1.0 / 6.0)
+  _ -> Nothing
 
 -- | `grp [mS "s", mF "n"]`: `bd:3` is `s` "bd" and `n` 3; a suffix that is
 -- | not a number is dropped, as are any after the second.

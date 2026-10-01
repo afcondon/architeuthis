@@ -7,6 +7,7 @@ import Effect (Effect)
 import Effect.Console (log)
 import Test.BranchedSpec (runBranchedTests)
 import Test.ControlSpec (runControlTests)
+import Test.LineSpec (runLineTests)
 import Test.DejaVuSpec (runDejaVuTests)
 import Test.FugueSpec (runFugueTests)
 import Test.GranularSpec (runGranularTests)
@@ -165,6 +166,7 @@ main = do
 
   -- Run control pattern tests
   runControlTests
+  runLineTests
 
   -- Run the granular read-head vocabulary tests (C0, Conspicillum)
   runGranularTests
