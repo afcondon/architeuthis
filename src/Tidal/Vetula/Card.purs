@@ -45,9 +45,11 @@ import Tidal.Pattern.Types (Arc(..), Event(..), Pattern, State(..), emptyContext
 type CardHit = { at :: Number, len :: Number, notes :: Array Int }
 
 -- | Whether the card sounds from the rig at all: not muted, and bound for MIDI
--- | (`→ odo` conducts Odonus and makes no notes; `→ rig` is not built yet).
+-- | or for the rig (`→ rig`, "hand this card to the rig", plays as MIDI on its
+-- | channel until the CV/ES-9 destinations exist); `→ odo` conducts Odonus and
+-- | makes no notes.
 cardSounds :: VoiceSpec -> Boolean
-cardSounds spec = not spec.muted && spec.term == TMidi && Array.length spec.chords > 0
+cardSounds spec = not spec.muted && spec.term /= TOdo && Array.length spec.chords > 0
 
 -- | Whether the card plays on the bar grid (a sequence that parses).
 cardOnBar :: VoiceSpec -> Boolean
