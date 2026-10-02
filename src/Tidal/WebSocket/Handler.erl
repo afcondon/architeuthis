@@ -936,6 +936,9 @@ handle_pattern_message(Text, State) ->
             Table = tidal_stage:text_subscribe(self()),
             Json = iolist_to_binary(json:encode(Table)),
             {reply, {text, <<"stage-texts ", Json/binary>>}, State};
+        {stage_text, <<"routing/harmony">>, Body} ->
+            %% the router's harmony routes: the rig reads these itself
+            {reply, {text, apply_routes(Body)}, State};
         {stage_text, Key, Body} ->
             %% (not `Text`: that is this function's argument, and a bound
             %% variable in a pattern is a comparison)
@@ -1067,7 +1070,8 @@ handle_pattern_message(Text, State) ->
             %% frontend's nextModelStep) so both runtimes emit it on the SAME step in
             %% the SAME grid — the real flam fix. Heads on ch 12/13/14/15.
             case reef_voice:start_sim_at_json(Json, 12, Beats, N) of
-                {ok, _Pid} ->
+                {ok, Pid} ->
+                    routes_to_voice(Pid),
                     NB = integer_to_binary(N),
                     {reply, {text, <<"OK: reef-sim-at ", NB/binary, " (ch12-15)">>}, State};
                 {error, Reason} ->
@@ -2040,13 +2044,66 @@ odonus_line(Line) ->
             iolist_to_binary(io_lib:format("ERR: odonus: ~p:~p", [Class, Why]))
     end.
 
+%% **Harmony routes** (Reef.Route, docs/kb/plans/matrix-router.md): what
+%% feeds Odonus's grid and output, kept on the stage as `routing/harmony`, one
+%% route a line. Unlike the pages' objects the rig reads this one: a write is
+%% parsed and its patterns checked before it is kept (a refusal leaves the
+%% table as it was), and the change goes to the Odonus voice as one move, the
+%% gestures `odonus $ scale …` and `harmony …` make, so the page follows in
+%% lockstep. The canonical text is announced to every page, the writer too,
+%% so all views spell it alike.
+apply_routes(Body) ->
+    Text = case Body of null -> <<>>; _ -> Body end,
+    try 'reef_route@ps':parse(Text) of
+        {left, Why} -> <<"ERR: routing: ", Why/binary>>;
+        {right, New} ->
+            Move = {gestures, 'reef_route@ps':odonusInputs(current_routes(), New)},
+            case unreadable_harmony(Move) of
+                {bad, Why} -> <<"ERR: routing: ", Why/binary>>;
+                ok ->
+                    Canon = 'reef_route@ps':print(New),
+                    tidal_stage:put_text(<<"routing/harmony">>, Canon, rig),
+                    N = send_move(Move),
+                    iolist_to_binary(io_lib:format("OK: routing (~p routes, ~p gestures)", [array:size(New), N]))
+            end
+    catch
+        Class:Why -> iolist_to_binary(io_lib:format("ERR: routing: ~p:~p", [Class, Why]))
+    end.
+
+current_routes() ->
+    case tidal_stage:get_text(<<"routing/harmony">>) of
+        T when is_binary(T) ->
+            case 'reef_route@ps':parse(T) of
+                {right, R} -> R;
+                _ -> array:new()
+            end;
+        _ -> array:new()
+    end.
+
+%% A move to the running Odonus voice, if it has gestures; how many.
+send_move({gestures, Inputs} = Move) ->
+    case {whereis(reef_voice), array:size(Inputs)} of
+        {undefined, _} -> 0;
+        {_, 0} -> 0;
+        {Pid, N} -> Pid ! {move, Move}, N
+    end.
+
+%% A starting Odonus voice takes the whole table: routes written while none
+%% was running reached nothing.
+routes_to_voice(Pid) ->
+    Inputs = 'reef_route@ps':odonusInputs(array:new(), current_routes()),
+    case array:size(Inputs) of
+        0 -> ok;
+        _ -> Pid ! {move, {gestures, Inputs}}
+    end.
+
 %% A `harmony "..."` or `scale "..."` pattern is read by Littorina on each
 %% step, which treats one it cannot read as a rest; refuse it here instead,
 %% with Tidal's reason (or, for a scale, the names it does not know).
 unreadable_harmony(Move) ->
     Texts = [{Tag, T} || I <- array:to_list('reef_move@ps':inputsOf(Move)),
                   #{tag := Tag, txt := {just, T}} <- ['reef_input@ps':toWire(I)],
-                  Tag =:= <<"SetHarmony">> orelse Tag =:= <<"SetScalePattern">>],
+                  Tag =:= <<"SetHarmony">> orelse Tag =:= <<"SetScalePattern">> orelse Tag =:= <<"SetOutScale">>],
     lists:foldl(fun({Tag, T}, ok) ->
                         Check = case Tag of
                                     <<"SetHarmony">> -> 'tidal_harmony@ps':parseHarmony(T);

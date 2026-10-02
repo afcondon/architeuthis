@@ -48,7 +48,7 @@
 -behaviour(gen_server).
 
 -export([start_link/0, subscribe/1, put/3, set/3, stopped/1, stopped_all/0, snapshot/0]).
--export([text_subscribe/1, put_text/3, relay/3, valid_key/1]).
+-export([text_subscribe/1, put_text/3, get_text/1, relay/3, valid_key/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 %% =========================================================================
@@ -89,6 +89,9 @@ text_subscribe(Pid) -> call({text_subscribe, Pid}, #{}).
 %% Write (or, with null, delete) a text object. Returns the new version.
 put_text(Key, Text, From) -> call({put_text, Key, Text, From}, 0).
 
+%% One text object's text, or `undefined`.
+get_text(Key) -> call({get_text, Key}, undefined).
+
 %% Relay a request about an object to every other text subscriber:
 %% Kind is <<"stage-open">> or <<"stage-reject">>, Fields a map.
 relay(Kind, Fields, From) -> cast({relay, Kind, Fields, From}).
@@ -97,7 +100,7 @@ relay(Kind, Fields, From) -> cast({relay, Kind, Fields, From}).
 valid_key(Key) ->
     case binary:split(Key, <<"/">>) of
         [Slot, Name] when Name =/= <<>> ->
-            lists:member(Slot, [<<"odonus">>, <<"vetula">>, <<"balistes">>, <<"selene">>, <<"conspicillum">>])
+            lists:member(Slot, [<<"odonus">>, <<"vetula">>, <<"balistes">>, <<"selene">>, <<"conspicillum">>, <<"routing">>])
                 andalso lists:all(fun(C) -> (C >= $a andalso C =< $z) orelse (C >= $A andalso C =< $Z)
                                              orelse (C >= $0 andalso C =< $9) orelse lists:member(C, "/_-.")
                                   end, binary_to_list(Name));
@@ -157,6 +160,8 @@ save_texts(Texts) ->
     catch Class:Why -> logger:warning("tidal_stage: could not save texts: ~p:~p", [Class, Why])
     end.
 
+handle_call({get_text, Key}, _From, State = #{texts := Texts}) ->
+    {reply, case maps:find(Key, Texts) of {ok, #{text := T}} -> T; error -> undefined end, State};
 handle_call(snapshot, _From, State = #{slots := Slots}) ->
     {reply, Slots, State};
 handle_call({text_subscribe, Pid}, _From, State = #{texts := Texts, text_subscribers := Subs}) ->
