@@ -21,7 +21,7 @@
 -module(reef_balistes_voice).
 -export([start/0, start/2, start_sim_json/3, start_sim_at_json/4,
          start_fixed_json/3, stop/0, loop/1,
-         set_routing_json/1, routing/0]).
+         set_routing_json/1, routing/0, play_hit/6]).
 
 %% Scheduler poll interval (ms). Timing is absolute (WallUs from the anchor), so
 %% poll jitter only affects lookahead slack.
@@ -264,6 +264,13 @@ emit(Sock, Ch, Port, E, WallUs, StepMs) ->
                   fire(Sock, Ch, Port, Note, Vel, Sub * 0.9, Sub, AtUs)
               end, lists:seq(0, N - 1))
     end.
+
+%% One drum hit from outside the voice (the Tidal `drums` stream): sent where
+%% the routing table says, as the voice's own hits are; with no table yet, to
+%% the default port on channel 10. `SpanMs` is what a chopped sample voice
+%% spreads its slices across.
+play_hit(Sock, Note, Vel, DurMs, SpanMs, AtUs) ->
+    fire(Sock, ?DEFAULT_CHANNEL, ?DEFAULT_PORT, Note, Vel, DurMs, SpanMs, AtUs).
 
 %% One hit, sent where the routing table says; with no table yet, the old
 %% single destination (Ch on Port).

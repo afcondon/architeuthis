@@ -58,6 +58,7 @@ try_parse_prefixed(<<"tidal ", Rest/binary>>) -> {tidal_line, Rest};
 %% landing on one step, e.g. `odonus $ unison # phase 2`. Also reached as
 %% `tidal odonus $ ...`, which is how Limulus sends a block.
 try_parse_prefixed(<<"odonus ", _/binary>> = Line) -> {tidal_line, Line};
+try_parse_prefixed(<<"drums ", _/binary>> = Line) -> {tidal_line, Line};
 try_parse_prefixed(<<"hush">>) -> {hush};
 try_parse_prefixed(<<"hush ", _/binary>>) -> {hush};
 try_parse_prefixed(<<"silence">>) -> {hush};
@@ -1955,7 +1956,30 @@ tidal_line(Block) ->
                 none -> <<"ERR: vetula: a vetula line is a cue (mark, loop, loop N, loop off); a card is v3 $ ... (Limulus writes cards to the stage)">>;
                 Cue -> send_cue(Cue)
             end;
+        <<"drums", Rest/binary>> -> drums_line(Rest);
         _ -> tidal_pattern_line(Block)
+    end.
+
+%% `drums $ <control pattern>`: Tidal, played on the drum kit. The pattern is
+%% read as `d1`'s would be and installed on the `drums` stream, which turns
+%% each event into a hit on the lane its `s` names (Tidal.DrumVoice) and plays
+%% it through the drum routing table (reef_balistes_voice:play_hit). `hush`
+%% silences it with the `d` streams.
+drums_line(Rest) ->
+    case string:trim(Rest, leading) of
+        <<"$", Body/binary>> ->
+            try ('tidal_line@ps':parseLine(<<"d1 $ ", Body/binary>>)) of
+                {right, {play, _, Pattern}} ->
+                    case tidal_dirt_voice_sup:set(drums, Pattern) of
+                        ok -> <<"OK: drums">>;
+                        Err -> iolist_to_binary(io_lib:format("ERR: drums: ~p", [Err]))
+                    end;
+                {left, Reason} -> <<"ERR: drums: ", Reason/binary>>;
+                _ -> <<"ERR: drums: a drums line is drums $ <pattern>">>
+            catch
+                Class:Why -> iolist_to_binary(io_lib:format("ERR: drums: ~p:~p", [Class, Why]))
+            end;
+        _ -> <<"ERR: drums: a drums line is drums $ <pattern>">>
     end.
 
 %% Review cues (docs/kb/plans/text-on-the-stage.md, slice 2): time markers on

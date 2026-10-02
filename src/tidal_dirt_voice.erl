@@ -8,6 +8,11 @@
 %%
 %% Registered as `tidal_dirt_d<N>`: a namespace of its own, so a `bind d1 …`
 %% for the binding voices cannot redirect a Tidal stream.
+%%
+%% One more stream, `drums` (`tidal_dirt_drums`, the line `drums $ …`), is
+%% timed the same way but plays drum hits instead (Tidal.DrumVoice): each
+%% event names a lane of the drum kit, and reef_balistes_voice:play_hit sends
+%% it down the drum routing table, as Balistes' own engines are sent.
 -module(tidal_dirt_voice).
 -behaviour(gen_server).
 
@@ -21,16 +26,25 @@ start_link(Stream) ->
 set_pattern(Stream, Pattern) ->
     gen_server:call(registered_name(Stream), {set_pattern, Pattern}).
 
+registered_name(drums) -> tidal_dirt_drums;
 registered_name(Stream) when is_integer(Stream) ->
     list_to_atom("tidal_dirt_d" ++ integer_to_list(Stream)).
 
 init(Stream) ->
     {ok, Sock} = gen_udp:open(0, [binary]),
-    {ok, {Stream, 'tidal_dirtVoice@ps':initialState(Stream), Sock}}.
+    Id = case Stream of drums -> 0; _ -> Stream end,
+    {ok, {Stream, 'tidal_dirtVoice@ps':initialState(Id), Sock}}.
 
 handle_call({set_pattern, Pattern}, _From, {Stream, Ps, Sock}) ->
     {reply, ok, {Stream, 'tidal_dirtVoice@ps':setPattern(Pattern, Ps), Sock}}.
 
+handle_cast({compute_until, Window}, {drums, Ps, Sock}) ->
+    #{newState := Ps1, hits := Hits} = 'tidal_drumVoice@ps':computeHits(Window, Ps),
+    array:foldl(
+      fun(_, #{atUnixUs := At, note := Note, velocity := Vel, durMs := Dur, spanMs := Span}, _) ->
+              reef_balistes_voice:play_hit(Sock, Note, Vel, Dur, Span, round(At))
+      end, ok, Hits),
+    {noreply, {drums, Ps1, Sock}};
 handle_cast({compute_until, Window}, {Stream, Ps, Sock}) ->
     #{newState := Ps1, messages := Messages} =
         'tidal_dirtVoice@ps':computeUntil(Window, Ps),

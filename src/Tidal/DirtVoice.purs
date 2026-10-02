@@ -30,6 +30,8 @@ module Tidal.DirtVoice
   , initialState
   , setPattern
   , computeUntil
+  , Onset
+  , onsetsUntil
   ) where
 
 import Prelude
@@ -73,6 +75,29 @@ setPattern pattern st = st { pattern = pattern }
 
 computeUntil :: Window -> State -> { newState :: State, messages :: Array Message }
 computeUntil w st =
+  let r = onsetsUntil w st
+  in { newState: r.newState, messages: map message r.onsets }
+  where
+  message o =
+    let
+      extras = Map.fromFoldable
+        [ Tuple "_id_" (VString (show st.stream))
+        , Tuple "cps" (VNumber o.cps)
+        , Tuple "cycle" (VNumber o.cycle)
+        , Tuple "delta" (VNumber o.deltaS)
+        ]
+    in { atUnixUs: o.atUnixUs, args: oscArgs (Map.union o.value extras) }
+
+-- | One event that begins in the window: when it sounds, its cycle, its
+-- | length in seconds, and its controls.
+type Onset = { atUnixUs :: Number, cps :: Number, cycle :: Number, deltaS :: Number, value :: ValueMap }
+
+-- | The events that begin between where the last window ended and the
+-- | window's look-ahead, with the timing rules above. `computeUntil` makes
+-- | `/dirt/play` messages of them; the drum stream (`Tidal.DrumVoice`) makes
+-- | drum hits.
+onsetsUntil :: Window -> State -> { newState :: State, onsets :: Array Onset }
+onsetsUntil w st =
   let
     now = toCycle w.currentCycle
     to = toCycle w.lookAheadCycle
@@ -85,24 +110,21 @@ computeUntil w st =
     cps = 1000.0 / w.cycleDurationMs
   in
     { newState: st { until = Just (max from to) }
-    , messages: mapMaybe (message cps) events
+    , onsets: mapMaybe (onset cps) events
     }
   where
-  message cps = case _ of
+  onset cps = case _ of
     Digital e | arcStart e.whole == arcStart e.part ->
       let
         Arc whole = e.whole
-        onset = toNumber whole.start
-        extras = Map.fromFoldable
-          [ Tuple "_id_" (VString (show st.stream))
-          , Tuple "cps" (VNumber cps)
-          , Tuple "cycle" (VNumber onset)
-          , Tuple "delta" (VNumber (toNumber (whole.stop - whole.start) / cps))
-          ]
+        start = toNumber whole.start
       in
         Just
-          { atUnixUs: w.nowUnixUs + (onset - w.currentCycle) * w.cycleDurationMs * 1000.0
-          , args: oscArgs (Map.union e.value extras)
+          { atUnixUs: w.nowUnixUs + (start - w.currentCycle) * w.cycleDurationMs * 1000.0
+          , cps
+          , cycle: start
+          , deltaS: toNumber (whole.stop - whole.start) / cps
+          , value: e.value
           }
     _ -> Nothing
 
