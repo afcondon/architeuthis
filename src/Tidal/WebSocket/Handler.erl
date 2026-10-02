@@ -684,6 +684,11 @@ try_parse_prefixed(<<"stage-put ", Rest/binary>>) ->
 %%   stage-text-del <key>        delete it
 %%   stage-open <key>            ask an editor (Limulus) to show it
 %%   stage-reject <key> <reason> the owner could not read a write
+%% lane-shapes <json array of mini-notation strings> → `lane-shapes <json>`:
+%% each source's meter, cell mask, onsets and named onsets (Tidal.Lane), so a
+%% page can draw and build a lane without evaluating Tidal itself
+%% (docs/kb/plans/gpl-boundary-review.md).
+try_parse_prefixed(<<"lane-shapes ", Json/binary>>) -> {lane_shapes, Json};
 try_parse_prefixed(<<"stage-text-subscribe">>) -> {stage_text_subscribe};
 try_parse_prefixed(<<"stage-text-subscribe ", _/binary>>) -> {stage_text_subscribe};
 try_parse_prefixed(<<"stage-text-del ", Key/binary>>) -> {stage_text, trim_binary(Key), null};
@@ -933,6 +938,15 @@ handle_pattern_message(Text, State) ->
         {stage_subscribe} ->
             tidal_stage:subscribe(self()),
             {reply, {text, <<"OK: stage-subscribe">>}, State};
+        {lane_shapes, SourcesJson} ->
+            case catch json:decode(SourcesJson) of
+                Sources when is_list(Sources) ->
+                    Shapes = maps:from_list([{Src, lane_shape(Src)} || Src <- Sources, is_binary(Src)]),
+                    Out = iolist_to_binary(json:encode(Shapes)),
+                    {reply, {text, <<"lane-shapes ", Out/binary>>}, State};
+                _ ->
+                    {reply, {text, <<"ERR: lane-shapes wants a JSON array of strings">>}, State}
+            end;
         {stage_text_subscribe} ->
             Table = tidal_stage:text_subscribe(self()),
             Json = iolist_to_binary(json:encode(Table)),
@@ -2125,6 +2139,12 @@ dirt_audition(Json) ->
 
 %% The slots a page may set with stage-put. Conspicillum's is set by its
 %% scene push instead.
+lane_shape(Src) ->
+    #{meter => 'tidal_lane@ps':meterOf(Src),
+      mask => array:to_list('tidal_lane@ps':cellMaskOf(Src)),
+      onsets => array:to_list('tidal_lane@ps':onsetsOf(Src)),
+      named => [#{name => N, at => A} || #{name := N, at := A} <- array:to_list('tidal_lane@ps':namedOnsetsOf(Src))]}.
+
 stage_slot(<<"odonus">>) -> odonus;
 stage_slot(<<"vetula">>) -> vetula;
 stage_slot(<<"balistes">>) -> balistes;
