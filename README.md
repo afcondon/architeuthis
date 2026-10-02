@@ -1,4 +1,9 @@
-# purerl-tidal
+# Architeuthis
+
+*Formerly purerl-tidal (renamed 2026-10-02).* The giant squid: the rig's deep
+engine, many arms (a supervised voice per machine), drawn as the kraken on the
+Triggerfish chart. Inside, the OTP application is still `purerl_tidal`; the
+internal names follow later.
 
 Erlang/OTP backend for TidalCycles - receives patterns via WebSocket, outputs MIDI.
 
