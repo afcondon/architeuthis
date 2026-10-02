@@ -27,12 +27,24 @@
 %% (a page must only act on what it touched — memory
 %% `two-surfaces-one-daemon`). A new subscriber is sent every slot at once.
 %%
+%% **Text objects** (docs/kb/plans/text-on-the-stage.md). Beside the
+%% slots, the stage holds addressable text: `<slot>/<name>` keys
+%% (`vetula/v3`, one Vetula card) to `#{text, ver, at}`, the object's
+%% Lepidoptera form. Any page may write one (`put_text`); `ver` counts
+%% writes so a view can tell its copy is stale; writing `null` deletes.
+%% Text subscribers (`text_subscribe`, a call that returns the whole table)
+%% are told of every write by another page as `stage-text <json>`, and of
+%% two relayed requests: `stage-open` (show this object, to an editor such
+%% as Limulus) and `stage-reject` (the owner could not read a write). The
+%% rig never reads the text: the owning page validates it.
+%%
 %% Held in memory: a BEAM restart empties the stage, as it stops the
 %% voices. Keeping it across restarts is step 6 of the plan (`stage/last`).
 -module(tidal_stage).
 -behaviour(gen_server).
 
 -export([start_link/0, subscribe/1, put/3, set/3, stopped/1, stopped_all/0, snapshot/0]).
+-export([text_subscribe/1, put_text/3, relay/3, valid_key/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 %% =========================================================================
@@ -66,6 +78,34 @@ snapshot() ->
         _ -> gen_server:call(?MODULE, snapshot)
     end.
 
+%% Subscribe to the text objects; returns every one now, as a map from key
+%% to #{text, ver}. Later writes by other pages arrive as {stage_broadcast, Bin}.
+text_subscribe(Pid) -> call({text_subscribe, Pid}, #{}).
+
+%% Write (or, with null, delete) a text object. Returns the new version.
+put_text(Key, Text, From) -> call({put_text, Key, Text, From}, 0).
+
+%% Relay a request about an object to every other text subscriber:
+%% Kind is <<"stage-open">> or <<"stage-reject">>, Fields a map.
+relay(Kind, Fields, From) -> cast({relay, Kind, Fields, From}).
+
+%% `<slot>/<name>`: a known slot, then letters, digits and `/_-.`.
+valid_key(Key) ->
+    case binary:split(Key, <<"/">>) of
+        [Slot, Name] when Name =/= <<>> ->
+            lists:member(Slot, [<<"odonus">>, <<"vetula">>, <<"balistes">>, <<"selene">>, <<"conspicillum">>])
+                andalso lists:all(fun(C) -> (C >= $a andalso C =< $z) orelse (C >= $A andalso C =< $Z)
+                                             orelse (C >= $0 andalso C =< $9) orelse lists:member(C, "/_-.")
+                                  end, binary_to_list(Name));
+        _ -> false
+    end.
+
+call(Message, Default) ->
+    case whereis(?MODULE) of
+        undefined -> Default;
+        _ -> gen_server:call(?MODULE, Message)
+    end.
+
 cast(Message) ->
     case whereis(?MODULE) of
         undefined -> ok;
@@ -77,10 +117,28 @@ cast(Message) ->
 %% =========================================================================
 
 init([]) ->
-    {ok, #{slots => #{}, subscribers => #{}}}.
+    {ok, #{slots => #{}, subscribers => #{}, texts => #{}, text_subscribers => #{}}}.
 
 handle_call(snapshot, _From, State = #{slots := Slots}) ->
     {reply, Slots, State};
+handle_call({text_subscribe, Pid}, _From, State = #{texts := Texts, text_subscribers := Subs}) ->
+    Subs1 = case maps:is_key(Pid, Subs) of
+        true -> Subs;
+        false -> Subs#{Pid => erlang:monitor(process, Pid)}
+    end,
+    Table = maps:map(fun(_, #{text := T, ver := V}) -> #{text => T, ver => V} end, Texts),
+    {reply, Table, State#{text_subscribers := Subs1}};
+handle_call({put_text, Key, Text, From}, _From, State = #{texts := Texts}) ->
+    Ver = case maps:find(Key, Texts) of
+        {ok, #{ver := V}} -> V + 1;
+        error -> 1
+    end,
+    Texts1 = case Text of
+        null -> maps:remove(Key, Texts);
+        _ -> Texts#{Key => #{text => Text, ver => Ver, at => erlang:system_time(millisecond)}}
+    end,
+    text_announce(<<"stage-text">>, #{key => Key, text => Text, ver => Ver}, From, State),
+    {reply, Ver, State#{texts := Texts1}};
 handle_call(_Request, _From, State) ->
     {reply, {error, unknown_call}, State}.
 
@@ -115,11 +173,15 @@ handle_cast(stopped_all, State = #{slots := Slots}) ->
     end, State, Slots),
     {noreply, State1};
 
+handle_cast({relay, Kind, Fields, From}, State) ->
+    text_announce(Kind, Fields, From, State),
+    {noreply, State};
+
 handle_cast(_Message, State) ->
     {noreply, State}.
 
-handle_info({'DOWN', _Ref, process, Pid, _Reason}, State = #{subscribers := Subscribers}) ->
-    {noreply, State#{subscribers := maps:remove(Pid, Subscribers)}};
+handle_info({'DOWN', _Ref, process, Pid, _Reason}, State = #{subscribers := Subscribers, text_subscribers := Subs}) ->
+    {noreply, State#{subscribers := maps:remove(Pid, Subscribers), text_subscribers := maps:remove(Pid, Subs)}};
 handle_info(_Info, State) ->
     {noreply, State}.
 
@@ -148,6 +210,13 @@ announce(Slot, Entry, Except, #{subscribers := Subscribers}) ->
     maps:foreach(fun(Pid, _) when Pid =/= Except -> Pid ! {stage_broadcast, Frame};
                     (_, _) -> ok
                  end, Subscribers).
+
+text_announce(Kind, Fields, Except, #{text_subscribers := Subs}) ->
+    Json = iolist_to_binary(json:encode(Fields)),
+    Frame = <<Kind/binary, " ", Json/binary>>,
+    maps:foreach(fun(Pid, _) when Pid =/= Except -> Pid ! {stage_broadcast, Frame};
+                    (_, _) -> ok
+                 end, Subs).
 
 frame(Slot, Entry) ->
     Json = iolist_to_binary(json:encode(Entry#{slot => atom_to_binary(Slot)})),

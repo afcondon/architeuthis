@@ -677,6 +677,27 @@ try_parse_prefixed(<<"stage-put ", Rest/binary>>) ->
         [Slot, Json] -> {stage_put, Slot, Json};
         _ -> none
     end;
+%% Text objects on the stage (docs/kb/plans/text-on-the-stage.md):
+%%   stage-text-subscribe        → `stage-texts <json>`, every object now,
+%%                                 then `stage-text <json>` per write elsewhere
+%%   stage-text <key> <text>     write an object (a Vetula card's line)
+%%   stage-text-del <key>        delete it
+%%   stage-open <key>            ask an editor (Limulus) to show it
+%%   stage-reject <key> <reason> the owner could not read a write
+try_parse_prefixed(<<"stage-text-subscribe">>) -> {stage_text_subscribe};
+try_parse_prefixed(<<"stage-text-subscribe ", _/binary>>) -> {stage_text_subscribe};
+try_parse_prefixed(<<"stage-text-del ", Key/binary>>) -> {stage_text, trim_binary(Key), null};
+try_parse_prefixed(<<"stage-text ", Rest/binary>>) ->
+    case binary:split(Rest, <<" ">>) of
+        [Key, Text] -> {stage_text, Key, Text};
+        _ -> none
+    end;
+try_parse_prefixed(<<"stage-open ", Key/binary>>) -> {stage_relay, <<"stage-open">>, trim_binary(Key), #{}};
+try_parse_prefixed(<<"stage-reject ", Rest/binary>>) ->
+    case binary:split(Rest, <<" ">>) of
+        [Key, Reason] -> {stage_relay, <<"stage-reject">>, Key, #{reason => Reason}};
+        _ -> none
+    end;
 try_parse_prefixed(<<"clock-subscribe ", _/binary>>) -> {clock_subscribe};
 try_parse_prefixed(<<"fire-at ", Rest/binary>>) ->
     %% fire-at <bus> <val> <durMs> <delayMs> → /cv/trig/at (sample-accurate)
@@ -912,6 +933,29 @@ handle_pattern_message(Text, State) ->
         {stage_subscribe} ->
             tidal_stage:subscribe(self()),
             {reply, {text, <<"OK: stage-subscribe">>}, State};
+        {stage_text_subscribe} ->
+            Table = tidal_stage:text_subscribe(self()),
+            Json = iolist_to_binary(json:encode(Table)),
+            {reply, {text, <<"stage-texts ", Json/binary>>}, State};
+        {stage_text, Key, Body} ->
+            %% (not `Text`: that is this function's argument, and a bound
+            %% variable in a pattern is a comparison)
+            case tidal_stage:valid_key(Key) of
+                false ->
+                    {reply, {text, <<"ERR: stage-text: no such key ", Key/binary, " (want <slot>/<name>, e.g. vetula/v3)">>}, State};
+                true ->
+                    Ver = tidal_stage:put_text(Key, Body, self()),
+                    {reply, {text, iolist_to_binary(io_lib:format("OK: stage-text ~s ~s (version ~p)",
+                        [Key, case Body of null -> "deleted"; _ -> "written" end, Ver]))}, State}
+            end;
+        {stage_relay, Kind, Key, Fields} ->
+            case tidal_stage:valid_key(Key) of
+                false ->
+                    {reply, {text, <<"ERR: ", Kind/binary, ": no such key ", Key/binary>>}, State};
+                true ->
+                    tidal_stage:relay(Kind, Fields#{key => Key}, self()),
+                    {reply, {text, <<"OK: ", Kind/binary, " ", Key/binary>>}, State}
+            end;
         {stage_put, SlotBin, Json} ->
             case {stage_slot(SlotBin), catch json:decode(Json)} of
                 {undefined, _} ->
