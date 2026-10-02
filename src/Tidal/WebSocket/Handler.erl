@@ -1950,9 +1950,58 @@ handle_pattern_message(Text, State) ->
 %% frame. A refusal names its reason; nothing half-runs.
 tidal_line(Block) ->
     case string:trim(Block, leading) of
-        <<"odonus", _/binary>> = Line -> odonus_line(Line);
+        <<"odonus", _/binary>> = Line ->
+            case review_cue(Line) of
+                none -> odonus_line(Line);
+                Cue -> send_cue(Cue)
+            end;
+        <<"vetula", _/binary>> = Line ->
+            case review_cue(Line) of
+                none -> <<"ERR: vetula: a vetula line is a cue (mark, loop, loop N, loop off); a card is v3 $ ... (Limulus writes cards to the stage)">>;
+                Cue -> send_cue(Cue)
+            end;
         _ -> tidal_pattern_line(Block)
     end.
+
+%% Review cues (docs/kb/plans/text-on-the-stage.md, slice 2): time markers on
+%% a machine's Review surface, and their loops, from the live-coding station.
+%%   odonus $ mark        drop a mark now, as the surface's own mark control
+%%   odonus $ loop 2      loop mark 2 (counting from 1) on the Review surface
+%%   odonus $ loop        loop the latest mark
+%%   odonus $ loop off    stop the loop
+%% The marks and their notes live in the page, so the rig only relays the cue
+%% to every page (`cue <json>`), and the page of that machine acts on it.
+review_cue(Line) ->
+    case binary:split(Line, <<" ">>) of
+        [Head, Rest] when Head =:= <<"odonus">>; Head =:= <<"vetula">> ->
+            Body = string:trim(case string:trim(Rest, leading) of
+                                   <<"$", After/binary>> -> After;
+                                   Other -> Other
+                               end),
+            case Body of
+                <<"mark">> -> {Head, #{cue => <<"mark">>}};
+                <<"loop">> -> {Head, #{cue => <<"loop">>, n => 0}};
+                <<"loop off">> -> {Head, #{cue => <<"stop">>}};
+                <<"loop ", N/binary>> ->
+                    case string:to_integer(string:trim(N)) of
+                        {I, <<>>} when I >= 1 -> {Head, #{cue => <<"loop">>, n => I}};
+                        _ -> none
+                    end;
+                _ -> none
+            end;
+        _ -> none
+    end.
+
+send_cue({Slot, Cue}) ->
+    Json = iolist_to_binary(json:encode(Cue#{slot => Slot})),
+    tidal_link_anchor:sync_broadcast(<<"cue ", Json/binary>>),
+    Say = case Cue of
+              #{cue := <<"mark">>} -> <<"mark dropped">>;
+              #{cue := <<"loop">>, n := 0} -> <<"looping the latest mark">>;
+              #{cue := <<"loop">>, n := N} -> iolist_to_binary(io_lib:format("looping mark ~p", [N]));
+              #{cue := <<"stop">>} -> <<"loop stopped">>
+          end,
+    <<"OK: ", Slot/binary, " ", Say/binary, " (on its Review surface, if the page is open)">>.
 
 %% A move on the Odonus voice: parsed by the shared Reef.Move, applied by
 %% reef_voice on its next step (and restored after n bars, for `for n`).
