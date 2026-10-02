@@ -7,8 +7,12 @@
 %% `Reef.Vetula.Lepidoptera.parseCard`), and while playing walks the Link
 %% grid as reef_voice does: every 25 ms it reads the anchor and, for each
 %% pulse (a sixteenth) up to 200 ms ahead, strikes what each card's pattern
-%% gives (`Tidal.Vetula.Card.cardHits`, Tidal through Littorina) on the card's
-%% channel of `IAC Driver Tidal`, through link-spike, at the pulse's wall time.
+%% gives (`Tidal.Vetula.Card.cardHits`, Tidal through Littorina), at the
+%% pulse's wall time, down the card's legs in the routing table: the dashboard
+%% writes them to the stage as `vetula/routing` (a `Reef.Routing.VoiceRouting`,
+%% voice N-1 for channel N), and each note goes through `voiceRoutingSends`,
+%% as Odonus's heads do. Until one is written, a card plays its channel of
+%% `IAC Driver Tidal`, as it always did.
 %% A card with a sequence plays one pattern cycle per bar (slots on the bar
 %% line), a plain card one chord per beat, as the page did.
 %%
@@ -58,8 +62,20 @@ init() ->
     {ok, Sock} = gen_udp:open(0, [binary]),
     Table = tidal_stage:text_subscribe(self()),
     Cards = maps:fold(fun(Key, #{text := T}, Acc) -> put_card(Key, T, Acc) end, #{}, Table),
+    Routing = case maps:find(<<"vetula/routing">>, Table) of
+                  {ok, #{text := RT}} -> routing(RT, none);
+                  error -> none
+              end,
     erlang:send_after(?POLL_MS, self(), tick),
-    loop(#{sock => Sock, cards => Cards, last_pulse => -1}).
+    loop(#{sock => Sock, cards => Cards, routing => Routing, last_pulse => -1}).
+
+%% The stage's routing text, decoded; one that does not decode leaves the last.
+routing(null, _) -> none;
+routing(Text, Old) ->
+    case 'reef_routing@ps':decodeVoiceRouting(Text) of
+        {right, R} -> R;
+        _ -> Old
+    end.
 
 loop(St) ->
     receive
@@ -74,11 +90,14 @@ loop(St) ->
             From ! {cards, maps:get(cards, St)},
             loop(St);
         {stage_broadcast, <<"stage-text ", Json/binary>>} ->
-            Cards = case catch json:decode(Json) of
-                #{<<"key">> := Key, <<"text">> := T} -> put_card(Key, T, maps:get(cards, St));
-                _ -> maps:get(cards, St)
-            end,
-            loop(St#{cards => Cards});
+            case catch json:decode(Json) of
+                #{<<"key">> := <<"vetula/routing">>, <<"text">> := T} ->
+                    loop(St#{routing => routing(T, maps:get(routing, St))});
+                #{<<"key">> := Key, <<"text">> := T} ->
+                    loop(St#{cards => put_card(Key, T, maps:get(cards, St))});
+                _ ->
+                    loop(St)
+            end;
         _ ->
             loop(St)
     end.
@@ -164,10 +183,23 @@ strike(St, Spec, Slot, SlotBeats, AnchorUs, BeatAtAnchor, Tempo, Acc) ->
           {_, Acc2} = lists:foldl(
                         fun(Note, {K, A}) ->
                             AtUs = round(StartUs + K * StrumMs * 1000.0),
-                            Thunk = 'tidal_mIDIBridge@foreign':scheduleNoteAt(
-                                      maps:get(sock, St), ?PORT, Ch, Note, ?VELOCITY, DurMs, AtUs),
-                            Thunk(),
+                            play(St, Ch, Note, DurMs, SlotMs, AtUs),
                             {K + 1, [#{pitch => Note, ch => Ch, atUs => AtUs, vel => ?VELOCITY, gateMs => DurMs} | A]}
                         end, {0, Acc1}, Notes),
           Acc2
       end, Acc, Hits).
+
+%% One note of the card on channel Ch: down its legs if the dashboard has
+%% routed the cards, else on its own channel of the IAC bus.
+play(St, Ch, Note, DurMs, SlotMs, AtUs) ->
+    Sock = maps:get(sock, St),
+    case maps:get(routing, St) of
+        none ->
+            Thunk = 'tidal_mIDIBridge@foreign':scheduleNoteAt(Sock, ?PORT, Ch, Note, ?VELOCITY, DurMs, AtUs),
+            Thunk();
+        Routing ->
+            Sends = 'reef_routing@ps':voiceRoutingSends(Routing, Ch - 1,
+                      #{note => Note, velocity => ?VELOCITY, atMs => 0.0,
+                        durMs => float(DurMs), stepMs => float(SlotMs)}),
+            lists:foreach(fun(S) -> routing_out:send(Sock, S, AtUs) end, array:to_list(Sends))
+    end.
