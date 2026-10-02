@@ -986,60 +986,7 @@ handle_pattern_message(Text, State) ->
         {tidal_line, Block} ->
             {reply, {text, tidal_line(Block)}, State};
         {hush} ->
-            %% Tidal-voice patterns get cleared; Odonus voices flip
-            %% their hush flag so emit_step skips MIDI output (engine
-            %% advance keeps running so they stay clock-aligned).
-            tidal_voice_sup:hush_all(),
-            OdonusPids = odonus_voice_sup:which_voices(),
-            lists:foreach(
-              fun(Pid) -> gen_server:cast(Pid, hush) end, OdonusPids),
-            %% Also silence the standalone reef voice (reef-odonus). It isn't
-            %% under odonus_voice_sup, so hush_all/which_voices miss it.
-            catch reef_voice:stop(),
-            %% and the standalone Balistes lockstep voice (balistes-sim-at / -fixed).
-            catch reef_balistes_voice:stop(),
-            %% and the Vetula performance conductor (vetula-perf). It emits no MIDI,
-            %% but stop it so a hushed rig isn't still re-conducting a revived Odonus.
-            catch reef_vetula_voice:stop(),
-            %% and the Vetula brush voice (vetula-voicings, Option B) — a real MIDI
-            %% emitter, so hush must silence it.
-            catch reef_vetula_brush:stop(),
-            %% and Vetula's cards (vetula-cards-play)
-            catch vetula_cards:stop(),
-            %% and the Conspicillum grain cloud (conspicillum-scene) — also a
-            %% /dirt/play emitter, and the densest one on the rig, so hush must
-            %% reach it too.
-            catch reef_conspicillum_voice:stop(),
-            %% and tell the stage, so every page shows the slots stopped.
-            tidal_stage:stopped_all(),
-            %% and the four PER-MACHINE voice trees. Until 2026-08-07 hush missed
-            %% all of these: a voice under one of them was unreachable by every UI
-            %% action AND invisible to `state` (which samples only tidal_clock +
-            %% tidal_dispatcher), so it emitted until the BEAM was restarted. That
-            %% is the fault this arm exists to close — see
-            %% triggerfish/docs/RIG-ISSUES-2026-08-07.md #1.
-            %%
-            %% These voices handle no hush cast, so the only stop available is
-            %% TERMINATION — unlike Odonus above, which keeps advancing behind a
-            %% flag. Consequence: {unhush} does NOT revive them; re-publish to
-            %% restore. That matches the reef_* singletons above, which hush also
-            %% stops outright.
-            lists:foreach(fun stop_voice_tree/1, voice_trees()),
-            %% and the Tidal streams d1..d16 (Limulus), silenced as Tidal's
-            %% own hush does, so they resume on the next pattern sent.
-            catch tidal_dirt_voice_sup:hush_all(),
-            %% and the ES-9's autonomous generators. Selene polysignals are NOT
-            %% voices — once applied they run inside es9-daemon's audio callback
-            %% with nothing driving them, so stopping every BEAM voice above
-            %% leaves the modular still playing. `panic` is the daemon's
-            %% sweep-everything verb (added 2026-08-07 for exactly this).
-            %%
-            %% Best-effort and non-fatal: if the daemon is down there is nothing
-            %% to silence there anyway, and a hush that stopped every voice must
-            %% still report OK. The FH-2 has no equivalent yet — its
-            %% release-claim is bookkeeping-only and --silent leaves the LFOs
-            %% running (RIG-ISSUES-2026-08-07 #3/#4/#5).
-            _ = daemon_call(es9_daemon_socket_path(), <<"panic">>),
+            hush_everything(),
             Reply = {text, <<"OK: hush">>},
             {reply, Reply, State};
         {unhush} ->
@@ -1945,6 +1892,48 @@ handle_pattern_message(Text, State) ->
 %% Run one block of Tidal (Tidal.Line) and say what happened, as the reply
 %% frame. A refusal names its reason; nothing half-runs.
 tidal_line(Block) ->
+    case machine_hush(Block) of
+        {hush, Machine} -> hush_machine(Machine);
+        none -> machine_line(Block)
+    end.
+
+%% `<machine> $ hush`: silence one machine, and tell its page through the
+%% stage. Its page starts it again (entering Rig, pressing play), or for
+%% drums and Conspicillum, the next line written.
+machine_hush(Block) ->
+    case re:run(Block, <<"^\\s*(odonus|vetula|balistes|drums|conspicillum)\\s*\\$\\s*hush\\s*$">>,
+                [{capture, all_but_first, binary}]) of
+        {match, [Machine]} -> {hush, Machine};
+        nomatch -> none
+    end.
+
+hush_machine(<<"odonus">>) ->
+    [gen_server:cast(Pid, hush) || Pid <- odonus_voice_sup:which_voices()],
+    catch reef_voice:stop(),
+    catch tidal_stage:stopped(odonus),
+    <<"OK: odonus hushed">>;
+hush_machine(<<"vetula">>) ->
+    catch vetula_cards:stop(),
+    catch reef_vetula_voice:stop(),
+    catch reef_vetula_brush:stop(),
+    catch tidal_stage:stopped(vetula),
+    <<"OK: vetula hushed">>;
+hush_machine(<<"balistes">>) ->
+    catch reef_balistes_voice:stop(),
+    catch tidal_stage:stopped(balistes),
+    <<"OK: balistes hushed">>;
+hush_machine(<<"drums">>) ->
+    case whereis(tidal_dirt_voice:registered_name(drums)) of
+        undefined -> ok;
+        Pid -> gen_server:call(Pid, {set_pattern, 'tidal_pattern_types@ps':silence()})
+    end,
+    <<"OK: drums hushed">>;
+hush_machine(<<"conspicillum">>) ->
+    catch reef_conspicillum_voice:stop(),
+    catch tidal_stage:stopped(conspicillum),
+    <<"OK: conspicillum hushed">>.
+
+machine_line(Block) ->
     case string:trim(Block, leading) of
         <<"odonus", _/binary>> = Line ->
             case review_cue(Line) of
@@ -1957,6 +1946,10 @@ tidal_line(Block) ->
                 Cue -> send_cue(Cue)
             end;
         <<"drums", Rest/binary>> -> drums_line(Rest);
+        <<"conspicillum", _/binary>> ->
+            <<"ERR: conspicillum: its line goes through the stage (Limulus writes conspicillum/line); here only conspicillum $ hush">>;
+        <<"balistes", _/binary>> ->
+            <<"ERR: balistes: only balistes $ hush, so far">>;
         _ -> tidal_pattern_line(Block)
     end.
 
@@ -2071,13 +2064,8 @@ tidal_pattern_line(Block) ->
                 Err -> iolist_to_binary(io_lib:format("ERR: d~p: ~p", [N, Err]))
             end;
         {right, {hush}} ->
-            %% Tidal's hush: the d streams and drums, and Conspicillum, which
-            %% Limulus also starts (`conspicillum $ …`). Its page hears it
-            %% stopped through the stage. The machines are left alone.
-            tidal_dirt_voice_sup:hush_all(),
-            catch reef_conspicillum_voice:stop(),
-            catch tidal_stage:stopped(conspicillum),
-            <<"OK: hush">>;
+            hush_everything(),
+            <<"OK: hush (everything)">>;
         {right, {setCps, Cps}} ->
             Bpm = Cps * 240.0,
             tidal_clock:set_bpm(Bpm),
@@ -3847,3 +3835,62 @@ stop_voice_tree(Sup) ->
         _ ->
             ok
     end.
+
+%% Hush: stop all sound on the rig. The `hush` verb, and Tidal's `hush` as
+%% Limulus sends it (`tidal hush`): hush means silence, whoever is making it.
+%% One machine at a time is `<machine> $ hush` (hush_machine/1).
+hush_everything() ->
+    %% Tidal-voice patterns get cleared; Odonus voices flip
+    %% their hush flag so emit_step skips MIDI output (engine
+    %% advance keeps running so they stay clock-aligned).
+    tidal_voice_sup:hush_all(),
+    OdonusPids = odonus_voice_sup:which_voices(),
+    lists:foreach(
+      fun(Pid) -> gen_server:cast(Pid, hush) end, OdonusPids),
+    %% Also silence the standalone reef voice (reef-odonus). It isn't
+    %% under odonus_voice_sup, so hush_all/which_voices miss it.
+    catch reef_voice:stop(),
+    %% and the standalone Balistes lockstep voice (balistes-sim-at / -fixed).
+    catch reef_balistes_voice:stop(),
+    %% and the Vetula performance conductor (vetula-perf). It emits no MIDI,
+    %% but stop it so a hushed rig isn't still re-conducting a revived Odonus.
+    catch reef_vetula_voice:stop(),
+    %% and the Vetula brush voice (vetula-voicings, Option B) — a real MIDI
+    %% emitter, so hush must silence it.
+    catch reef_vetula_brush:stop(),
+    %% and Vetula's cards (vetula-cards-play)
+    catch vetula_cards:stop(),
+    %% and the Conspicillum grain cloud (conspicillum-scene) — also a
+    %% /dirt/play emitter, and the densest one on the rig, so hush must
+    %% reach it too.
+    catch reef_conspicillum_voice:stop(),
+    %% and tell the stage, so every page shows the slots stopped.
+    tidal_stage:stopped_all(),
+    %% and the four PER-MACHINE voice trees. Until 2026-08-07 hush missed
+    %% all of these: a voice under one of them was unreachable by every UI
+    %% action AND invisible to `state` (which samples only tidal_clock +
+    %% tidal_dispatcher), so it emitted until the BEAM was restarted. That
+    %% is the fault this arm exists to close — see
+    %% triggerfish/docs/RIG-ISSUES-2026-08-07.md #1.
+    %%
+    %% These voices handle no hush cast, so the only stop available is
+    %% TERMINATION — unlike Odonus above, which keeps advancing behind a
+    %% flag. Consequence: {unhush} does NOT revive them; re-publish to
+    %% restore. That matches the reef_* singletons above, which hush also
+    %% stops outright.
+    lists:foreach(fun stop_voice_tree/1, voice_trees()),
+    %% and the Tidal streams d1..d16 (Limulus), silenced as Tidal's
+    %% own hush does, so they resume on the next pattern sent.
+    catch tidal_dirt_voice_sup:hush_all(),
+    %% and the ES-9's autonomous generators. Selene polysignals are NOT
+    %% voices — once applied they run inside es9-daemon's audio callback
+    %% with nothing driving them, so stopping every BEAM voice above
+    %% leaves the modular still playing. `panic` is the daemon's
+    %% sweep-everything verb (added 2026-08-07 for exactly this).
+    %%
+    %% Best-effort and non-fatal: if the daemon is down there is nothing
+    %% to silence there anyway, and a hush that stopped every voice must
+    %% still report OK. The FH-2 has no equivalent yet — its
+    %% release-claim is bookkeeping-only and --silent leaves the LFOs
+    %% running (RIG-ISSUES-2026-08-07 #3/#4/#5).
+    _ = daemon_call(es9_daemon_socket_path(), <<"panic">>).
