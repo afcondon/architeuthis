@@ -140,7 +140,7 @@ init([]) ->
            shutdown => 5000,
            type => worker,
            modules => [tidal_conductor]},
-         %% Last, so under rest_for_one its restart touches nothing else.
+         %% Near the end, so under rest_for_one its restart touches only odonus_feeds.
          %% It holds only what pages pushed, so a restart loses the record
          %% of what is loaded, never the sound.
          #{id => tidal_stage,
@@ -148,5 +148,12 @@ init([]) ->
            restart => permanent,
            shutdown => 5000,
            type => worker,
-           modules => [tidal_stage]}],
+           modules => [tidal_stage]},
+         %% After the stage it subscribes to, so a stage restart restarts it.
+         #{id => odonus_feeds,
+           start => {odonus_feeds, start_link, []},
+           restart => permanent,
+           shutdown => 5000,
+           type => worker,
+           modules => [odonus_feeds]}],
     {ok, {SupFlags, ChildSpecs}}.

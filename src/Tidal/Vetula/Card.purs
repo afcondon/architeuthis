@@ -18,6 +18,7 @@ module Tidal.Vetula.Card
   , cardOnBar
   , cardStrumMs
   , cardSounds
+  , cardHarmony
   ) where
 
 import Prelude
@@ -34,6 +35,7 @@ import Data.String as String
 import Harmonia.Voicing (Voicing(..), Selector(..), voicingMidi, takeVoicing, openTriad, rootless, drop2, drop2and4, quartal, cluster)
 import Haskell.Rational as Rat
 import Reef.PatternArg (PatternArg, argSrc)
+import Reef.Vetula.Harmony (Shape(..), seqHarmony) as VH
 import Reef.Vetula.Lepidoptera (VoiceSpec)
 import Reef.Vetula.PerformTypes (Layer, PerfFx(..), PerfSel(..), PerfTerm(..), VoiceShape(..), When(..), arpOrder, parseVoiceShape)
 import Tidal.Pattern.Core (cat, every, fast, slow, whenCycle)
@@ -50,6 +52,27 @@ type CardHit = { at :: Number, len :: Number, notes :: Array Int }
 -- | makes no notes.
 cardSounds :: VoiceSpec -> Boolean
 cardSounds spec = not spec.muted && spec.term /= TOdo && Array.length spec.chords > 0
+
+-- | **What the card conducts**, when the router feeds `odonus.out <- vetula
+-- | N` from it (Reef.Route): its chords as a Tidal note pattern, which the rig
+-- | samples into Odonus's chord each step as it does `harmony "…"`. Which
+-- | chord sounds, not how: the sequence and the layers that always move it in
+-- | time or pitch (`Reef.Vetula.Harmony.seqHarmony`, as the page conducted).
+-- | Odonus's cycle is a bar; a plain card's is a beat, so its pattern runs
+-- | four times as fast. Nothing for a muted card or one with no chords.
+cardHarmony :: VoiceSpec -> Maybe String
+cardHarmony spec
+  | spec.muted = Nothing
+  | otherwise = do
+      p <- VH.seqHarmony spec.chords (if cardOnBar spec then spec.seqText else "") (mapMaybe shape spec.stack)
+      pure (if cardOnBar spec then p else "[" <> p <> "]*4")
+  where
+  shape l = case l.when, l.fx of
+    Always, Slow n -> Just (VH.Slow n)
+    Always, Fast n -> Just (VH.Fast n)
+    Always, Transpose arg -> VH.Transpose <$> fromString (trim (argSrc arg))
+    Always, Octave arg -> (\n -> VH.Transpose (12 * n)) <$> fromString (trim (argSrc arg))
+    _, _ -> Nothing
 
 -- | Whether the card plays on the bar grid (a sequence that parses).
 cardOnBar :: VoiceSpec -> Boolean
