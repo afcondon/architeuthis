@@ -1107,6 +1107,9 @@ handle_pattern_message(Text, State) ->
         {balistes_routing, Json} ->
             case reef_balistes_voice:set_routing_json(Json) of
                 ok ->
+                    %% kept on the stage, which keeps it on disk, so a restarted
+                    %% rig routes drums as before (tidal_stage:restore/2)
+                    tidal_stage:put_text(<<"balistes/routing">>, Json, self()),
                     {reply, {text, <<"OK: balistes-routing">>}, State};
                 {error, Reason} ->
                     RB = list_to_binary(io_lib:format("~p", [Reason])),

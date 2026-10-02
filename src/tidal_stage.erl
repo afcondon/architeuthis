@@ -38,8 +38,12 @@
 %% as Limulus) and `stage-reject` (the owner could not read a write). The
 %% rig never reads the text: the owning page validates it.
 %%
-%% Held in memory: a BEAM restart empties the stage, as it stops the
-%% voices. Keeping it across restarts is step 6 of the plan (`stage/last`).
+%% The slots are held in memory: a BEAM restart empties them, as it stops
+%% the voices. The **text objects are kept on disk** (`~/.atlantis/
+%% stage-texts.json`, rewritten on every write and read back at start), so
+%% what pages and Limulus wrote outlives a restart, and so does what the rig
+%% keeps there itself: `balistes/routing`, the drum routing table last
+%% pushed, which is handed back to the drum voice at start (restore/2).
 -module(tidal_stage).
 -behaviour(gen_server).
 
@@ -117,7 +121,41 @@ cast(Message) ->
 %% =========================================================================
 
 init([]) ->
-    {ok, #{slots => #{}, subscribers => #{}, texts => #{}, text_subscribers => #{}}}.
+    Texts = load_texts(),
+    maps:foreach(fun(Key, #{text := T}) -> restore(Key, T) end, Texts),
+    {ok, #{slots => #{}, subscribers => #{}, texts => Texts, text_subscribers => #{}}}.
+
+%% Rig state kept as a text object, handed back at start.
+restore(<<"balistes/routing">>, Json) -> catch reef_balistes_voice:set_routing_json(Json);
+restore(_, _) -> ok.
+
+texts_file() ->
+    case os:getenv("HOME") of
+        false -> "/tmp/atlantis-stage-texts.json";
+        Home -> filename:join([Home, ".atlantis", "stage-texts.json"])
+    end.
+
+load_texts() ->
+    try
+        {ok, Bin} = file:read_file(texts_file()),
+        maps:fold(fun(Key, #{<<"text">> := T, <<"ver">> := V} = E, Acc) when is_binary(T), is_integer(V) ->
+                          Acc#{Key => #{text => T, ver => V, at => maps:get(<<"at">>, E, 0)}};
+                     (_, _, Acc) -> Acc
+                  end, #{}, json:decode(Bin))
+    catch _:_ -> #{}
+    end.
+
+%% Written whole, to a temporary file then renamed, so a crash mid-write
+%% leaves the previous table rather than half of one.
+save_texts(Texts) ->
+    File = texts_file(),
+    try
+        ok = filelib:ensure_dir(File),
+        Tmp = File ++ ".tmp",
+        ok = file:write_file(Tmp, json:encode(Texts)),
+        ok = file:rename(Tmp, File)
+    catch Class:Why -> logger:warning("tidal_stage: could not save texts: ~p:~p", [Class, Why])
+    end.
 
 handle_call(snapshot, _From, State = #{slots := Slots}) ->
     {reply, Slots, State};
@@ -138,6 +176,7 @@ handle_call({put_text, Key, Text, From}, _From, State = #{texts := Texts}) ->
         _ -> Texts#{Key => #{text => Text, ver => Ver, at => erlang:system_time(millisecond)}}
     end,
     text_announce(<<"stage-text">>, #{key => Key, text => Text, ver => Ver}, From, State),
+    save_texts(Texts1),
     {reply, Ver, State#{texts := Texts1}};
 handle_call(_Request, _From, State) ->
     {reply, {error, unknown_call}, State}.
