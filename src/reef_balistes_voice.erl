@@ -20,7 +20,7 @@
 %% as the frontend's emitHit does.
 -module(reef_balistes_voice).
 -export([start/0, start/2, start_sim_json/3, start_sim_at_json/4,
-         start_fixed_json/3, start_trig_json/3, stop/0, loop/1,
+         start_fixed_json/3, stop/0, loop/1,
          set_routing_json/1, routing/0]).
 
 %% Scheduler poll interval (ms). Timing is absolute (WallUs from the anchor), so
@@ -43,11 +43,6 @@
 %% Un-hardcoded from fire/N (2026-07-12, #198): every start seeds this into St, so
 %% it's one place to change and structurally ready for a per-voice runtime setter.
 -define(DEFAULT_PORT, <<"FH-2">>).
-%% POLYTRIG grid resolution: one Tidal cycle == this many steps. MUST match the
-%% frontend's Triggerfish.Balistes.Component cycleSteps (16) so both slice the
-%% resolved onsets into the same windows.
--define(CYCLE_STEPS, 16).
-
 %% Where the routing table is kept: outside any one voice, so every start,
 %% of any engine, plays through the table last pushed.
 -define(ROUTING_KEY, {?MODULE, routing}).
@@ -139,32 +134,6 @@ start_fixed_json(Json, Channel, StepBeats) ->
         {left, Errs} -> {error, {decode, Errs}}
     end.
 
-%% Start from a JSON-encoded TrigKit — the POLYTRIG handoff (ASelene mode). Like a
-%% fixed rhythm, a resolved rack is a pure function of the absolute step (the onsets
-%% are cycle-0 fractions), so it snaps to the current clock step with no phase-hold.
-%% If a voice is already running (any mode), swap the kit IN PLACE — the live-edit
-%% path (every jack/route edit re-pushes). The WS `balistes-trig <json>` verb.
-start_trig_json(Json, Channel, StepBeats) ->
-    case 'reef_balistes_protocol@ps':decodeTrigKit(ensure_bin(Json)) of
-        {right, Kit} ->
-            case whereis(reef_balistes_voice) of
-                Pid when is_pid(Pid) ->
-                    Pid ! {set_kit, Kit},
-                    {ok, Pid};
-                _ ->
-                    NewPid = spawn(fun() ->
-                        {ok, Sock} = gen_udp:open(0, [binary]),
-                        erlang:send_after(?POLL_MS, self(), poll),
-                        loop(#{ socket => Sock, channel => Channel, step_beats => StepBeats,
-                                port => ?DEFAULT_PORT,
-                                mode => trig, kit => Kit, last_step => -1, pending => [] })
-                    end),
-                    catch register(reef_balistes_voice, NewPid),
-                    {ok, NewPid}
-            end;
-        {left, Errs} -> {error, {decode, Errs}}
-    end.
-
 stop() ->
     case whereis(reef_balistes_voice) of
         undefined -> ok;
@@ -196,11 +165,6 @@ loop(St) ->
             %% voice to fixed mode — a fixed rhythm is a pure function of the absolute
             %% step, so it picks up seamlessly on the next step.
             loop(St#{mode => fixed, pattern => Pat});
-        {set_kit, Kit} ->
-            %% Live POLYTRIG edit: swap the resolved kit IN PLACE (same discipline as
-            %% set_pattern). Also switches a running Grids/fixed voice to trig mode —
-            %% a rack is a pure function of the absolute step, seamless on the next.
-            loop(St#{mode => trig, kit => Kit});
         poll ->
             St2 = tick(St),
             erlang:send_after(?POLL_MS, self(), poll),
@@ -254,21 +218,6 @@ drain(St, Step, Horizon, AnchorUs, BeatAtAnchor, Tempo) ->
                     FEvents = array:to_list(
                                 'reef_balistes_fixed@ps':renderFixed(maps:get(pattern, St), Step)),
                     lists:foreach(fun(E) -> emit(Sock, Ch, Port, E, WallUs, StepMs) end, FEvents),
-                    St#{last_step => Step};
-                trig ->
-                    %% POLYTRIG rack: like a fixed rhythm, a pure function of the ABSOLUTE
-                    %% Step off the resolved kit. The shared renderTrigStep slices the
-                    %% cycle-0 onsets into this step's window; each fires at its fractional
-                    %% sub-step time (Frac * StepMs), the same slice the frontend plays.
-                    Fires = array:to_list(
-                              'reef_balistes_trig@ps':renderTrigStep(maps:get(kit, St), Step, ?CYCLE_STEPS)),
-                    Vel = 'reef_balistes_trig@ps':trigVelocity(),
-                    Gate = 'reef_balistes_trig@ps':trigGateMs(),
-                    lists:foreach(
-                      fun(F) ->
-                          AtUs = WallUs + round(maps:get(frac, F) * StepMs * 1000.0),
-                          fire(Sock, Ch, Port, maps:get(note, F), Vel, Gate, StepMs, AtUs)
-                      end, Fires),
                     St#{last_step => Step};
                 _ ->
                     %% Grids: apply any tick-tagged inputs whose step has arrived BEFORE

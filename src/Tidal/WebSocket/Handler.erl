@@ -121,13 +121,6 @@ try_parse_prefixed(<<"balistes-fixed ", Rest/binary>>) ->
     %% (Reef.Balistes.Fixed, wire-flat) to play on the rig. Stateless (a pure
     %% function of the absolute step), so no step tag / phase-hold needed.
     {balistes_fixed, trim_binary(Rest)};
-try_parse_prefixed(<<"balistes-trig ", Rest/binary>>) ->
-    %% balistes-trig <json> — the POLYTRIG (TIDAL tab) handoff: a whole resolved
-    %% TrigKit (Reef.Balistes.Trig, an array of {note, onsets}) to play on the rig
-    %% (ch 10). Like the fixed rhythm it's a pure function of the absolute step, so
-    %% no step tag / phase-hold needed; the frontend resolves the mini-notation to
-    %% onset fractions before pushing (reef has no Tidal parser).
-    {balistes_trig, trim_binary(Rest)};
 try_parse_prefixed(<<"dirt-play ", Rest/binary>>) ->
     %% dirt-play <json> — audition one sample now: {"s", "n", "begin", "end",
     %% "speed", "gain", "orbit"}, the fields of a Reef.Routing voice. For the
@@ -689,11 +682,6 @@ try_parse_prefixed(<<"stage-put ", Rest/binary>>) ->
 %%   stage-text-del <key>        delete it
 %%   stage-open <key>            ask an editor (Limulus) to show it
 %%   stage-reject <key> <reason> the owner could not read a write
-%% lane-shapes <json array of mini-notation strings> → `lane-shapes <json>`:
-%% each source's meter, cell mask, onsets and named onsets (Tidal.Lane), so a
-%% page can draw and build a lane without evaluating Tidal itself
-%% (docs/kb/plans/gpl-boundary-review.md).
-try_parse_prefixed(<<"lane-shapes ", Json/binary>>) -> {lane_shapes, Json};
 try_parse_prefixed(<<"stage-text-subscribe">>) -> {stage_text_subscribe};
 try_parse_prefixed(<<"stage-text-subscribe ", _/binary>>) -> {stage_text_subscribe};
 try_parse_prefixed(<<"stage-text-del ", Key/binary>>) -> {stage_text, trim_binary(Key), null};
@@ -943,15 +931,6 @@ handle_pattern_message(Text, State) ->
         {stage_subscribe} ->
             tidal_stage:subscribe(self()),
             {reply, {text, <<"OK: stage-subscribe">>}, State};
-        {lane_shapes, SourcesJson} ->
-            case catch json:decode(SourcesJson) of
-                Sources when is_list(Sources) ->
-                    Shapes = maps:from_list([{Src, lane_shape(Src)} || Src <- Sources, is_binary(Src)]),
-                    Out = iolist_to_binary(json:encode(Shapes)),
-                    {reply, {text, <<"lane-shapes ", Out/binary>>}, State};
-                _ ->
-                    {reply, {text, <<"ERR: lane-shapes wants a JSON array of strings">>}, State}
-            end;
         {stage_text_subscribe} ->
             Table = tidal_stage:text_subscribe(self()),
             Json = iolist_to_binary(json:encode(Table)),
@@ -1016,7 +995,7 @@ handle_pattern_message(Text, State) ->
             %% Also silence the standalone reef voice (reef-odonus). It isn't
             %% under odonus_voice_sup, so hush_all/which_voices miss it.
             catch reef_voice:stop(),
-            %% and the standalone Balistes lockstep voice (balistes-sim-at / -fixed / -trig).
+            %% and the standalone Balistes lockstep voice (balistes-sim-at / -fixed).
             catch reef_balistes_voice:stop(),
             %% and the Vetula performance conductor (vetula-perf). It emits no MIDI,
             %% but stop it so a hushed rig isn't still re-conducting a revived Odonus.
@@ -1086,7 +1065,7 @@ handle_pattern_message(Text, State) ->
             {reply, {text, <<"OK: reef-stop">>}, State};
         {balistes_stop} ->
             %% Per-tab ATLANTIS stop: BOTH kinds of Balistes voice. The lockstep
-            %% singleton (balistes-sim-at / -fixed / -trig) AND the named voices
+            %% singleton (balistes-sim-at / -fixed) AND the named voices
             %% under balistes_voice_sup that the `balistes <json>` verb starts.
             %% Before 2026-08-07 this stopped only the singleton, so pressing stop
             %% on a named voice reported OK and changed nothing.
@@ -1171,18 +1150,6 @@ handle_pattern_message(Text, State) ->
                 {error, Reason} ->
                     RB = list_to_binary(io_lib:format("~p", [Reason])),
                     {reply, {text, <<"ERR: balistes-fixed ", RB/binary>>}, State}
-            end;
-        {balistes_trig, Json} ->
-            %% POLYTRIG handoff: play a pushed resolved TrigKit on ch 10. Stateless
-            %% (a pure function of the absolute step off the cycle-0 onsets), so the
-            %% voice just evals renderTrigStep per step — in lockstep with the
-            %% frontend's ASelene branch, which reads the same Link step.
-            case reef_balistes_voice:start_trig_json(Json, 10, 0.25) of
-                {ok, _Pid} ->
-                    {reply, {text, <<"OK: balistes-trig (ch10)">>}, State};
-                {error, Reason} ->
-                    RB = list_to_binary(io_lib:format("~p", [Reason])),
-                    {reply, {text, <<"ERR: balistes-trig ", RB/binary>>}, State}
             end;
         {dirt_play, Json} ->
             case dirt_audition(Json) of
@@ -2153,12 +2120,6 @@ dirt_audition(Json) ->
 
 %% The slots a page may set with stage-put. Conspicillum's is set by its
 %% scene push instead.
-lane_shape(Src) ->
-    #{meter => 'tidal_lane@ps':meterOf(Src),
-      mask => array:to_list('tidal_lane@ps':cellMaskOf(Src)),
-      onsets => array:to_list('tidal_lane@ps':onsetsOf(Src)),
-      named => [#{name => N, at => A} || #{name := N, at := A} <- array:to_list('tidal_lane@ps':namedOnsetsOf(Src))]}.
-
 stage_slot(<<"odonus">>) -> odonus;
 stage_slot(<<"vetula">>) -> vetula;
 stage_slot(<<"balistes">>) -> balistes;
