@@ -89,6 +89,7 @@ erl-quick:
 	@erlc -disable-feature maybe_expr -o ebin src/odonus_voice.erl
 	@erlc -disable-feature maybe_expr -o ebin src/es9_cv.erl
 	@erlc -disable-feature maybe_expr -o ebin src/reef_voice.erl
+	@erlc -disable-feature maybe_expr -o ebin src/routing_out.erl
 	@erlc -disable-feature maybe_expr -o ebin src/reef_balistes_voice.erl
 	@erlc -disable-feature maybe_expr -o ebin src/reef_vetula_voice.erl
 	@erlc -disable-feature maybe_expr -o ebin src/reef_vetula_brush.erl

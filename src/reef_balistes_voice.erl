@@ -283,33 +283,9 @@ fire(Sock, Ch, Port, Note, Vel, DurMs, StepMs, AtUs) ->
         Routing ->
             Hit = #{note => Note, velocity => Vel, atMs => 0.0, durMs => float(DurMs),
                     stepMs => float(StepMs)},
-            lists:foreach(fun(Send) -> send(Sock, Send, AtUs) end,
+            lists:foreach(fun(Send) -> routing_out:send(Sock, Send, AtUs) end,
                           array:to_list('reef_routing@ps':drumSends(Routing, Hit)))
     end.
-
-%% One Reef.Routing.Send, its atMs relative to the hit's wall time.
-send(Sock, {note, M}, AtUs) ->
-    fire_one(Sock, maps:get(channel, M), maps:get(port, M), maps:get(note, M),
-             maps:get(velocity, M), maps:get(durMs, M), AtUs + round(maps:get(atMs, M) * 1000.0));
-send(Sock, {play, M}, AtUs) ->
-    %% A sample voice: one /dirt/play, timetagged. `n` goes as a float, as
-    %% SuperDirt reads it; no sustain, so the window plays to its end.
-    Msg = dirt_osc:encode_msg(<<"/dirt/play">>,
-            [ <<"s">>, maps:get(s, M)
-            , <<"n">>, float(maps:get(n, M))
-            , <<"orbit">>, maps:get(orbit, M)
-            , <<"begin">>, float(maps:get('begin', M))
-            , <<"end">>, float(maps:get('end', M))
-            , <<"speed">>, float(maps:get(speed, M))
-            , <<"gain">>, float(maps:get(gain, M))
-            , <<"amp">>, float(maps:get(amp, M))
-            ]),
-    dirt_osc:send_at(Sock, AtUs + round(maps:get(atMs, M) * 1000.0), Msg);
-send(Sock, {control, M}, AtUs) ->
-    Thunk = 'tidal_mIDIBridge@foreign':scheduleCCAt(
-              Sock, maps:get(port, M), maps:get(channel, M), maps:get(controller, M),
-              maps:get(value, M), AtUs + round(maps:get(atMs, M) * 1000.0)),
-    Thunk().
 
 %% Schedule one note to a CoreMIDI Port (by default ?DEFAULT_PORT).
 %% QuadDrum routing (2026-07-12, #197/#198): the default <<"FH-2">> fans the FH-2's

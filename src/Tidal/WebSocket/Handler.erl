@@ -133,6 +133,10 @@ try_parse_prefixed(<<"balistes-routing ", Rest/binary>>) ->
     %% DrumRouting): per canonKit lane, the legs a hit is sent down. Kept for
     %% every later start of the voice, whichever engine.
     {balistes_routing, trim_binary(Rest)};
+try_parse_prefixed(<<"odonus-routing ", Rest/binary>>) ->
+    %% odonus-routing <json> — the heads' routing (Reef.Routing.VoiceRouting):
+    %% each head's live legs, from the routing table. Kept across restarts.
+    {odonus_routing, trim_binary(Rest)};
 try_parse_prefixed(<<"balistes-input ", Rest/binary>>) ->
     %% balistes-input <json> — a tick-tagged Balistes gesture (live knob sync):
     %% {tick, input} in the Reef.Balistes.Protocol wire form, applied on the tagged
@@ -1118,6 +1122,15 @@ handle_pattern_message(Text, State) ->
                 {error, Reason} ->
                     RB = list_to_binary(io_lib:format("~p", [Reason])),
                     {reply, {text, <<"ERR: balistes-routing ", RB/binary>>}, State}
+            end;
+        {odonus_routing, Json} ->
+            case reef_voice:set_routing_json(Json) of
+                ok ->
+                    tidal_stage:put_text(<<"odonus/routing">>, Json, self()),
+                    {reply, {text, <<"OK: odonus-routing">>}, State};
+                {error, Reason} ->
+                    RB = list_to_binary(io_lib:format("~p", [Reason])),
+                    {reply, {text, <<"ERR: odonus-routing ", RB/binary>>}, State}
             end;
         {balistes_input, Json} ->
             %% Balistes live knob sync: decode the tick-tagged BInput with the SAME

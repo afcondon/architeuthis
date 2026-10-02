@@ -43,7 +43,8 @@
 %% stage-texts.json`, rewritten on every write and read back at start), so
 %% what pages and Limulus wrote outlives a restart, and so does what the rig
 %% keeps there itself: `balistes/routing`, the drum routing table last
-%% pushed, which is handed back to the drum voice at start (restore/2).
+%% pushed, which is handed back to the drum voice at start (restore/2), and
+%% `odonus/routing`, the heads' routing, handed back to the Odonus voice.
 -module(tidal_stage).
 -behaviour(gen_server).
 
@@ -130,6 +131,7 @@ init([]) ->
 
 %% Rig state kept as a text object, handed back at start.
 restore(<<"balistes/routing">>, Json) -> catch reef_balistes_voice:set_routing_json(Json);
+restore(<<"odonus/routing">>, Json) -> catch reef_voice:set_routing_json(Json);
 restore(_, _) -> ok.
 
 texts_file() ->
