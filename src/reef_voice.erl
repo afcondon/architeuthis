@@ -319,14 +319,30 @@ drain(St, Step, Horizon, AnchorUs, BeatAtAnchor, Tempo) ->
             Sim0 = lists:foldl(
                      fun({_T, I}, S) -> ('reef_input@ps':applyInput(I))(S) end,
                      maps:get(sim, St), Due),
-            %% HARMONY: if Odonus has a Tidal harmony pattern, the chord overlay
-            %% follows Littorina's reading of it at this step's cycle position
-            %% (four beats to the cycle), the same call Triggerfish makes.
+            %% HARMONY and SCALE patterns: the rig is the only reader of Tidal
+            %% (docs/kb/plans/gpl-boundary-review.md). Sample both for the step a
+            %% move would land on (the same lead), as the patterns will stand
+            %% then (pending inputs due by that step folded in), and when the
+            %% sample changes, queue it as a SetSampled for that step here and
+            %% broadcast it tick-tagged, so the page applies it on the same step.
+            %% Four beats to the cycle: step N is cycle N * quarters / 16.
             Quarters = round(StepBeats * 4),
-            Sampler = fun(Txt) -> 'tidal_harmony@ps':harmonySampler(Step * Quarters, 16, Txt) end,
-            Scales = fun(Txt) -> 'tidal_scales@ps':scaleSampler(Step * Quarters, 16, Txt) end,
-            Scaled = 'reef_engine@ps':followScale(Scales, Sim0),
-            Res = 'reef_engine@ps':stepTick('reef_engine@ps':followHarmony(Sampler, Scaled)),
+            LeadStep = Step + ?MOVE_LEAD_STEPS,
+            AheadSim = lists:foldl(
+                         fun({_, I}, S) -> ('reef_input@ps':applyInput(I))(S) end,
+                         Sim0, [E || {Tk, _} = E <- Keep, Tk =< LeadStep]),
+            HSample = fun(Txt) -> 'tidal_harmony@ps':harmonySampler(LeadStep * Quarters, 16, Txt) end,
+            SSample = fun(Txt) -> 'tidal_scales@ps':scaleSampler(LeadStep * Quarters, 16, Txt) end,
+            Sampled = 'reef_engine@ps':sampleInput(HSample, SSample, AheadSim),
+            SampledJson = 'reef_protocol@ps':encodeInput(Sampled),
+            Keep1 = case SampledJson =:= maps:get(last_sample, St, none) of
+                        true -> Keep;
+                        false ->
+                            TaggedJson = 'reef_protocol@ps':encodeTagged(#{tick => LeadStep, input => Sampled}),
+                            tidal_link_anchor:sync_broadcast(<<"reef-input ", TaggedJson/binary>>),
+                            Keep ++ [{LeadStep, Sampled}]
+                    end,
+            Res = 'reef_engine@ps':stepTick(Sim0),
             Sim1 = maps:get(sim, Res),
             Odo1 = maps:get(odo, Sim1),
             Fired = array:to_list(maps:get(fired, Res)),
@@ -347,7 +363,7 @@ drain(St, Step, Horizon, AnchorUs, BeatAtAnchor, Tempo) ->
             Sock = maps:get(socket, St),
             Cv = maps:get(cv, St, undefined),
             lists:foreach(fun(F) -> emit(Sock, Ch, Cv, Odo1, F, WallUs, StepMs) end, Fired),
-            drain(St#{sim => Sim1, last_step => Step, pending => Keep},
+            drain(St#{sim => Sim1, last_step => Step, pending => Keep1, last_sample => SampledJson},
                   Step + 1, Horizon, AnchorUs, BeatAtAnchor, Tempo)
     end.
 
