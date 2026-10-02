@@ -2110,7 +2110,7 @@ unreadable_harmony(Move) ->
                   Tag =:= <<"SetHarmony">> orelse Tag =:= <<"SetScalePattern">> orelse Tag =:= <<"SetOutScale">>],
     lists:foldl(fun({Tag, T}, ok) ->
                         Check = case Tag of
-                                    <<"SetHarmony">> -> 'tidal_harmony@ps':parseHarmony(T);
+                                    <<"SetHarmony">> -> 'tidal_harmony@ps':checkHarmony(T);
                                     _ -> 'tidal_scales@ps':checkScalePattern(T)
                                 end,
                         case Check of
