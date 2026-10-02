@@ -61,7 +61,7 @@ import Tidal.Pattern.Core (queryArcWith)
 import Tidal.Pattern.Types (ControlMap, Event(..), Pattern, Value(..))
 import Data.Int as Int
 import Haskell.Rational (fromInt)
-import Tidal.Scales (Scale, Distribution(..), applyDistribution, cChromatic, shiftDegreesInScale)
+import Tidal.Substrate.Scales (Scale, Distribution(..), applyDistribution, cChromatic, shiftDegreesInScale)
 import Tidal.LiveControl (liveBoolArrayOr)
 
 -- ---------------------------------------------------------------------------

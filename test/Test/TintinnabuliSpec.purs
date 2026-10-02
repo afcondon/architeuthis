@@ -30,7 +30,7 @@ import Tidal.Pattern.Types (Pattern, eventValue)
 import Tidal.Pitch (PitchedNote12(..))
 import Tidal.Notation (toPattern)
 import Tidal.Pitch.Parse (degree, pitch)
-import Tidal.Scales (cMajor, dDorian)
+import Tidal.Substrate.Scales (cMajor, dDorian)
 import Tidal.Tintinnabuli (above1, below1, cMajT, tintinnabuli)
 
 runTintinnabuliTests :: Effect Unit

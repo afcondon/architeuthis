@@ -6,7 +6,7 @@
 -- | pattern combinators (`fast`, `slow`, `rev`, `fastCat`, `stack`,
 -- | `every`, `iter`, …), the typed `PitchedNote12` carrier with its `mini` /
 -- | `n` / `d` parsers, and the active-scale operators (`inKey`,
--- | `transposeDiatonic`, `transposeChromatic`) from `Tidal.Scales`.
+-- | `transposeDiatonic`, `transposeChromatic`) from `Tidal.Substrate.Scales`.
 -- |
 -- | Re-exports `Tidal.Pattern.Types` and `Tidal.Pattern.Core` in
 -- | bulk — anything those modules expose is reachable from a cell.
@@ -23,7 +23,7 @@ module Tidal.Cell.Prelude
   , module Tidal.Random
   , module Tidal.Pitch
   , module Tidal.Pitch.Parse
-  , module Tidal.Scales
+  , module Tidal.Substrate.Scales
   , module Tidal.Tintinnabuli
   , module Tidal.Emit
   -- Typed-`Sound` surface: the source / control verbs (`s`/`sound`/
@@ -50,7 +50,7 @@ import Tidal.LiveControl
 import Tidal.Random
 import Tidal.Pitch (PitchedNote12(..))
 import Tidal.Pitch.Parse (pitch, degree)
-import Tidal.Scales
+import Tidal.Substrate.Scales
   ( Scale(..)
   , mkScale, mkScaleP
   , Distribution(..)

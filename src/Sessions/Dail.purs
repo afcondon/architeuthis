@@ -1,4 +1,4 @@
--- | Sessions.Dail — Thread 1 smoke test (Tidal.Scales multi-octave +
+-- | Sessions.Dail — Thread 1 smoke test (Tidal.Substrate.Scales multi-octave +
 -- | Distribution modes, inspired by Instruō Dail's quantiser engine).
 -- |
 -- | Tests the new Scale + Distribution machinery through the existing

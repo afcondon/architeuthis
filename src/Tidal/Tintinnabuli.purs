@@ -48,7 +48,7 @@ module Tidal.Tintinnabuli
   , tintinnabuli
   , tintinnabuliPitch
   -- Common named triads (T-suffix to avoid collision with Scale names
-  -- like `aMinor` in Tidal.Scales).
+  -- like `aMinor` in Tidal.Substrate.Scales).
   , cMajT, cMinT
   , dMajT, dMinT
   , eMajT, eMinT
@@ -68,7 +68,7 @@ import Tidal.Chords (major, minor, dim)
 import Tidal.Notation (class Notation, toPattern)
 import Tidal.Pattern.Types (Pattern)
 import Tidal.Pitch (PitchedNote12(..))
-import Tidal.Scales (Scale, renderDegree)
+import Tidal.Substrate.Scales (Scale, renderDegree)
 
 -- ---------------------------------------------------------------------------
 -- Triad
@@ -184,7 +184,7 @@ nearestTriadNote (Triad pcs) pos melody = case pos of
 
 -- ---------------------------------------------------------------------------
 -- Common named triads — T suffix to avoid colliding with Scale names
--- (Tidal.Scales already exports `aMinor`, `cMajor`, …).
+-- (Tidal.Substrate.Scales already exports `aMinor`, `cMajor`, …).
 -- ---------------------------------------------------------------------------
 
 cMajT :: Triad

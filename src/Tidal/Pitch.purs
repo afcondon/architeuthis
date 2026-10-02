@@ -18,7 +18,7 @@
 -- | apply identically to drum, pitched, and degree patterns. PitchedNote12-
 -- | aware operations dispatch on variant.
 -- |
--- | See `Tidal.Scales` for `Scale`, `inKey`, and the diatonic /
+-- | See `Tidal.Substrate.Scales` for `Scale`, `inKey`, and the diatonic /
 -- | chromatic transpose operators that consume this carrier.
 module Tidal.Pitch
   ( PitchedNote12(..)

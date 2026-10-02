@@ -61,7 +61,7 @@ ensure_table() ->
 %% registered scale.
 set_scale(Name) when is_binary(Name) ->
     ensure_table(),
-    case ('tidal_scales@ps':lookupScaleByName())(Name) of
+    case ('tidal_substrate_scales@ps':lookupScaleByName())(Name) of
         {just, ScaleVal} ->
             ets:insert(?TABLE, {?KEY, ScaleVal, Name}),
             {ok, Name};

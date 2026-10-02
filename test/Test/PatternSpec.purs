@@ -20,7 +20,7 @@ import Tidal.Parse.Parser (parseTPat, parseChord)
 import Tidal.Pattern.Core (brak, cat, chunk, compress, cosine, every, fast, fastAppend, fastCat, inside, irand, isaw, iter, iter', loopFirst, off, outside, palindrome, ply, queryArc, rand, range, rev, rotL, rotR, saw, segment, sine, slow, square, stack, stutter, superimpose, tri, zoom)
 import Data.Newtype (unwrap)
 import Tidal.Pattern.Types (Arc(..), Event(..), Note, Pattern, arcStart, arcStop, mkNote)
-import Tidal.Scales as Scales
+import Tidal.Substrate.Scales as Scales
 
 -------------------------------------------------------------------------------
 -- Test runner

@@ -339,7 +339,7 @@ try_parse_prefixed(<<"set-scale ", Rest/binary>>) ->
     %% new value, and Degree pitches re-render against it — without
     %% recompile, without per-cue editing, without re-arm.  Names are
     %% kebab-case (`c-mixolydian`, `a-harmonic-minor`); see
-    %% `Tidal.Scales.namedScales` for the registry.
+    %% `Tidal.Substrate.Scales.namedScales` for the registry.
     case trim_binary(Rest) of
         <<>> -> none;
         Name -> {set_scale, Name}
@@ -1499,7 +1499,7 @@ handle_pattern_message(Text, State) ->
             {reply, {text, <<"OK: ", Name/binary, " = ", ValBin/binary>>}, State};
         {set_scale, Name} ->
             %% Active-scale ETS write.  Resolves the kebab-case name
-            %% through `Tidal.Scales.lookupScaleByName`; on the next
+            %% through `Tidal.Substrate.Scales.lookupScaleByName`; on the next
             %% tick every voice's Window.activeScale carries the new
             %% Scale value and Degree pitches re-render against it.
             case tidal_scale_bus:set_scale(Name) of
@@ -1932,13 +1932,19 @@ odonus_line(Line) ->
             iolist_to_binary(io_lib:format("ERR: odonus: ~p:~p", [Class, Why]))
     end.
 
-%% A `harmony "..."` pattern is read by Littorina on each step, which treats
-%% one it cannot parse as a rest; refuse it here instead, with Tidal's reason.
+%% A `harmony "..."` or `scale "..."` pattern is read by Littorina on each
+%% step, which treats one it cannot read as a rest; refuse it here instead,
+%% with Tidal's reason (or, for a scale, the names it does not know).
 unreadable_harmony(Move) ->
-    Texts = [T || I <- array:to_list('reef_move@ps':inputsOf(Move)),
-                  #{tag := <<"SetHarmony">>, txt := {just, T}} <- ['reef_input@ps':toWire(I)]],
-    lists:foldl(fun(T, ok) ->
-                        case 'tidal_harmony@ps':parseHarmony(T) of
+    Texts = [{Tag, T} || I <- array:to_list('reef_move@ps':inputsOf(Move)),
+                  #{tag := Tag, txt := {just, T}} <- ['reef_input@ps':toWire(I)],
+                  Tag =:= <<"SetHarmony">> orelse Tag =:= <<"SetScalePattern">>],
+    lists:foldl(fun({Tag, T}, ok) ->
+                        Check = case Tag of
+                                    <<"SetHarmony">> -> 'tidal_harmony@ps':parseHarmony(T);
+                                    _ -> 'tidal_scales@ps':checkScalePattern(T)
+                                end,
+                        case Check of
                             {left, Why} -> {bad, Why};
                             {right, _} -> ok
                         end;

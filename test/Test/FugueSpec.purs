@@ -28,7 +28,7 @@ import Tidal.Pattern.Core (queryArc)
 import Tidal.Pattern.Types (Pattern, arcStart, eventPart, eventValue)
 import Tidal.Pitch (PitchedNote12(..))
 import Tidal.Pitch.Parse (degree, pitch)
-import Tidal.Scales (cMajor, dDorian, inKey)
+import Tidal.Substrate.Scales (cMajor, dDorian, inKey)
 
 runFugueTests :: Effect Unit
 runFugueTests = do

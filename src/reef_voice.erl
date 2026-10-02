@@ -324,7 +324,9 @@ drain(St, Step, Horizon, AnchorUs, BeatAtAnchor, Tempo) ->
             %% (four beats to the cycle), the same call Triggerfish makes.
             Quarters = round(StepBeats * 4),
             Sampler = fun(Txt) -> 'tidal_harmony@ps':harmonySampler(Step * Quarters, 16, Txt) end,
-            Res = 'reef_engine@ps':stepTick('reef_engine@ps':followHarmony(Sampler, Sim0)),
+            Scales = fun(Txt) -> 'tidal_scales@ps':scaleSampler(Step * Quarters, 16, Txt) end,
+            Sim1 = 'reef_engine@ps':followScale(Scales, Sim0),
+            Res = 'reef_engine@ps':stepTick('reef_engine@ps':followHarmony(Sampler, Sim1)),
             Sim1 = maps:get(sim, Res),
             Odo1 = maps:get(odo, Sim1),
             Fired = array:to_list(maps:get(fired, Res)),

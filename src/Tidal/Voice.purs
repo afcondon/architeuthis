@@ -63,7 +63,7 @@ import Tidal.Eval.Interpret (tpatToPattern)
 import Tidal.Parse.Parser (parse)
 import Tidal.Pattern.Core (queryArcWith)
 import Tidal.Pattern.Types (Arc(..), ControlMap, Event(..), Pattern, Value(..), eventValue)
-import Tidal.Scales (Scale, renderDegree)
+import Tidal.Substrate.Scales (Scale, renderDegree)
 import Tidal.Sound
   ( Sound
   , Pitch(..)

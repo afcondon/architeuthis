@@ -41,7 +41,7 @@
 -- | type's module.  Putting them in `Tidal.Emit` (the class's module)
 -- | needs only one upward import (`Tidal.Pitch`), without forcing
 -- | `Tidal.Pitch` to depend on this module — which would create a
--- | cycle through `Tidal.Scales`.
+-- | cycle through `Tidal.Substrate.Scales`.
 -- |
 -- | Design memory: `project_emitable_three_axes`.
 module Tidal.Emit
@@ -106,7 +106,7 @@ class ToOscSample note where
 -- ---------------------------------------------------------------------------
 -- PitchedNote12 instances.  Live here (the class's module) rather
 -- than in Tidal.Pitch (the type's module) so they're not orphans
--- while also not pulling Tidal.Pitch into Tidal.Scales's dependency
+-- while also not pulling Tidal.Pitch into Tidal.Substrate.Scales's dependency
 -- cone (which would cycle).
 -- ---------------------------------------------------------------------------
 

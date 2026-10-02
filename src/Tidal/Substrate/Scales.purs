@@ -29,7 +29,7 @@
 -- | override — it renders Degrees through `s` at construction, so
 -- | the resulting Chromatics ride out a global scale change
 -- | unchanged.
-module Tidal.Scales
+module Tidal.Substrate.Scales
   ( -- * Typed Scale carrier
     Scale(..)
   , mkScale

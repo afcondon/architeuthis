@@ -85,7 +85,7 @@ import Tidal.Notation (class Notation, toPattern)
 import Tidal.Pattern.Core (fast, rev)
 import Tidal.Pattern.Types (Pattern)
 import Tidal.Pitch (PitchedNote12)
-import Tidal.Scales (transposeDiatonic)
+import Tidal.Substrate.Scales (transposeDiatonic)
 
 -- ---------------------------------------------------------------------------
 -- The Voice record
