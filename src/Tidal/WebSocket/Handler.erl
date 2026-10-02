@@ -472,6 +472,11 @@ try_parse_prefixed(<<"reef-stop">>) -> {reef_stop};
 try_parse_prefixed(<<"reef-stop ", _/binary>>) -> {reef_stop};
 try_parse_prefixed(<<"balistes-stop">>) -> {balistes_stop};
 try_parse_prefixed(<<"balistes-stop ", _/binary>>) -> {balistes_stop};
+%% vetula-cards-play / vetula-cards-stop — Vetula's cards played by the rig
+%% (vetula_cards, from the cards on the stage): the page sends play on entering
+%% Rig and stop on leaving it.
+try_parse_prefixed(<<"vetula-cards-play">>) -> {vetula_cards_play};
+try_parse_prefixed(<<"vetula-cards-stop">>) -> {vetula_cards_stop};
 try_parse_prefixed(<<"vetula-stop">>) -> {vetula_stop};
 try_parse_prefixed(<<"vetula-stop ", _/binary>>) -> {vetula_stop};
 try_parse_prefixed(<<"play-armed ", Rest/binary>>) ->
@@ -1019,6 +1024,8 @@ handle_pattern_message(Text, State) ->
             %% and the Vetula brush voice (vetula-voicings, Option B) — a real MIDI
             %% emitter, so hush must silence it.
             catch reef_vetula_brush:stop(),
+            %% and Vetula's cards (vetula-cards-play)
+            catch vetula_cards:stop(),
             %% and the Conspicillum grain cloud (conspicillum-scene) — also a
             %% /dirt/play emitter, and the densest one on the rig, so hush must
             %% reach it too.
@@ -1086,9 +1093,16 @@ handle_pattern_message(Text, State) ->
             catch reef_balistes_voice:stop(),
             stop_voice_tree(balistes_voice_sup),
             {reply, {text, <<"OK: balistes-stop">>}, State};
+        {vetula_cards_play} ->
+            vetula_cards:play(),
+            {reply, {text, <<"OK: vetula-cards-play">>}, State};
+        {vetula_cards_stop} ->
+            vetula_cards:stop(),
+            {reply, {text, <<"OK: vetula-cards-stop">>}, State};
         {vetula_stop} ->
             %% Per-tab ATLANTIS stop: silence just the Vetula brush voice.
             catch reef_vetula_brush:stop(),
+            catch vetula_cards:stop(),
             {reply, {text, <<"OK: vetula-stop">>}, State};
         {log_level, N} ->
             tidal_log:set_level(N),
