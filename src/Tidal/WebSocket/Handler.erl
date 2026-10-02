@@ -2071,7 +2071,12 @@ tidal_pattern_line(Block) ->
                 Err -> iolist_to_binary(io_lib:format("ERR: d~p: ~p", [N, Err]))
             end;
         {right, {hush}} ->
+            %% Tidal's hush: the d streams and drums, and Conspicillum, which
+            %% Limulus also starts (`conspicillum $ …`). Its page hears it
+            %% stopped through the stage. The machines are left alone.
             tidal_dirt_voice_sup:hush_all(),
+            catch reef_conspicillum_voice:stop(),
+            catch tidal_stage:stopped(conspicillum),
             <<"OK: hush">>;
         {right, {setCps, Cps}} ->
             Bpm = Cps * 240.0,
