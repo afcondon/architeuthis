@@ -155,5 +155,13 @@ init([]) ->
            restart => permanent,
            shutdown => 5000,
            type => worker,
-           modules => [odonus_feeds]}],
+           modules => [odonus_feeds]},
+         %% Loop windows driven by patterns from Limulus (slide "…", widen "…").
+         %% Last, so its restart under rest_for_one touches nothing else.
+         #{id => window_patterns,
+           start => {window_patterns, start_link, []},
+           restart => permanent,
+           shutdown => 5000,
+           type => worker,
+           modules => [window_patterns]}],
     {ok, {SupFlags, ChildSpecs}}.

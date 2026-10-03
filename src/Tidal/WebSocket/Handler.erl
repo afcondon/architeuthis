@@ -2044,10 +2044,18 @@ review_cue(Line) ->
         _ -> none
     end.
 
-%% A window cue's count of bars: a number, default 1.
+%% A window cue's count of bars: a number, default 1; or a pattern of them
+%% in quotes (`slide "<0 -1 -2>"`, bars from where the mark was made), which
+%% window_patterns follows; or `off`, to stop following it.
 window_cue(Head, Kind, ByBin) ->
     case string:trim(ByBin) of
         <<>> -> {Head, #{cue => Kind, by => 1.0}};
+        <<"off">> when Kind =/= <<"narrow">> -> {pattern, Head, Kind, off};
+        <<"\"", _/binary>> = Q when Kind =/= <<"narrow">> ->
+            case string:trim(Q, both, "\"") of
+                <<>> -> none;
+                Text -> {pattern, Head, Kind, Text}
+            end;
         B ->
             case parse_number(B) of
                 {ok, N} -> {Head, #{cue => Kind, by => N}};
@@ -2055,6 +2063,16 @@ window_cue(Head, Kind, ByBin) ->
             end
     end.
 
+send_cue({pattern, Slot, Kind, off}) ->
+    window_patterns:set(Slot, Kind, off),
+    <<"OK: ", Slot/binary, " ", Kind/binary, " follows no pattern">>;
+send_cue({pattern, Slot, Kind, Text}) ->
+    case 'tidal_window@ps':checkWindow(Text) of
+        {left, Why} -> <<"ERR: ", Slot/binary, ": ", Why/binary>>;
+        {right, _} ->
+            window_patterns:set(Slot, Kind, Text),
+            <<"OK: ", Slot/binary, " ", Kind/binary, " follows \"", Text/binary, "\" (bars from the mark, each beat)">>
+    end;
 send_cue({Slot, Cue}) ->
     Json = iolist_to_binary(json:encode(Cue#{slot => Slot})),
     tidal_link_anchor:sync_broadcast(<<"cue ", Json/binary>>),
