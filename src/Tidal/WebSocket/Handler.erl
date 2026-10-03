@@ -1967,7 +1967,39 @@ hush_machine(<<"conspicillum">>) ->
     catch tidal_stage:stopped(conspicillum),
     <<"OK: conspicillum hushed">>.
 
+%% A block may hold several machine lines (`odonus $ loop` then `odonus $
+%% slide "<0 -1>"`, with no blank line between): each line that starts with
+%% a machine's name at the margin begins a statement, indented lines continue
+%% it (a recall's `{ … }`), and each statement runs in turn.
 machine_line(Block) ->
+    case machine_statements(Block) of
+        [One] -> machine_statement(One);
+        Many -> iolist_to_binary(lists:join(<<"\n">>, [machine_statement(S) || S <- Many]))
+    end.
+
+machine_statements(Block) ->
+    Lines = binary:split(string:trim(Block), <<"\n">>, [global]),
+    Heads = [<<"odonus">>, <<"vetula">>, <<"drums">>, <<"conspicillum">>, <<"balistes">>],
+    Starts = fun(L) -> lists:any(fun(H) -> starts_word(L, H) end, Heads) end,
+    Groups = lists:foldl(
+               fun(L, []) -> [[L]];
+                  (L, [Cur | Rest]) ->
+                       case Starts(L) of
+                           true -> [[L], Cur | Rest];
+                           false -> [[L | Cur] | Rest]
+                       end
+               end, [], Lines),
+    [iolist_to_binary(lists:join(<<"\n">>, lists:reverse(G))) || G <- lists:reverse(Groups)].
+
+starts_word(Line, Head) ->
+    N = byte_size(Head),
+    case Line of
+        <<Head:N/binary>> -> true;
+        <<Head:N/binary, C, _/binary>> -> C =:= $\s orelse C =:= $$;
+        _ -> false
+    end.
+
+machine_statement(Block) ->
     case string:trim(Block, leading) of
         <<"odonus", _/binary>> = Line ->
             case review_cue(Line) of
