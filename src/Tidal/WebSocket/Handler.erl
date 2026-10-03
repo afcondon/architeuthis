@@ -1978,7 +1978,10 @@ machine_line(Block) ->
     end.
 
 machine_statements(Block) ->
-    Lines = binary:split(string:trim(Block), <<"\n">>, [global]),
+    %% `--` comments go first, as Tidal's Haskell drops them: a line may end
+    %% in one (`odonus $ loop  -- loop the latest`), or be only one
+    Lines = [L || L0 <- binary:split(string:trim(Block), <<"\n">>, [global]),
+                  L <- [strip_comment(L0)], string:trim(L) =/= <<>>],
     Heads = [<<"odonus">>, <<"vetula">>, <<"drums">>, <<"conspicillum">>, <<"balistes">>],
     Starts = fun(L) -> lists:any(fun(H) -> starts_word(L, H) end, Heads) end,
     Groups = lists:foldl(
@@ -1990,6 +1993,15 @@ machine_statements(Block) ->
                        end
                end, [], Lines),
     [iolist_to_binary(lists:join(<<"\n">>, lists:reverse(G))) || G <- lists:reverse(Groups)].
+
+%% A line without its `--` comment (outside double quotes), trailing space
+%% trimmed.
+strip_comment(Line) -> strip_comment(binary_to_list(Line), false, []).
+strip_comment([], _, Acc) -> trailing(Acc);
+strip_comment([$" | T], Q, Acc) -> strip_comment(T, not Q, [$" | Acc]);
+strip_comment([$-, $- | _], false, Acc) -> trailing(Acc);
+strip_comment([C | T], Q, Acc) -> strip_comment(T, Q, [C | Acc]).
+trailing(Acc) -> string:trim(list_to_binary(lists:reverse(Acc)), trailing).
 
 starts_word(Line, Head) ->
     N = byte_size(Head),
