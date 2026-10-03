@@ -11,7 +11,7 @@
 -module(window_patterns).
 -behaviour(gen_server).
 
--export([start_link/0, set/3, patterns/0]).
+-export([start_link/0, set/3, clear/1, patterns/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 start_link() ->
@@ -21,6 +21,14 @@ start_link() ->
 %% `off` stop following it.
 set(Slot, Kind, Text) ->
     gen_server:call(?MODULE, {set, Slot, Kind, Text}).
+
+%% Stop following every pattern on `Slot`, or with `all` on every machine:
+%% what `hush`, `loop off` and `reset` do. The windows stay where they are.
+clear(Slot) ->
+    case whereis(?MODULE) of
+        undefined -> ok;
+        _ -> gen_server:call(?MODULE, {clear, Slot})
+    end.
 
 %% What is followed, for inspection from a shell.
 patterns() -> gen_server:call(?MODULE, patterns).
@@ -34,6 +42,11 @@ handle_call({set, Slot, Kind, off}, _From, St = #{patterns := Ps, last := L}) ->
 handle_call({set, Slot, Kind, Text}, _From, St = #{patterns := Ps, last := L}) ->
     %% a new pattern is heard at once, even if its first value equals the last
     {reply, ok, St#{patterns := Ps#{{Slot, Kind} => Text}, last := maps:remove({Slot, Kind}, L)}};
+handle_call({clear, all}, _From, St) ->
+    {reply, ok, St#{patterns := #{}, last := #{}}};
+handle_call({clear, Slot}, _From, St = #{patterns := Ps, last := L}) ->
+    Keep = fun({S, _}, _) -> S =/= Slot end,
+    {reply, ok, St#{patterns := maps:filter(Keep, Ps), last := maps:filter(Keep, L)}};
 handle_call(patterns, _From, St = #{patterns := Ps}) ->
     {reply, Ps, St};
 handle_call(_Request, _From, St) ->

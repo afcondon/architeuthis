@@ -1942,11 +1942,13 @@ machine_hush(Block) ->
     end.
 
 hush_machine(<<"odonus">>) ->
+    catch window_patterns:clear(<<"odonus">>),
     [gen_server:cast(Pid, hush) || Pid <- odonus_voice_sup:which_voices()],
     catch reef_voice:stop(),
     catch tidal_stage:stopped(odonus),
     <<"OK: odonus hushed">>;
 hush_machine(<<"vetula">>) ->
+    catch window_patterns:clear(<<"vetula">>),
     catch vetula_cards:stop(),
     catch reef_vetula_voice:stop(),
     catch reef_vetula_brush:stop(),
@@ -2017,7 +2019,7 @@ machine_statement(Block) ->
             case review_cue(Line) of
                 none ->
                     case cue_word(Line) of
-                        true -> <<"ERR: odonus: a cue line is mark, loop [N | off], slide / widen / narrow N or \"PATTERN\" or off, chained with # (moves go on a line of their own)">>;
+                        true -> <<"ERR: odonus: a cue line is mark, loop [N | off | hush], reset, slide / widen / narrow N or \"PATTERN\" or off, chained with # (moves go on a line of their own)">>;
                         false -> odonus_line(Line)
                     end;
                 Cue -> send_cue(Cue)
@@ -2062,10 +2064,13 @@ drums_line(Rest) ->
 %%   odonus $ mark        drop a mark now, as the surface's own mark control
 %%   odonus $ loop 2      loop mark 2 (counting from 1) on the Review surface
 %%   odonus $ loop        loop the latest mark
-%%   odonus $ loop off    stop the loop
+%%   odonus $ loop off    stop the loop (or `loop hush`: the loop, not the machine)
 %%   odonus $ slide -1    move the loop window by bars (a fraction is fine)
 %%   odonus $ widen 2     move its end later by bars; narrow N, earlier
 %%                        (each acts on the mark looping, else the latest)
+%%   odonus $ slide "<0 -1>"  follow a pattern (window_patterns); slide off
+%%   odonus $ reset       window back at its mark, patterns dropped
+%% `loop off`, `odonus $ hush` and `hush` drop the patterns too.
 %% The marks and their notes live in the page, so the rig only relays the cue
 %% to every page (`cue <json>`), and the page of that machine acts on it.
 review_cue(Line) ->
@@ -2095,7 +2100,7 @@ cue_word(Line) ->
     case binary:split(Line, <<"$">>) of
         [_, Rest] ->
             case binary:split(string:trim(Rest), [<<" ">>, <<"#">>]) of
-                [W | _] -> lists:member(W, [<<"mark">>, <<"loop">>, <<"slide">>, <<"widen">>, <<"narrow">>]);
+                [W | _] -> lists:member(W, [<<"mark">>, <<"loop">>, <<"slide">>, <<"widen">>, <<"narrow">>, <<"reset">>]);
                 _ -> false
             end;
         _ -> false
@@ -2119,6 +2124,10 @@ one_cue(Head, Body) ->
                 <<"mark">> -> {Head, #{cue => <<"mark">>}};
                 <<"loop">> -> {Head, #{cue => <<"loop">>, n => 0}};
                 <<"loop off">> -> {Head, #{cue => <<"stop">>}};
+                %% the loop, not the machine (`odonus $ hush` is the machine)
+                <<"loop hush">> -> {Head, #{cue => <<"stop">>}};
+                %% the window back where the mark made it, patterns dropped
+                <<"reset">> -> {Head, #{cue => <<"place">>, slide => 0.0, widen => 0.0}};
                 <<"slide", By/binary>> -> window_cue(Head, <<"slide">>, By);
                 <<"widen", By/binary>> -> window_cue(Head, <<"widen">>, By);
                 <<"narrow", By/binary>> -> window_cue(Head, <<"narrow">>, By);
@@ -2162,13 +2171,20 @@ send_cue({pattern, Slot, Kind, Text}) ->
             <<"OK: ", Slot/binary, " ", Kind/binary, " follows \"", Text/binary, "\" (bars from the mark, each beat)">>
     end;
 send_cue({Slot, Cue}) ->
+    %% loop off and reset drop the window's patterns: a pattern with no loop
+    %% to move has nothing to do, and a reset is back to the mark
+    case Cue of
+        #{cue := C} when C =:= <<"stop">>; C =:= <<"place">> -> catch window_patterns:clear(Slot);
+        _ -> ok
+    end,
     Json = iolist_to_binary(json:encode(Cue#{slot => Slot})),
     tidal_link_anchor:sync_broadcast(<<"cue ", Json/binary>>),
     Say = case Cue of
               #{cue := <<"mark">>} -> <<"mark dropped">>;
               #{cue := <<"loop">>, n := 0} -> <<"looping the latest mark">>;
               #{cue := <<"loop">>, n := N} -> iolist_to_binary(io_lib:format("looping mark ~p", [N]));
-              #{cue := <<"stop">>} -> <<"loop stopped">>;
+              #{cue := <<"stop">>} -> <<"loop stopped, window patterns dropped">>;
+              #{cue := <<"place">>} -> <<"window back at its mark, patterns dropped">>;
               #{cue := K, by := By} -> iolist_to_binary(io_lib:format("~s ~p bars", [K, By]))
           end,
     <<"OK: ", Slot/binary, " ", Say/binary, " (on its Review surface, if the page is open)">>.
@@ -4084,6 +4100,8 @@ hush_everything() ->
     %% their hush flag so emit_step skips MIDI output (engine
     %% advance keeps running so they stay clock-aligned).
     tidal_voice_sup:hush_all(),
+    %% the loop windows' patterns are patterns too
+    catch window_patterns:clear(all),
     OdonusPids = odonus_voice_sup:which_voices(),
     lists:foreach(
       fun(Pid) -> gen_server:cast(Pid, hush) end, OdonusPids),
