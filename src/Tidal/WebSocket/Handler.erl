@@ -2003,7 +2003,11 @@ machine_statement(Block) ->
     case string:trim(Block, leading) of
         <<"odonus", _/binary>> = Line ->
             case review_cue(Line) of
-                none -> odonus_line(Line);
+                none ->
+                    case cue_word(Line) of
+                        true -> <<"ERR: odonus: a cue line is mark, loop [N | off], slide / widen / narrow N or \"PATTERN\" or off, chained with # (moves go on a line of their own)">>;
+                        false -> odonus_line(Line)
+                    end;
                 Cue -> send_cue(Cue)
             end;
         <<"vetula", _/binary>> = Line ->
@@ -2059,6 +2063,46 @@ review_cue(Line) ->
                                    <<"$", After/binary>> -> After;
                                    Other -> Other
                                end),
+            case split_hashes(Body) of
+                [_] -> one_cue(Head, Body);
+                Parts ->
+                    %% `loop # slide "<0 -1>"`: cues chain as moves do; all
+                    %% of them must be cues, or the line is not one
+                    Cues = [one_cue(Head, P) || P <- Parts],
+                    case lists:member(none, Cues) of
+                        true -> none;
+                        false -> {many, Cues}
+                    end
+            end;
+        _ -> none
+    end.
+
+%% Whether a machine line starts with a cue's word, so a malformed cue says
+%% so rather than reading as a move.
+cue_word(Line) ->
+    case binary:split(Line, <<"$">>) of
+        [_, Rest] ->
+            case binary:split(string:trim(Rest), [<<" ">>, <<"#">>]) of
+                [W | _] -> lists:member(W, [<<"mark">>, <<"loop">>, <<"slide">>, <<"widen">>, <<"narrow">>]);
+                _ -> false
+            end;
+        _ -> false
+    end.
+
+%% Split at `#` outside double quotes, each part trimmed.
+split_hashes(Body) ->
+    split_hashes(binary_to_list(Body), false, [], []).
+split_hashes([], _, Cur, Acc) ->
+    lists:reverse([trim_part(Cur) | Acc]);
+split_hashes([$" | T], Q, Cur, Acc) ->
+    split_hashes(T, not Q, [$" | Cur], Acc);
+split_hashes([$# | T], false, Cur, Acc) ->
+    split_hashes(T, false, [], [trim_part(Cur) | Acc]);
+split_hashes([C | T], Q, Cur, Acc) ->
+    split_hashes(T, Q, [C | Cur], Acc).
+trim_part(Rev) -> string:trim(list_to_binary(lists:reverse(Rev))).
+
+one_cue(Head, Body) ->
             case Body of
                 <<"mark">> -> {Head, #{cue => <<"mark">>}};
                 <<"loop">> -> {Head, #{cue => <<"loop">>, n => 0}};
@@ -2072,9 +2116,7 @@ review_cue(Line) ->
                         _ -> none
                     end;
                 _ -> none
-            end;
-        _ -> none
-    end.
+            end.
 
 %% A window cue's count of bars: a number, default 1; or a pattern of them
 %% in quotes (`slide "<0 -1 -2>"`, bars from where the mark was made), which
@@ -2095,6 +2137,8 @@ window_cue(Head, Kind, ByBin) ->
             end
     end.
 
+send_cue({many, Cues}) ->
+    iolist_to_binary(lists:join(<<"\n">>, [send_cue(C) || C <- Cues]));
 send_cue({pattern, Slot, Kind, off}) ->
     window_patterns:set(Slot, Kind, off),
     <<"OK: ", Slot/binary, " ", Kind/binary, " follows no pattern">>;
