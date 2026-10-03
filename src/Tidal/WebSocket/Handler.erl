@@ -700,6 +700,13 @@ try_parse_prefixed(<<"stage-text ", Rest/binary>>) ->
         _ -> none
     end;
 try_parse_prefixed(<<"stage-open ", Key/binary>>) -> {stage_relay, <<"stage-open">>, trim_binary(Key), #{}};
+%% stage-paste <key> <text>: hand Limulus a block of text to add to its
+%% buffer (a mark, as code: docs/kb/plans/the-deck.md). The key says whose.
+try_parse_prefixed(<<"stage-paste ", Rest/binary>>) ->
+    case binary:split(Rest, <<" ">>) of
+        [Key, Text] when Text =/= <<>> -> {stage_relay, <<"stage-paste">>, Key, #{text => Text}};
+        _ -> none
+    end;
 try_parse_prefixed(<<"stage-reject ", Rest/binary>>) ->
     case binary:split(Rest, <<" ">>) of
         [Key, Reason] -> {stage_relay, <<"stage-reject">>, Key, #{reason => Reason}};
