@@ -23,6 +23,11 @@
 %% downbeat and plays in beats, so it follows the tempo. Loops are never
 %% recorded: they send straight to the routes, not through the voices.
 %%
+%% A run is a stretch a machine's transport played, start to stop, told by
+%% its page (`loops-run`) or by `<machine> $ hush`: the Review surface draws
+%% only time inside runs, so a pause leaves no gap, as on a tape stopped and
+%% started again (AC, 2026-10-03).
+%%
 %% Pages are told the marks and loops whenever they change
 %% (`loops {"machine", "marks": [...]}`), and draw them; they hold no loop of
 %% their own while the rig is there. A clear also says `loops-clear`.
@@ -31,7 +36,7 @@
 
 -export([start_link/0, record/2, mark/1, play/2, hush/2, hush_all/0,
          nudge/3, place/4, reset/2, set_window/4, delete/2, target/2,
-         follow/4, clear/1, sync/0, state/0, notes_json/1]).
+         follow/4, clear/1, run/2, sync/0, state/0, notes_json/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -define(NOTES, rig_loops_notes).
@@ -86,8 +91,12 @@ target(Machine, N) -> call({target, Machine, N}).
 %% with `off` stops following one.
 follow(Machine, N, Kind, Text) -> call({follow, Machine, N, Kind, Text}).
 
-%% Empty a machine's record buffer: its notes, marks, loops and patterns.
+%% Empty a machine's record buffer: its notes, marks, loops, patterns and
+%% runs (a run still going starts again now).
 clear(Machine) -> call({clear, Machine}).
+
+%% The machine's transport started (true) or stopped (false), now.
+run(Machine, Playing) -> gen_server:cast(?MODULE, {run, Machine, Playing}).
 
 %% Tell every page the marks and loops of every machine.
 sync() -> gen_server:cast(?MODULE, sync).
@@ -97,14 +106,18 @@ state() -> call(state).
 
 %% A machine's whole record buffer, for a page that opens after the notes
 %% were played: `loops-notes {"machine", "notes": [[beat, pitch, vel,
-%% durBeats, voice], ...]}`, oldest first. Read straight from the table.
+%% durBeats, voice], ...], "runs": [[from, to | null], ...]}`, oldest first.
 notes_json(M) ->
     Notes = case ets:whereis(?NOTES) of
                 undefined -> [];
                 _ -> ets:select(?NOTES, [{{{M, '$1', '_'}, '$2', '$3', '$4', '$5'}, [],
                                           [['$1', '$2', '$3', '$4', '$5']]}])
             end,
-    Json = iolist_to_binary(json:encode(#{machine => M, notes => Notes})),
+    Runs = case call({runs, M}) of
+               Rs when is_list(Rs) -> [[F, case T of open -> null; _ -> T end] || {F, T} <- lists:reverse(Rs)];
+               _ -> []
+           end,
+    Json = iolist_to_binary(json:encode(#{machine => M, notes => Notes, runs => Runs})),
     <<"loops-notes ", Json/binary>>.
 
 call(Msg) ->
@@ -129,7 +142,7 @@ init([]) ->
     erlang:send_after(?POLL_MS, self(), tick),
     erlang:send_after(?PRUNE_MS, self(), prune),
     {ok, #{sock => Sock, marks => #{}, loops => #{}, focus => #{},
-           next => 1, cv => undefined, vrouting => VRouting}}.
+           next => 1, cv => undefined, vrouting => VRouting, runs => #{}}}.
 
 handle_call({mark, M}, _From, St) ->
     case now_beat() of
@@ -223,11 +236,18 @@ handle_call({follow, M, N0, Kind, Text}, _From, St) ->
 handle_call({clear, M}, _From, St) ->
     ets:select_delete(?NOTES, [{{{M, '_', '_'}, '_', '_', '_', '_'}, [], [true]}]),
     St1 = drop_loops(M, St),
-    St2 = St1#{marks := maps:remove(M, maps:get(marks, St1))},
+    Runs = maps:get(runs, St1),
+    Again = case {maps:get(M, Runs, []), now_beat()} of
+                {[{_, open} | _], {ok, B, _}} -> [{B, open}];
+                _ -> []
+            end,
+    St2 = St1#{marks := maps:remove(M, maps:get(marks, St1)), runs := Runs#{M => Again}},
     Json = iolist_to_binary(json:encode(#{machine => M})),
     tidal_link_anchor:sync_broadcast(<<"loops-clear ", Json/binary>>),
     announce(M, St2),
     {reply, ok, St2};
+handle_call({runs, M}, _From, St) ->
+    {reply, maps:get(M, maps:get(runs, St), []), St};
 handle_call(state, _From, St) ->
     {reply, maps:remove(sock, St#{notes => ets:info(?NOTES, size)}), St};
 handle_call(_Msg, _From, St) ->
@@ -258,6 +278,16 @@ handle_cast({place, M, Id, Kind, Bars}, St) ->
             {noreply, St1};
         _ -> {noreply, St}   % a pattern on a mark since deleted
     end;
+handle_cast({run, M, Playing}, St) ->
+    Runs = maps:get(runs, St),
+    Old = maps:get(M, Runs, []),
+    New = case {Playing, Old, now_beat()} of
+              {true, [{_, open} | _], _} -> Old;
+              {true, _, {ok, B, _}} -> [{B, open} | Old];
+              {false, [{F, open} | Rest], {ok, B, _}} -> [{F, B} | Rest];
+              _ -> Old
+          end,
+    {noreply, St#{runs := Runs#{M => New}}};
 handle_cast(sync, St) ->
     %% the two machines with a Review surface always, so a page learns the
     %% rig keeps its loops before it has a mark

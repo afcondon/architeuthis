@@ -704,6 +704,9 @@ try_parse_prefixed(<<"loops-notes ", M/binary>>) -> {loops_notes, trim_binary(M)
 try_parse_prefixed(<<"loops-record ", Json/binary>>) -> {loops_page, record, Json};
 try_parse_prefixed(<<"loops-window ", Json/binary>>) -> {loops_page, window, Json};
 try_parse_prefixed(<<"loops-delete ", Json/binary>>) -> {loops_page, delete, Json};
+%%   loops-run <json>           the machine's transport started or stopped:
+%%                              {"machine", "playing": bool}
+try_parse_prefixed(<<"loops-run ", Json/binary>>) -> {loops_page, run, Json};
 try_parse_prefixed(<<"stage-text-subscribe">>) -> {stage_text_subscribe};
 try_parse_prefixed(<<"stage-text-subscribe ", _/binary>>) -> {stage_text_subscribe};
 try_parse_prefixed(<<"stage-text-del ", Key/binary>>) -> {stage_text, trim_binary(Key), null};
@@ -1962,6 +1965,7 @@ machine_hush(Block) ->
     end.
 
 hush_machine(<<"odonus">>) ->
+    catch rig_loops:run(<<"odonus">>, false),
     catch window_patterns:clear(<<"odonus">>),
     catch rig_loops:hush(<<"odonus">>, all),
     [gen_server:cast(Pid, hush) || Pid <- odonus_voice_sup:which_voices()],
@@ -1969,6 +1973,7 @@ hush_machine(<<"odonus">>) ->
     catch tidal_stage:stopped(odonus),
     <<"OK: odonus hushed">>;
 hush_machine(<<"vetula">>) ->
+    catch rig_loops:run(<<"vetula">>, false),
     catch window_patterns:clear(<<"vetula">>),
     catch rig_loops:hush(<<"vetula">>, all),
     catch vetula_cards:stop(),
@@ -2263,6 +2268,9 @@ loops_page(What, Json) ->
                 {ok, _} -> <<"OK: loops-window">>;
                 {error, Why} -> <<"ERR: loops-window: ", Why/binary>>
             end;
+        #{<<"machine">> := M, <<"playing">> := P} when What =:= run ->
+            rig_loops:run(M, P =:= true),
+            <<"OK: loops-run">>;
         #{<<"machine">> := M, <<"n">> := N} when What =:= delete ->
             rig_loops:delete(M, N),
             <<"OK: loops-delete">>;
