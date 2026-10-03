@@ -19,6 +19,11 @@
 %% a route to `vetula N` written in the matrix turns that card to `→ odo`
 %% and any other card on it back to MIDI.
 %%
+%% What it resolves it also publishes, as the stage object `odonus/feeds`
+%% (Reef.Route.printFeeds), for a page that plays Odonus itself (Solo) and
+%% has no rig voice to follow: the page applies the same `feedInputs`, and
+%% never needs Tidal to read a card.
+%%
 %% Supervised after the stage, so a stage restart restarts this too and the
 %% subscription is never lost.
 -module(odonus_feeds).
@@ -29,6 +34,7 @@
 
 -define(ROUTES, <<"routing/harmony">>).
 -define(KEY, <<"vetula/key">>).
+-define(FEEDS, <<"odonus/feeds">>).
 
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
@@ -45,7 +51,8 @@ feeds() -> gen_server:call(?MODULE, feeds).
 
 init([]) ->
     Table = tidal_stage:text_subscribe(self()),
-    St0 = #{routes => array:new(), cards => #{}, key => {nothing}, applied => unfed()},
+    St0 = #{routes => array:new(), cards => #{}, key => {nothing}, applied => unfed(),
+            published => none},
     St = maps:fold(fun(K, #{text := T}, Acc) -> take(K, T, Acc) end, St0, Table),
     %% a voice already running (this process restarted under it) is fed afresh
     {ok, feed(St)}.
@@ -173,16 +180,30 @@ rewrite(K, Spec, Cards) ->
 odo_channel(#{term := {tOdo}, channel := Ch}) -> {ch, Ch};
 odo_channel(_) -> none.
 
-%% Send the running voice what moves it from the feeds it last took.
+%% Send the running voice what moves it from the feeds it last took, and
+%% publish them if they changed.
 feed(St) ->
     Feeds = current(St),
+    St1 = publish(Feeds, St),
     case whereis(reef_voice) of
         undefined ->
             %% nothing to feed; a voice that starts takes the lot (to_voice)
-            St#{applied => unfed()};
+            St1#{applied => unfed()};
         Pid ->
-            send(Pid, 'reef_route@ps':feedInputs(maps:get(applied, St), Feeds)),
-            St#{applied => Feeds}
+            send(Pid, 'reef_route@ps':feedInputs(maps:get(applied, St1), Feeds)),
+            St1#{applied => Feeds}
+    end.
+
+publish(Feeds, St) ->
+    case maps:get(published, St) of
+        Feeds -> St;
+        _ ->
+            Text = case 'reef_route@ps':printFeeds(Feeds) of
+                       <<>> -> null;
+                       T -> T
+                   end,
+            tidal_stage:put_text(?FEEDS, Text, rig),
+            St#{published => Feeds}
     end.
 
 send(Pid, Inputs) ->
