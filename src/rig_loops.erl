@@ -6,11 +6,14 @@
 %% velocity, gate and the voice that made each one), timed in Link beats. The
 %% rig records what its own voices send (reef_voice for Odonus, vetula_cards
 %% for Vetula); a page playing in Solo uploads what it plays (`loops-record`).
-%% Session-only: it is gone when the rig restarts, and notes older than
-%% ?RETAIN_MIN minutes go unless a mark's window holds them.
+%% Session-only: it is gone when the rig restarts or the machine is cleared
+%% (`odonus $ clear`), and notes older than ?RETAIN_MIN minutes go unless a
+%% mark's window holds them.
 %%
-%% A mark is a point in the record buffer, numbered from 1 in the order made,
-%% so `loop 2` always means the same mark. Its window (the stretch a loop on
+%% A mark is a point in the record buffer. Marks are numbered by position
+%% among those there now, from 1, oldest first (AC, 2026-10-03), so after a
+%% delete or a clear the numbers close up; inside, each keeps an id, which
+%% its loop and its window patterns follow. Its window (the stretch a loop on
 %% it plays) starts as the bar the mark falls in and the bar before it, and
 %% moves with slide / widen / narrow, by hand on the Review surface or by a
 %% pattern (window_patterns).
@@ -22,13 +25,13 @@
 %%
 %% Pages are told the marks and loops whenever they change
 %% (`loops {"machine", "marks": [...]}`), and draw them; they hold no loop of
-%% their own while the rig is there.
+%% their own while the rig is there. A clear also says `loops-clear`.
 -module(rig_loops).
 -behaviour(gen_server).
 
 -export([start_link/0, record/2, mark/1, play/2, hush/2, hush_all/0,
          nudge/3, place/4, reset/2, set_window/4, delete/2, target/2,
-         sync/0, state/0, notes_json/1]).
+         follow/4, clear/1, sync/0, state/0, notes_json/1]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -define(NOTES, rig_loops_notes).
@@ -42,14 +45,17 @@
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
+%% Every N below is a mark's number (its position, from 1); 0 asks for the
+%% default. Replies give the number acted on: {ok, N} or {error, Why}.
+
 %% Notes a voice (or a Solo page) has sent: [{AtUs, Pitch, Vel, DurMs, Voice}].
 record(_Machine, []) -> ok;
 record(Machine, Notes) -> gen_server:cast(?MODULE, {record, Machine, Notes}).
 
-%% A mark now: {ok, N} or {error, Why}.
+%% A mark now.
 mark(Machine) -> call({mark, Machine}).
 
-%% Loop mark N (0: the latest) from the next downbeat: {ok, N} or {error, Why}.
+%% Loop mark N (0: the latest) from the next downbeat.
 play(Machine, N) -> call({play, Machine, N}).
 
 %% Stop loop N, or with `all` every loop of the machine.
@@ -59,11 +65,12 @@ hush_all() -> call(hush_all).
 %% Move loop N's window by bars: {slide, Bars} or {widen, Bars}.
 nudge(Machine, N, Move) -> call({nudge, Machine, N, Move}).
 
-%% Place loop N's window from where its mark made it, Bars bars on: Kind is
-%% <<"slide">> (the start) or <<"widen">> (the length beyond the original).
-place(Machine, N, Kind, Bars) -> gen_server:cast(?MODULE, {place, Machine, N, Kind, Bars}).
+%% From window_patterns: place mark `Id`'s window from where it was made,
+%% Bars bars on: Kind is <<"slide">> (the start) or <<"widen">> (the length
+%% beyond the original).
+place(Machine, Id, Kind, Bars) -> gen_server:cast(?MODULE, {place, Machine, Id, Kind, Bars}).
 
-%% Loop N's window back where its mark made it.
+%% Loop N's window back where its mark made it, its patterns dropped.
 reset(Machine, N) -> call({reset, Machine, N}).
 
 %% Mark N's window, in beats, as a page drew it.
@@ -74,6 +81,13 @@ delete(Machine, N) -> call({delete, Machine, N}).
 %% Which mark a window cue with no number acts on: the loop started last, else
 %% the latest mark. 0 asks for that; any other N is itself, if it exists.
 target(Machine, N) -> call({target, Machine, N}).
+
+%% Loop N's window follows a pattern (Kind <<"slide">> | <<"widen">>), or
+%% with `off` stops following one.
+follow(Machine, N, Kind, Text) -> call({follow, Machine, N, Kind, Text}).
+
+%% Empty a machine's record buffer: its notes, marks, loops and patterns.
+clear(Machine) -> call({clear, Machine}).
 
 %% Tell every page the marks and loops of every machine.
 sync() -> gen_server:cast(?MODULE, sync).
@@ -115,52 +129,49 @@ init([]) ->
     erlang:send_after(?POLL_MS, self(), tick),
     erlang:send_after(?PRUNE_MS, self(), prune),
     {ok, #{sock => Sock, marks => #{}, loops => #{}, focus => #{},
-           next => #{}, cv => undefined, vrouting => VRouting}}.
+           next => 1, cv => undefined, vrouting => VRouting}}.
 
 handle_call({mark, M}, _From, St) ->
     case now_beat() of
         {ok, B, _} ->
-            N = maps:get(M, maps:get(next, St), 1),
+            Id = maps:get(next, St),
             Bar = floor(B / ?BAR) * ?BAR,
-            Mk = #{n => N, beat => B, us => erlang:system_time(microsecond),
+            Mk = #{id => Id, beat => B, us => erlang:system_time(microsecond),
                    from => Bar - ?BAR, to => Bar + ?BAR,
                    origin => {Bar - ?BAR, Bar + ?BAR}},
-            St1 = put_mark(M, Mk, St#{next := (maps:get(next, St))#{M => N + 1}}),
+            St1 = put_mark(M, Mk, St#{next := Id + 1}),
             announce(M, St1),
-            {reply, {ok, N}, St1};
+            {reply, {ok, number(M, Id, St1)}, St1};
         Err -> {reply, Err, St}
     end;
 handle_call({play, M, N0}, _From, St) ->
-    case resolve(M, N0, St, latest) of
-        {ok, N} ->
-            case now_beat() of
-                {ok, B, _} ->
-                    Key = {M, N},
-                    Loops = maps:get(loops, St),
-                    St1 = case maps:is_key(Key, Loops) of
-                              true -> St;
-                              false ->
-                                  Start = ceil(B / ?BAR) * ?BAR,
-                                  St#{loops := Loops#{Key => #{start => Start, until => Start}}}
-                          end,
-                    St2 = St1#{focus := (maps:get(focus, St1))#{M => N}},
-                    announce(M, St2),
-                    {reply, {ok, N}, St2};
-                Err -> {reply, Err, St}
-            end;
-        Err -> {reply, Err, St}
+    case {resolve(M, N0, St, latest), now_beat()} of
+        {{ok, Id}, {ok, B, _}} ->
+            Key = {M, Id},
+            Loops = maps:get(loops, St),
+            St1 = case maps:is_key(Key, Loops) of
+                      true -> St;
+                      false ->
+                          Start = ceil(B / ?BAR) * ?BAR,
+                          St#{loops := Loops#{Key => #{start => Start, until => Start}}}
+                  end,
+            St2 = St1#{focus := (maps:get(focus, St1))#{M => Id}},
+            announce(M, St2),
+            {reply, {ok, number(M, Id, St2)}, St2};
+        {{ok, _}, Err} -> {reply, Err, St};
+        {Err, _} -> {reply, Err, St}
     end;
 handle_call({hush, M, all}, _From, St) ->
-    Loops = maps:filter(fun({Mc, _}, _) -> Mc =/= M end, maps:get(loops, St)),
-    St1 = St#{loops := Loops, focus := maps:remove(M, maps:get(focus, St))},
+    St1 = drop_loops(M, St),
     announce(M, St1),
     {reply, ok, St1};
 handle_call({hush, M, N0}, _From, St) ->
     case resolve(M, N0, St, focus) of
-        {ok, N} ->
-            St1 = unfocus(M, N, St#{loops := maps:remove({M, N}, maps:get(loops, St))}),
+        {ok, Id} ->
+            catch window_patterns:clear({M, Id}),
+            St1 = unfocus(M, Id, St#{loops := maps:remove({M, Id}, maps:get(loops, St))}),
             announce(M, St1),
-            {reply, {ok, N}, St1};
+            {reply, {ok, number(M, Id, St1)}, St1};
         Err -> {reply, Err, St}
     end;
 handle_call(hush_all, _From, St) ->
@@ -177,20 +188,46 @@ handle_call({nudge, M, N0, Move}, _From, St) ->
         end
     end);
 handle_call({reset, M, N0}, _From, St) ->
+    case resolve(M, N0, St, focus) of
+        {ok, Id} -> catch window_patterns:clear({M, Id});
+        _ -> ok
+    end,
     with_mark(M, N0, St, fun(Mk = #{origin := {F, T}}) -> Mk#{from := F, to := T} end);
 handle_call({set_window, M, N, F, T}, _From, St) when T > F ->
     with_mark(M, N, St, fun(Mk) -> Mk#{from := F, to := T} end);
 handle_call({set_window, _, _, _, _}, _From, St) ->
     {reply, {error, <<"a window must end after it starts">>}, St};
 handle_call({delete, M, N}, _From, St) ->
-    Marks = [Mk || Mk = #{n := K} <- maps:get(M, maps:get(marks, St), []), K =/= N],
-    St1 = unfocus(M, N, St#{marks := (maps:get(marks, St))#{M => Marks},
-                            loops := maps:remove({M, N}, maps:get(loops, St))}),
-    catch window_patterns:clear({M, N}),
-    announce(M, St1),
-    {reply, ok, St1};
+    case resolve(M, N, St, focus) of
+        {ok, Id} ->
+            Marks = [Mk || Mk = #{id := K} <- marks_of(M, St), K =/= Id],
+            St1 = unfocus(M, Id, St#{marks := (maps:get(marks, St))#{M => Marks},
+                                     loops := maps:remove({M, Id}, maps:get(loops, St))}),
+            catch window_patterns:clear({M, Id}),
+            announce(M, St1),
+            {reply, {ok, N}, St1};
+        Err -> {reply, Err, St}
+    end;
 handle_call({target, M, N}, _From, St) ->
-    {reply, resolve(M, N, St, focus), St};
+    case resolve(M, N, St, focus) of
+        {ok, Id} -> {reply, {ok, number(M, Id, St)}, St};
+        Err -> {reply, Err, St}
+    end;
+handle_call({follow, M, N0, Kind, Text}, _From, St) ->
+    case resolve(M, N0, St, focus) of
+        {ok, Id} ->
+            window_patterns:set({M, Id}, Kind, Text),
+            {reply, {ok, number(M, Id, St)}, St};
+        Err -> {reply, Err, St}
+    end;
+handle_call({clear, M}, _From, St) ->
+    ets:select_delete(?NOTES, [{{{M, '_', '_'}, '_', '_', '_', '_'}, [], [true]}]),
+    St1 = drop_loops(M, St),
+    St2 = St1#{marks := maps:remove(M, maps:get(marks, St1))},
+    Json = iolist_to_binary(json:encode(#{machine => M})),
+    tidal_link_anchor:sync_broadcast(<<"loops-clear ", Json/binary>>),
+    announce(M, St2),
+    {reply, ok, St2};
 handle_call(state, _From, St) ->
     {reply, maps:remove(sock, St#{notes => ets:info(?NOTES, size)}), St};
 handle_call(_Msg, _From, St) ->
@@ -209,14 +246,18 @@ handle_cast({record, M, Notes}, St) ->
         _ -> ok   % no Link, no beats to keep them by
     end,
     {noreply, St};
-handle_cast({place, M, N, Kind, Bars}, St) ->
-    {reply, _, St1} = with_mark(M, N, St, fun(Mk = #{from := F, to := T, origin := {OF, OT}}) ->
-        case Kind of
-            <<"slide">> -> Start = OF + Bars * ?BAR, Mk#{from := Start, to := Start + (T - F)};
-            <<"widen">> -> Mk#{to := F + max(1.0, (OT - OF) + Bars * ?BAR)}
-        end
-    end),
-    {noreply, St1};
+handle_cast({place, M, Id, Kind, Bars}, St) ->
+    case [Mk || Mk = #{id := K} <- marks_of(M, St), K =:= Id] of
+        [Mk = #{from := F, to := T, origin := {OF, OT}}] ->
+            Mk1 = case Kind of
+                      <<"slide">> -> Start = OF + Bars * ?BAR, Mk#{from := Start, to := Start + (T - F)};
+                      <<"widen">> -> Mk#{to := F + max(1.0, (OT - OF) + Bars * ?BAR)}
+                  end,
+            St1 = put_mark(M, Mk1, St),
+            announce(M, St1),
+            {noreply, St1};
+        _ -> {noreply, St}   % a pattern on a mark since deleted
+    end;
 handle_cast(sync, St) ->
     %% the two machines with a Review surface always, so a page learns the
     %% rig keeps its loops before it has a mark
@@ -276,43 +317,57 @@ now_beat() ->
 
 marks_of(M, St) -> maps:get(M, maps:get(marks, St), []).
 
-put_mark(M, Mk = #{n := N}, St) ->
-    Others = [O || O = #{n := K} <- marks_of(M, St), K =/= N],
-    Marks = lists:sort(fun(#{n := A}, #{n := B}) -> A >= B end, [Mk | Others]),
+%% A mark's number: its position among the machine's marks, oldest first.
+number(M, Id, St) ->
+    Ids = lists:sort([K || #{id := K} <- marks_of(M, St)]),
+    length(lists:takewhile(fun(K) -> K =/= Id end, Ids)) + 1.
+
+put_mark(M, Mk = #{id := Id}, St) ->
+    Others = [O || O = #{id := K} <- marks_of(M, St), K =/= Id],
+    Marks = lists:sort(fun(#{id := A}, #{id := B}) -> A >= B end, [Mk | Others]),
     St#{marks := (maps:get(marks, St))#{M => Marks}}.
 
-%% Mark N as asked: 0 is the latest (Default = latest) or the loop started
-%% last, else the latest (Default = focus).
+%% The id of mark N as asked: 0 is the latest (Default = latest) or the loop
+%% started last, else the latest (Default = focus).
 resolve(M, 0, St, Default) ->
     Focus = case Default of
                 focus -> maps:find(M, maps:get(focus, St));
                 latest -> error
             end,
     case {Focus, marks_of(M, St)} of
-        {{ok, N}, _} -> {ok, N};
-        {error, [#{n := N} | _]} -> {ok, N};
+        {{ok, Id}, _} -> {ok, Id};
+        {error, [#{id := Id} | _]} -> {ok, Id};
         {error, []} -> {error, <<"no marks yet: mark one first">>}
     end;
-resolve(M, N, St, _) ->
-    case [K || #{n := K} <- marks_of(M, St), K =:= N] of
-        [_] -> {ok, N};
-        [] -> {error, iolist_to_binary(io_lib:format("there is no mark ~p", [N]))}
-    end.
+resolve(M, N, St, _) when is_integer(N), N > 0 ->
+    Ids = lists:sort([K || #{id := K} <- marks_of(M, St)]),
+    case N =< length(Ids) of
+        true -> {ok, lists:nth(N, Ids)};
+        false -> {error, iolist_to_binary(io_lib:format("there is no mark ~p (~p marked)", [N, length(Ids)]))}
+    end;
+resolve(_, N, _, _) ->
+    {error, iolist_to_binary(io_lib:format("there is no mark ~p", [N]))}.
 
 with_mark(M, N0, St, F) ->
     case resolve(M, N0, St, focus) of
-        {ok, N} ->
-            [Mk] = [X || X = #{n := K} <- marks_of(M, St), K =:= N],
+        {ok, Id} ->
+            [Mk] = [X || X = #{id := K} <- marks_of(M, St), K =:= Id],
             St1 = put_mark(M, F(Mk), St),
             announce(M, St1),
-            {reply, {ok, N}, St1};
+            {reply, {ok, number(M, Id, St1)}, St1};
         Err -> {reply, Err, St}
     end.
 
-unfocus(M, N, St) ->
+%% Stop every loop of a machine, and its window patterns.
+drop_loops(M, St) ->
+    catch window_patterns:clear(M),
+    Loops = maps:filter(fun({Mc, _}, _) -> Mc =/= M end, maps:get(loops, St)),
+    St#{loops := Loops, focus := maps:remove(M, maps:get(focus, St))}.
+
+unfocus(M, Id, St) ->
     Focus = maps:get(focus, St),
     case maps:find(M, Focus) of
-        {ok, N} ->
+        {ok, Id} ->
             %% the focus falls to another loop of the machine still playing
             case [K || {Mc, K} <- maps:keys(maps:get(loops, St)), Mc =:= M] of
                 [] -> St#{focus := maps:remove(M, Focus)};
@@ -321,19 +376,20 @@ unfocus(M, N, St) ->
         _ -> St
     end.
 
-%% `loops {"machine": M, "marks": [...]}`, newest first, to every page.
+%% `loops {"machine": M, "marks": [...]}`, newest first, to every page: each
+%% with its number (`n`) and its id, which a page follows it by.
 announce(M, St) ->
     Loops = maps:get(loops, St),
     Marks = [begin
                  {OF, OT} = maps:get(origin, Mk),
-                 Base = #{n => N, beat => B, us => maps:get(us, Mk),
+                 Base = #{id => Id, n => number(M, Id, St), beat => B, us => maps:get(us, Mk),
                           from => maps:get(from, Mk), to => maps:get(to, Mk),
                           originFrom => OF, originTo => OT},
-                 case maps:find({M, N}, Loops) of
+                 case maps:find({M, Id}, Loops) of
                      {ok, #{start := S}} -> Base#{playing => true, start => S};
                      error -> Base#{playing => false, start => null}
                  end
-             end || Mk = #{n := N, beat := B} <- marks_of(M, St)],
+             end || Mk = #{id := Id, beat := B} <- marks_of(M, St)],
     Json = iolist_to_binary(json:encode(#{machine => M, marks => Marks})),
     tidal_link_anchor:sync_broadcast(<<"loops ", Json/binary>>).
 
@@ -342,8 +398,8 @@ announce(M, St) ->
 %% From + ((L - S) mod Len), its window as it stands now.
 play_loops(St, Horizon, Anchor) ->
     Loops = maps:map(
-              fun({M, N}, L = #{start := S, until := U}) ->
-                      case [Mk || Mk = #{n := K} <- marks_of(M, St), K =:= N] of
+              fun({M, Id}, L = #{start := S, until := U}) ->
+                      case [Mk || Mk = #{id := K} <- marks_of(M, St), K =:= Id] of
                           [#{from := F, to := T}] when Horizon > S, Horizon > U ->
                               Lo = max(U, S),
                               Len = T - F,

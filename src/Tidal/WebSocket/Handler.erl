@@ -2041,14 +2041,14 @@ machine_statement(Block) ->
             case review_cue(Line) of
                 none ->
                     case cue_word(Line) of
-                        true -> <<"ERR: odonus: a cue line is mark, loop [N] [hush], reset, slide / widen / narrow N or \"PATTERN\" or off, chained with # (moves go on a line of their own)">>;
+                        true -> <<"ERR: odonus: a cue line is mark, loop [N] [hush], reset, clear, slide / widen / narrow N or \"PATTERN\" or off, chained with # (moves go on a line of their own)">>;
                         false -> odonus_line(Line)
                     end;
                 {M, Cues} -> run_cues(M, Cues)
             end;
         <<"vetula", _/binary>> = Line ->
             case review_cue(Line) of
-                none -> <<"ERR: vetula: a vetula line is a cue (mark, loop [N] [hush], slide / widen / narrow, reset); a voice is v3 $ ... (Limulus writes voices to the stage)">>;
+                none -> <<"ERR: vetula: a vetula line is a cue (mark, loop [N] [hush], slide / widen / narrow, reset, clear); a voice is v3 $ ... (Limulus writes voices to the stage)">>;
                 {M, Cues} -> run_cues(M, Cues)
             end;
         <<"drums", Rest/binary>> -> drums_line(Rest);
@@ -2093,6 +2093,8 @@ drums_line(Rest) ->
 %%   odonus $ widen 2         move its end later by bars; narrow N, earlier
 %%   odonus $ slide "<0 -1>"  follow a pattern (window_patterns); slide off
 %%   odonus $ reset           window back at its mark, patterns dropped
+%%   odonus $ clear           empty the record buffer: notes, marks, loops
+%% Marks are numbered by position among those there now, oldest first.
 %% Cues chain with #, and a window cue acts on the loop the chain names
 %% (`loop 2 # slide "<0 -1>"`), else on the loop started last, else on the
 %% latest mark.
@@ -2117,7 +2119,7 @@ cue_word(Line) ->
     case binary:split(Line, <<"$">>) of
         [_, Rest] ->
             case binary:split(string:trim(Rest), [<<" ">>, <<"#">>]) of
-                [W | _] -> lists:member(W, [<<"mark">>, <<"loop">>, <<"slide">>, <<"widen">>, <<"narrow">>, <<"reset">>]);
+                [W | _] -> lists:member(W, [<<"mark">>, <<"loop">>, <<"slide">>, <<"widen">>, <<"narrow">>, <<"reset">>, <<"clear">>]);
                 _ -> false
             end;
         _ -> false
@@ -2143,6 +2145,7 @@ one_cue(Body) ->
         <<"loop off">> -> {loop_hush, all};
         <<"loop hush">> -> {loop_hush, all};
         <<"reset">> -> reset;
+        <<"clear">> -> clear;
         <<"slide", By/binary>> -> window_cue(slide, By);
         <<"widen", By/binary>> -> window_cue(widen, By);
         <<"narrow", By/binary>> -> window_cue(narrow, By);
@@ -2206,16 +2209,12 @@ run_cue(M, {loop_hush, all}, T) ->
     {T, say(M, "every loop hushed, window patterns dropped")};
 run_cue(M, {loop_hush, N0}, T) ->
     case rig_loops:hush(M, N0) of
-        {ok, N} ->
-            catch window_patterns:clear({M, N}),
-            {T, say(M, io_lib:format("loop ~p hushed", [N]))};
+        {ok, N} -> {T, say(M, io_lib:format("loop ~p hushed", [N]))};
         Err -> {T, err(M, Err)}
     end;
 run_cue(M, reset, T) ->
     case rig_loops:reset(M, T) of
-        {ok, N} ->
-            catch window_patterns:clear({M, N}),
-            {N, say(M, io_lib:format("loop ~p back at its mark, patterns dropped", [N]))};
+        {ok, N} -> {N, say(M, io_lib:format("loop ~p back at its mark, patterns dropped", [N]))};
         Err -> {T, err(M, Err)}
     end;
 run_cue(M, {nudge, Kind, By}, T) ->
@@ -2230,19 +2229,24 @@ run_cue(M, {nudge, Kind, By}, T) ->
     end;
 run_cue(M, {pattern, Kind, Text}, T) ->
     K = atom_to_binary(Kind),
-    case rig_loops:target(M, T) of
-        {ok, N} when Text =:= off ->
-            window_patterns:set({M, N}, K, off),
-            {N, say(M, io_lib:format("loop ~p: ~s follows no pattern", [N, K]))};
-        {ok, N} ->
-            case 'tidal_window@ps':checkWindow(Text) of
-                {left, Why} -> {N, <<"ERR: ", M/binary, ": ", Why/binary>>};
-                {right, _} ->
-                    window_patterns:set({M, N}, K, Text),
-                    {N, say(M, io_lib:format("loop ~p: ~s follows \"~s\" (bars from the mark, each beat)", [N, K, Text]))}
-            end;
-        Err -> {T, err(M, Err)}
-    end.
+    Checked = case Text of
+                  off -> {right, off};
+                  _ -> 'tidal_window@ps':checkWindow(Text)
+              end,
+    case Checked of
+        {left, Why} -> {T, <<"ERR: ", M/binary, ": ", Why/binary>>};
+        {right, _} ->
+            case rig_loops:follow(M, T, K, Text) of
+                {ok, N} when Text =:= off ->
+                    {N, say(M, io_lib:format("loop ~p: ~s follows no pattern", [N, K]))};
+                {ok, N} ->
+                    {N, say(M, io_lib:format("loop ~p: ~s follows \"~s\" (bars from the mark, each beat)", [N, K, Text]))};
+                Err -> {T, err(M, Err)}
+            end
+    end;
+run_cue(M, clear, _T) ->
+    rig_loops:clear(M),
+    {0, say(M, "cleared: its record buffer, marks, loops and window patterns")}.
 
 say(M, Io) -> iolist_to_binary([<<"OK: ">>, M, <<" ">>, Io]).
 err(M, {error, Why}) -> iolist_to_binary([<<"ERR: ">>, M, <<": ">>, Why]).
