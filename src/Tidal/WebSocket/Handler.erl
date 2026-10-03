@@ -2041,6 +2041,14 @@ starts_word(Line, Head) ->
     end.
 
 machine_statement(Block) ->
+    %% `<machine> $ hush` is a statement like any other: with a comment after
+    %% it, or among others in a block
+    case machine_hush(Block) of
+        {hush, Machine} -> hush_machine(Machine);
+        none -> machine_statement_(Block)
+    end.
+
+machine_statement_(Block) ->
     case string:trim(Block, leading) of
         <<"odonus", _/binary>> = Line ->
             case review_cue(Line) of
