@@ -2015,6 +2015,9 @@ drums_line(Rest) ->
 %%   odonus $ loop 2      loop mark 2 (counting from 1) on the Review surface
 %%   odonus $ loop        loop the latest mark
 %%   odonus $ loop off    stop the loop
+%%   odonus $ slide -1    move the loop window by bars (a fraction is fine)
+%%   odonus $ widen 2     move its end later by bars; narrow N, earlier
+%%                        (each acts on the mark looping, else the latest)
 %% The marks and their notes live in the page, so the rig only relays the cue
 %% to every page (`cue <json>`), and the page of that machine acts on it.
 review_cue(Line) ->
@@ -2028,6 +2031,9 @@ review_cue(Line) ->
                 <<"mark">> -> {Head, #{cue => <<"mark">>}};
                 <<"loop">> -> {Head, #{cue => <<"loop">>, n => 0}};
                 <<"loop off">> -> {Head, #{cue => <<"stop">>}};
+                <<"slide", By/binary>> -> window_cue(Head, <<"slide">>, By);
+                <<"widen", By/binary>> -> window_cue(Head, <<"widen">>, By);
+                <<"narrow", By/binary>> -> window_cue(Head, <<"narrow">>, By);
                 <<"loop ", N/binary>> ->
                     case string:to_integer(string:trim(N)) of
                         {I, <<>>} when I >= 1 -> {Head, #{cue => <<"loop">>, n => I}};
@@ -2038,6 +2044,17 @@ review_cue(Line) ->
         _ -> none
     end.
 
+%% A window cue's count of bars: a number, default 1.
+window_cue(Head, Kind, ByBin) ->
+    case string:trim(ByBin) of
+        <<>> -> {Head, #{cue => Kind, by => 1.0}};
+        B ->
+            case parse_number(B) of
+                {ok, N} -> {Head, #{cue => Kind, by => N}};
+                error -> none
+            end
+    end.
+
 send_cue({Slot, Cue}) ->
     Json = iolist_to_binary(json:encode(Cue#{slot => Slot})),
     tidal_link_anchor:sync_broadcast(<<"cue ", Json/binary>>),
@@ -2045,7 +2062,8 @@ send_cue({Slot, Cue}) ->
               #{cue := <<"mark">>} -> <<"mark dropped">>;
               #{cue := <<"loop">>, n := 0} -> <<"looping the latest mark">>;
               #{cue := <<"loop">>, n := N} -> iolist_to_binary(io_lib:format("looping mark ~p", [N]));
-              #{cue := <<"stop">>} -> <<"loop stopped">>
+              #{cue := <<"stop">>} -> <<"loop stopped">>;
+              #{cue := K, by := By} -> iolist_to_binary(io_lib:format("~s ~p bars", [K, By]))
           end,
     <<"OK: ", Slot/binary, " ", Say/binary, " (on its Review surface, if the page is open)">>.
 
