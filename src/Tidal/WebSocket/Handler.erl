@@ -687,6 +687,10 @@ try_parse_prefixed(<<"stage-put ", Rest/binary>>) ->
 %%   stage-text-del <key>        delete it
 %%   stage-open <key>            ask an editor (Limulus) to show it
 %%   stage-reject <key> <reason> the owner could not read a write
+%% odonus-sample <json>: a page playing Odonus itself (Solo) asks the rig, the
+%% only reader of Tidal, to sample its patterns for steps ahead; see
+%% odonus_samples/1.
+try_parse_prefixed(<<"odonus-sample ", Json/binary>>) -> {odonus_sample, Json};
 try_parse_prefixed(<<"stage-text-subscribe">>) -> {stage_text_subscribe};
 try_parse_prefixed(<<"stage-text-subscribe ", _/binary>>) -> {stage_text_subscribe};
 try_parse_prefixed(<<"stage-text-del ", Key/binary>>) -> {stage_text, trim_binary(Key), null};
@@ -936,6 +940,8 @@ handle_pattern_message(Text, State) ->
         {stage_subscribe} ->
             tidal_stage:subscribe(self()),
             {reply, {text, <<"OK: stage-subscribe">>}, State};
+        {odonus_sample, Json} ->
+            {reply, {text, odonus_samples(Json)}, State};
         {stage_text_subscribe} ->
             Table = tidal_stage:text_subscribe(self()),
             Json = iolist_to_binary(json:encode(Table)),
@@ -2035,6 +2041,45 @@ send_cue({Slot, Cue}) ->
               #{cue := <<"stop">>} -> <<"loop stopped">>
           end,
     <<"OK: ", Slot/binary, " ", Say/binary, " (on its Review surface, if the page is open)">>.
+
+%% Odonus's patterns sampled for a page that plays it itself (Solo), as
+%% reef_voice samples them for its own voice: the same samplers, at the same
+%% place in the cycle (step N is N * quarters sixteenths of a four-beat
+%% cycle), through the same Reef.Engine.samplePatterns. The request:
+%%   {"key": K, "from": N, "count": C, "quarters": Q,
+%%    "harmony": T|null, "scale": T|null, "outScale": {"pattern": T, "root": R}|null}
+%% The reply, to that page alone, one SetSampled a step from N:
+%%   odonus-samples {"key": K, "from": N, "inputs": [<input>, ...]}
+odonus_samples(Json) ->
+    try json:decode(Json) of
+        #{<<"from">> := From, <<"count">> := Count, <<"quarters">> := Q} = Req
+          when is_integer(From), is_integer(Count), Count > 0, Count =< 256, is_integer(Q) ->
+            Opt = fun(K) -> case maps:get(K, Req, null) of
+                                null -> {nothing};
+                                V -> {just, V}
+                            end
+                  end,
+            Out = case maps:get(<<"outScale">>, Req, null) of
+                      #{<<"pattern">> := P, <<"root">> := R} -> {just, #{pattern => P, root => R}};
+                      _ -> {nothing}
+                  end,
+            Patterns = #{harmony => Opt(<<"harmony">>), scale => Opt(<<"scale">>), outScale => Out},
+            Inputs = [begin
+                          Pos = Step * Q,
+                          H = fun(T) -> 'tidal_harmony@ps':harmonySampler(Pos, 16, T) end,
+                          S = fun(T) -> 'tidal_scales@ps':scaleSampler(Pos, 16, T) end,
+                          'reef_protocol@ps':encodeInput(('reef_engine@ps':samplePatterns(H, S, Patterns)))
+                      end || Step <- lists:seq(From, From + Count - 1)],
+            Key = json:encode(maps:get(<<"key">>, Req, <<>>)),
+            iolist_to_binary([<<"odonus-samples {\"key\":">>, Key,
+                              <<",\"from\":">>, integer_to_binary(From),
+                              <<",\"inputs\":[">>, lists:join(<<",">>, Inputs), <<"]}">>]);
+        _ ->
+            <<"ERR: odonus-sample: want {key, from, count (1-256), quarters, harmony, scale, outScale}">>
+    catch
+        Class:Why ->
+            iolist_to_binary(io_lib:format("ERR: odonus-sample: ~p:~p", [Class, Why]))
+    end.
 
 %% A move on the Odonus voice: parsed by the shared Reef.Move, applied by
 %% reef_voice on its next step (and restored after n bars, for `for n`).
