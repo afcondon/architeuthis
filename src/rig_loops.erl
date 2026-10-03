@@ -28,15 +28,23 @@
 %% only time inside runs, so a pause leaves no gap, as on a tape stopped and
 %% started again (AC, 2026-10-03).
 %%
+%% A cut deletes the notes of a stretch from the record buffer and slices
+%% the stretch out of the drawing, leaving a seam, as a pause does; it stops
+%% at a mark's window, so no loop loses material. `trim` cuts everything
+%% outside the marks' windows and a bar either side. `undo` puts back the
+%% last cut or trim. After any of them the pages are sent
+%% and take the record buffer again (`loops-notes`, edited).
+%%
 %% Pages are told the marks and loops whenever they change
 %% (`loops {"machine", "marks": [...]}`), and draw them; they hold no loop of
 %% their own while the rig is there. A clear also says `loops-clear`.
 -module(rig_loops).
 -behaviour(gen_server).
 
--export([start_link/0, record/2, mark/1, play/2, hush/2, hush_all/0,
+-export([start_link/0, record/2, mark/1, play/2, play_pattern/2, hush/2, hush_all/0,
          nudge/3, place/4, reset/2, set_window/4, delete/2, target/2,
-         follow/4, clear/1, run/2, sync/0, state/0, notes_json/1]).
+         follow/4, clear/1, run/2, cut/3, trim/1, undo/1,
+         sync/0, state/0, notes_json/1, notes_json/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -define(NOTES, rig_loops_notes).
@@ -62,6 +70,11 @@ mark(Machine) -> call({mark, Machine}).
 
 %% Loop mark N (0: the latest) from the next downbeat.
 play(Machine, N) -> call({play, Machine, N}).
+
+%% Loop the marks a pattern of their numbers gives (`loop "<1 2>"`, a cycle
+%% a bar), from the next downbeat; one such loop a machine, replaced by the
+%% next. {ok, Text} or {error, Why}.
+play_pattern(Machine, Text) -> call({play_pattern, Machine, Text}).
 
 %% Stop loop N, or with `all` every loop of the machine.
 hush(Machine, Which) -> call({hush, Machine, Which}).
@@ -95,6 +108,12 @@ follow(Machine, N, Kind, Text) -> call({follow, Machine, N, Kind, Text}).
 %% runs (a run still going starts again now).
 clear(Machine) -> call({clear, Machine}).
 
+%% Cut Link beats [From, To) out of the record buffer, or trim to the marks'
+%% windows, or undo the last of either: {ok, Say} or {error, Why}.
+cut(Machine, From, To) -> call({cut, Machine, From, To}).
+trim(Machine) -> call({trim, Machine}).
+undo(Machine) -> call({undo, Machine}).
+
 %% The machine's transport started (true) or stopped (false), now.
 run(Machine, Playing) -> gen_server:cast(?MODULE, {run, Machine, Playing}).
 
@@ -107,17 +126,22 @@ state() -> call(state).
 %% A machine's whole record buffer, for a page that opens after the notes
 %% were played: `loops-notes {"machine", "notes": [[beat, pitch, vel,
 %% durBeats, voice], ...], "runs": [[from, to | null], ...]}`, oldest first.
-notes_json(M) ->
+notes_json(M) -> notes_json(M, false).
+
+%% Edited: sent to every page after a cut, trim or undo, which take it whole.
+notes_json(M, Edited) ->
     Notes = case ets:whereis(?NOTES) of
                 undefined -> [];
                 _ -> ets:select(?NOTES, [{{{M, '$1', '_'}, '$2', '$3', '$4', '$5'}, [],
                                           [['$1', '$2', '$3', '$4', '$5']]}])
             end,
-    Runs = case call({runs, M}) of
-               Rs when is_list(Rs) -> [[F, case T of open -> null; _ -> T end] || {F, T} <- lists:reverse(Rs)];
-               _ -> []
-           end,
-    Json = iolist_to_binary(json:encode(#{machine => M, notes => Notes, runs => Runs})),
+    {Runs, Cuts} = case call({runs, M}) of
+                       {Rs, Cs} when is_list(Rs) ->
+                           {[[F, case T of open -> null; _ -> T end] || {F, T} <- lists:reverse(Rs)],
+                            [[A, B] || {A, B} <- Cs]};
+                       _ -> {[], []}
+                   end,
+    Json = iolist_to_binary(json:encode(#{machine => M, notes => Notes, runs => Runs, cuts => Cuts, edited => Edited})),
     <<"loops-notes ", Json/binary>>.
 
 call(Msg) ->
@@ -142,7 +166,8 @@ init([]) ->
     erlang:send_after(?POLL_MS, self(), tick),
     erlang:send_after(?PRUNE_MS, self(), prune),
     {ok, #{sock => Sock, marks => #{}, loops => #{}, focus => #{},
-           next => 1, cv => undefined, vrouting => VRouting, runs => #{}}}.
+           next => 1, cv => undefined, vrouting => VRouting, runs => #{},
+           cuts => #{}, undo => #{}}}.
 
 handle_call({mark, M}, _From, St) ->
     case now_beat() of
@@ -173,6 +198,16 @@ handle_call({play, M, N0}, _From, St) ->
             {reply, {ok, number(M, Id, St2)}, St2};
         {{ok, _}, Err} -> {reply, Err, St};
         {Err, _} -> {reply, Err, St}
+    end;
+handle_call({play_pattern, M, Text}, _From, St) ->
+    case now_beat() of
+        {ok, B, _} ->
+            Start = ceil(B / ?BAR) * ?BAR,
+            Loops = maps:get(loops, St),
+            St1 = St#{loops := Loops#{{M, pattern} => #{start => Start, until => Start, text => Text}}},
+            announce(M, St1),
+            {reply, {ok, Text}, St1};
+        Err -> {reply, Err, St}
     end;
 handle_call({hush, M, all}, _From, St) ->
     St1 = drop_loops(M, St),
@@ -241,13 +276,34 @@ handle_call({clear, M}, _From, St) ->
                 {[{_, open} | _], {ok, B, _}} -> [{B, open}];
                 _ -> []
             end,
-    St2 = St1#{marks := maps:remove(M, maps:get(marks, St1)), runs := Runs#{M => Again}},
+    St2 = St1#{marks := maps:remove(M, maps:get(marks, St1)), runs := Runs#{M => Again},
+               cuts := maps:remove(M, maps:get(cuts, St1)), undo := maps:remove(M, maps:get(undo, St1))},
     Json = iolist_to_binary(json:encode(#{machine => M})),
     tidal_link_anchor:sync_broadcast(<<"loops-clear ", Json/binary>>),
     announce(M, St2),
     {reply, ok, St2};
 handle_call({runs, M}, _From, St) ->
-    {reply, maps:get(M, maps:get(runs, St), []), St};
+    {reply, {maps:get(M, maps:get(runs, St), []), maps:get(M, maps:get(cuts, St), [])}, St};
+handle_call({cut, M, From, To}, _From, St) when To > From ->
+    do_cut(M, [{From, To}], 0.0, St);
+handle_call({cut, _, _, _}, _From, St) ->
+    {reply, {error, <<"a cut must end after it starts">>}, St};
+handle_call({trim, M}, _From, St) ->
+    case {marks_of(M, St), now_beat()} of
+        {[], _} -> {reply, {error, <<"no marks: trim keeps what the marks' windows hold">>}, St};
+        {_, {ok, B, _}} -> do_cut(M, [{-1.0e300, B}], ?BAR, St);
+        {_, Err} -> {reply, Err, St}
+    end;
+handle_call({undo, M}, _From, St) ->
+    case maps:find(M, maps:get(undo, St)) of
+        {ok, {Spans, Notes}} ->
+            ets:insert(?NOTES, Notes),
+            Cuts = maps:get(M, maps:get(cuts, St), []) -- Spans,
+            St1 = St#{cuts := (maps:get(cuts, St))#{M => Cuts}, undo := maps:remove(M, maps:get(undo, St))},
+            edited(M),
+            {reply, {ok, io_lib:format("the last cut undone: ~p notes back", [length(Notes)])}, St1};
+        error -> {reply, {error, <<"nothing to undo">>}, St}
+    end;
 handle_call(state, _From, St) ->
     {reply, maps:remove(sock, St#{notes => ets:info(?NOTES, size)}), St};
 handle_call(_Msg, _From, St) ->
@@ -313,6 +369,9 @@ handle_info(tick, St) ->
           end,
     erlang:send_after(?POLL_MS, self(), tick),
     {noreply, St1};
+handle_info({announce, M}, St) ->
+    announce(M, St),
+    {noreply, St};
 handle_info(prune, St) ->
     prune(St),
     erlang:send_after(?PRUNE_MS, self(), prune),
@@ -406,10 +465,58 @@ unfocus(M, Id, St) ->
         _ -> St
     end.
 
+%% Cut Spans (Link beats), less the marks' windows widened by Margin: the
+%% notes there deleted and kept for undo, the spans kept as cuts.
+do_cut(M, Spans0, Margin, St) ->
+    Keep = lists:sort([{F - Margin, T + Margin} || #{from := F, to := T} <- marks_of(M, St)]),
+    Spans = lists:foldl(fun(K, Acc) -> lists:flatmap(fun(S) -> subtract(S, K) end, Acc) end, Spans0, Keep),
+    %% from before the first note, a cut starts at the first note
+    First = case ets:select(?NOTES, [{{{M, '$1', '_'}, '_', '_', '_', '_'}, [], ['$1']}], 1) of
+                {[F0], _} -> F0;
+                _ -> 0.0
+            end,
+    Spans1 = [{max(A, First - ?BAR), B} || {A, B} <- Spans, B > First - ?BAR, B > max(A, First - ?BAR)],
+    Notes = lists:flatmap(
+              fun({A, B}) ->
+                      ets:select(?NOTES, [{{{M, '$1', '_'}, '_', '_', '_', '_'},
+                                           [{'>=', '$1', A}, {'<', '$1', B}], ['$_']}])
+              end, Spans1),
+    case Spans1 of
+        [] -> {reply, {error, <<"nothing to cut: the marks' windows hold it all">>}, St};
+        _ ->
+            [ets:delete(?NOTES, element(1, N)) || N <- Notes],
+            Cuts = maps:get(M, maps:get(cuts, St), []) ++ Spans1,
+            St1 = St#{cuts := (maps:get(cuts, St))#{M => Cuts},
+                      undo := (maps:get(undo, St))#{M => {Spans1, Notes}}},
+            edited(M),
+            {reply, {ok, io_lib:format("~p notes cut, in ~p stretch~s (undo puts them back)",
+                                       [length(Notes), length(Spans1), case length(Spans1) of 1 -> ""; _ -> "es" end])}, St1}
+    end.
+
+%% Interval A less interval K: zero, one or two intervals.
+subtract({A, B}, {KA, KB}) when KB =< A; KA >= B -> [{A, B}];
+subtract({A, B}, {KA, KB}) ->
+    [I || I = {X, Y} <- [{A, min(B, KA)}, {max(A, KB), B}], Y > X].
+
+%% The record buffer to every page, which takes it whole. From another
+%% process, once this call has returned, since it asks this server.
+edited(M) ->
+    spawn(fun() -> tidal_link_anchor:sync_broadcast(notes_json(M, true)) end).
+
 %% `loops {"machine": M, "marks": [...]}`, newest first, to every page: each
 %% with its number (`n`) and its id, which a page follows it by.
 announce(M, St) ->
-    Loops = maps:get(loops, St),
+    Loops0 = maps:get(loops, St),
+    %% a pattern loop's current mark shows as looping, from its start
+    Loops = case maps:find({M, pattern}, Loops0) of
+                {ok, #{current := Cur, entry := PE}} when Cur =/= none ->
+                    maps:merge(#{{M, Cur} => #{start => PE}}, Loops0);
+                _ -> Loops0
+            end,
+    Pattern = case maps:find({M, pattern}, Loops0) of
+                  {ok, #{text := PT}} -> PT;
+                  error -> null
+              end,
     Marks = [begin
                  {OF, OT} = maps:get(origin, Mk),
                  Base = #{id => Id, n => number(M, Id, St), beat => B, us => maps:get(us, Mk),
@@ -420,36 +527,86 @@ announce(M, St) ->
                      error -> Base#{playing => false, start => null}
                  end
              end || Mk = #{id := Id, beat := B} <- marks_of(M, St)],
-    Json = iolist_to_binary(json:encode(#{machine => M, marks => Marks})),
+    Json = iolist_to_binary(json:encode(#{machine => M, marks => Marks, pattern => Pattern})),
     tidal_link_anchor:sync_broadcast(<<"loops ", Json/binary>>).
 
 %% Each playing loop sends what falls between where it got to and the
 %% horizon. Link beat L of a loop that started at S plays material beat
-%% From + ((L - S) mod Len), its window as it stands now.
+%% From + ((L - S) mod Len), its window as it stands now. A pattern loop
+%% goes a sixteenth at a time, playing the window of the mark its pattern
+%% gives there from the top when the pattern moves to it (as a sample is
+%% triggered), so `"<1 2>"` plays each mark's first bar in turn; when the
+%% mark changes, the pages are told.
 play_loops(St, Horizon, Anchor) ->
     Loops = maps:map(
-              fun({M, Id}, L = #{start := S, until := U}) ->
+              fun({M, pattern}, L = #{start := S, until := U, text := Text}) when Horizon > S, Horizon > U ->
+                      Lo = max(U, S),
+                      Q0 = floor(Lo * 4),
+                      Q1 = ceil(Horizon * 4) - 1,
+                      {Cur, Entry} = lists:foldl(
+                              fun(Q, {C0, E0} = Acc) ->
+                                      A = max(Lo, Q / 4),
+                                      B = min(Horizon, (Q + 1) / 4),
+                                      case B > A of
+                                          false -> Acc;
+                                          true ->
+                                              case pattern_mark(M, Q, Text, St) of
+                                                  {ok, Id, F, T} ->
+                                                      E = case Id =:= C0 of
+                                                              true -> E0;
+                                                              false -> Q / 4
+                                                          end,
+                                                      play_window(M, F, T, E, A, B, St, Anchor),
+                                                      {Id, E};
+                                                  none -> {none, E0}
+                                              end
+                                      end
+                              end, {maps:get(current, L, none), maps:get(entry, L, S)}, lists:seq(Q0, Q1)),
+                      case Cur =:= maps:get(current, L, none) of
+                          true -> ok;
+                          false -> self() ! {announce, M}
+                      end,
+                      L#{until := Horizon, current => Cur, entry => Entry};
+                 ({M, Id}, L = #{start := S, until := U}) when Id =/= pattern ->
                       case [Mk || Mk = #{id := K} <- marks_of(M, St), K =:= Id] of
                           [#{from := F, to := T}] when Horizon > S, Horizon > U ->
-                              Lo = max(U, S),
-                              Len = T - F,
-                              K0 = floor((Lo - S) / Len),
-                              K1 = floor((Horizon - S) / Len),
-                              lists:foreach(
-                                fun(K) ->
-                                        C = S + K * Len,
-                                        A = max(Lo, C),
-                                        B = min(Horizon, C + Len),
-                                        case B > A of
-                                            true -> send_range(M, F + (A - C), F + (B - C), C - F, St, Anchor);
-                                            false -> ok
-                                        end
-                                end, lists:seq(K0, K1)),
+                              play_window(M, F, T, S, max(U, S), Horizon, St, Anchor),
                               L#{until := Horizon};
                           _ -> L
-                      end
+                      end;
+                 (_, L) -> L
               end, maps:get(loops, St)),
     St#{loops := Loops}.
+
+%% Link beats [Lo, Hi) of a loop on window [F, T) that started at S.
+play_window(M, F, T, S, Lo, Hi, St, Anchor) ->
+    Len = T - F,
+    K0 = floor((Lo - S) / Len),
+    K1 = floor((Hi - S) / Len),
+    lists:foreach(
+      fun(K) ->
+              C = S + K * Len,
+              A = max(Lo, C),
+              B = min(Hi, C + Len),
+              case B > A of
+                  true -> send_range(M, F + (A - C), F + (B - C), C - F, St, Anchor);
+                  false -> ok
+              end
+      end, lists:seq(K0, K1)).
+
+%% The mark a pattern loop's pattern gives at sixteenth Q (a cycle a bar):
+%% {ok, Id, From, To}, or none for a rest or a number with no mark.
+pattern_mark(M, Q, Text, St) ->
+    case 'tidal_window@ps':windowSampler(Q, 16, Text) of
+        {just, V} ->
+            case resolve(M, round(V), St, focus) of
+                {ok, Id} ->
+                    [#{from := F, to := T}] = [Mk || Mk = #{id := K} <- marks_of(M, St), K =:= Id],
+                    {ok, Id, F, T};
+                _ -> none
+            end;
+        _ -> none
+    end.
 
 %% The notes with material beats in [A, B), sent at material beat + Shift.
 send_range(M, A, B, Shift, St, {AnchorUs, BeatAtAnchor, Tempo}) ->

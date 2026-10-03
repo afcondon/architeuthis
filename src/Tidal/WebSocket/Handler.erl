@@ -704,9 +704,11 @@ try_parse_prefixed(<<"loops-notes ", M/binary>>) -> {loops_notes, trim_binary(M)
 try_parse_prefixed(<<"loops-record ", Json/binary>>) -> {loops_page, record, Json};
 try_parse_prefixed(<<"loops-window ", Json/binary>>) -> {loops_page, window, Json};
 try_parse_prefixed(<<"loops-delete ", Json/binary>>) -> {loops_page, delete, Json};
+%%   loops-cut <json>           cut a stretch, in beats: {"machine", "from", "to"}
 %%   loops-run <json>           the machine's transport started or stopped:
 %%                              {"machine", "playing": bool}
 try_parse_prefixed(<<"loops-run ", Json/binary>>) -> {loops_page, run, Json};
+try_parse_prefixed(<<"loops-cut ", Json/binary>>) -> {loops_page, cut, Json};
 try_parse_prefixed(<<"stage-text-subscribe">>) -> {stage_text_subscribe};
 try_parse_prefixed(<<"stage-text-subscribe ", _/binary>>) -> {stage_text_subscribe};
 try_parse_prefixed(<<"stage-text-del ", Key/binary>>) -> {stage_text, trim_binary(Key), null};
@@ -2099,6 +2101,8 @@ drums_line(Rest) ->
 %%   odonus $ mark            drop a mark now (marks count from 1, in order)
 %%   odonus $ loop 2          loop mark 2 from the next downbeat
 %%   odonus $ loop            loop the latest mark
+%%   odonus $ loop "<1 2>"    loop the marks a pattern of their numbers gives
+%%                            (a cycle a bar; one such loop a machine)
 %%   odonus $ loop 2 hush     stop loop 2 (`loop 2 off` too)
 %%   odonus $ loop hush       stop every loop of the machine (`loop off` too;
 %%                            `odonus $ hush` is the machine)
@@ -2107,6 +2111,8 @@ drums_line(Rest) ->
 %%   odonus $ slide "<0 -1>"  follow a pattern (window_patterns); slide off
 %%   odonus $ reset           window back at its mark, patterns dropped
 %%   odonus $ clear           empty the record buffer: notes, marks, loops
+%%   odonus $ trim            cut all but the marks' windows (a bar either side)
+%%   odonus $ undo            put back the last cut or trim
 %% Marks are numbered by position among those there now, oldest first.
 %% Cues chain with #, and a window cue acts on the loop the chain names
 %% (`loop 2 # slide "<0 -1>"`), else on the loop started last, else on the
@@ -2132,7 +2138,7 @@ cue_word(Line) ->
     case binary:split(Line, <<"$">>) of
         [_, Rest] ->
             case binary:split(string:trim(Rest), [<<" ">>, <<"#">>]) of
-                [W | _] -> lists:member(W, [<<"mark">>, <<"loop">>, <<"slide">>, <<"widen">>, <<"narrow">>, <<"reset">>, <<"clear">>]);
+                [W | _] -> lists:member(W, [<<"mark">>, <<"loop">>, <<"slide">>, <<"widen">>, <<"narrow">>, <<"reset">>, <<"clear">>, <<"trim">>, <<"undo">>]);
                 _ -> false
             end;
         _ -> false
@@ -2159,9 +2165,16 @@ one_cue(Body) ->
         <<"loop hush">> -> {loop_hush, all};
         <<"reset">> -> reset;
         <<"clear">> -> clear;
+        <<"trim">> -> trim;
+        <<"undo">> -> undo;
         <<"slide", By/binary>> -> window_cue(slide, By);
         <<"widen", By/binary>> -> window_cue(widen, By);
         <<"narrow", By/binary>> -> window_cue(narrow, By);
+        <<"loop \"", _/binary>> ->
+            case string:trim(string:trim(binary:part(Body, 5, byte_size(Body) - 5)), both, "\"") of
+                <<>> -> none;
+                Text -> {loop_pattern, Text}
+            end;
         <<"loop ", Rest/binary>> ->
             case string:split(string:trim(Rest), <<" ">>) of
                 [N] -> loop_number(N, fun(I) -> {loop, I} end);
@@ -2216,6 +2229,15 @@ run_cue(M, {loop, N0}, T) ->
         {ok, N} -> {N, say(M, io_lib:format("loop ~p, from the next downbeat", [N]))};
         Err -> {T, err(M, Err)}
     end;
+run_cue(M, {loop_pattern, Text}, T) ->
+    case 'tidal_window@ps':checkWindow(Text) of
+        {left, Why} -> {T, <<"ERR: ", M/binary, ": ", Why/binary>>};
+        {right, _} ->
+            case rig_loops:play_pattern(M, Text) of
+                {ok, _} -> {T, say(M, io_lib:format("loop \"~s\": the marks it names, a cycle a bar, from the next downbeat", [Text]))};
+                Err -> {T, err(M, Err)}
+            end
+    end;
 run_cue(M, {loop_hush, all}, T) ->
     rig_loops:hush(M, all),
     catch window_patterns:clear(M),
@@ -2257,11 +2279,15 @@ run_cue(M, {pattern, Kind, Text}, T) ->
                 Err -> {T, err(M, Err)}
             end
     end;
+run_cue(M, trim, T) -> edit_say(M, rig_loops:trim(M), T);
+run_cue(M, undo, T) -> edit_say(M, rig_loops:undo(M), T);
 run_cue(M, clear, _T) ->
     rig_loops:clear(M),
     {0, say(M, "cleared: its record buffer, marks, loops and window patterns")}.
 
 say(M, Io) -> iolist_to_binary([<<"OK: ">>, M, <<" ">>, Io]).
+edit_say(M, {ok, Io}, T) -> {T, say(M, Io)};
+edit_say(M, Err, T) -> {T, err(M, Err)}.
 err(M, {error, Why}) -> iolist_to_binary([<<"ERR: ">>, M, <<": ">>, Why]).
 
 loops_page(What, Json) ->
@@ -2275,6 +2301,11 @@ loops_page(What, Json) ->
             case rig_loops:set_window(M, N, F, T) of
                 {ok, _} -> <<"OK: loops-window">>;
                 {error, Why} -> <<"ERR: loops-window: ", Why/binary>>
+            end;
+        #{<<"machine">> := M, <<"from">> := F, <<"to">> := T} when What =:= cut ->
+            case rig_loops:cut(M, F, T) of
+                {ok, Io} -> iolist_to_binary([<<"OK: loops-cut: ">>, Io]);
+                {error, Why} -> <<"ERR: loops-cut: ", Why/binary>>
             end;
         #{<<"machine">> := M, <<"playing">> := P} when What =:= run ->
             rig_loops:run(M, P =:= true),
