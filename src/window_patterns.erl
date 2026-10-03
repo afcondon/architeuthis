@@ -1,13 +1,12 @@
 %% @doc Loop windows driven by patterns (docs/kb/plans/the-deck.md, step 3a).
 %%
-%% `odonus $ slide "<0 -1 -2 -3>"` and `widen "<0 1>"` from Limulus: this
-%% process keeps each machine's two patterns, samples them on every Link beat
-%% with Littorina (`Tidal.Window.windowSampler`, a cycle being a bar), and
-%% when a value changes tells the page (`cue {"slot", "cue": "place",
-%% "slide" | "widen": bars}`), which places its looping window that many bars
-%% from where the mark was made. The page never reads Tidal. A rest holds
-%% the last value; `slide off` drops the pattern and leaves the window where
-%% it is.
+%% `odonus $ loop 2 # slide "<0 -1 -2 -3>"` and `widen "<0 1>"` from
+%% Limulus: this process keeps each loop's two patterns, samples them on
+%% every Link beat with Littorina (`Tidal.Window.windowSampler`, a cycle
+%% being a bar), and when a value changes places the loop's window that many
+%% bars from where its mark made it (rig_loops:place/4). The page never reads
+%% Tidal. A rest holds the last value; `slide off` drops the pattern and
+%% leaves the window where it is.
 -module(window_patterns).
 -behaviour(gen_server).
 
@@ -17,13 +16,14 @@
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
-%% Follow `Text` for `Kind` (<<"slide">> | <<"widen">>) on `Slot`, or with
-%% `off` stop following it.
-set(Slot, Kind, Text) ->
-    gen_server:call(?MODULE, {set, Slot, Kind, Text}).
+%% Follow `Text` for `Kind` (<<"slide">> | <<"widen">>) on loop `{Slot, N}`,
+%% or with `off` stop following it.
+set(Loop, Kind, Text) ->
+    gen_server:call(?MODULE, {set, Loop, Kind, Text}).
 
-%% Stop following every pattern on `Slot`, or with `all` on every machine:
-%% what `hush`, `loop off` and `reset` do. The windows stay where they are.
+%% Stop following the patterns of loop `{Slot, N}`, of every loop of a
+%% machine `Slot`, or with `all` of every loop: what `hush`, `loop hush` and
+%% `reset` do. The windows stay where they are.
 clear(Slot) ->
     case whereis(?MODULE) of
         undefined -> ok;
@@ -37,15 +37,15 @@ init([]) ->
     self() ! tick,
     {ok, #{patterns => #{}, last => #{}}}.
 
-handle_call({set, Slot, Kind, off}, _From, St = #{patterns := Ps, last := L}) ->
-    {reply, ok, St#{patterns := maps:remove({Slot, Kind}, Ps), last := maps:remove({Slot, Kind}, L)}};
-handle_call({set, Slot, Kind, Text}, _From, St = #{patterns := Ps, last := L}) ->
+handle_call({set, Loop, Kind, off}, _From, St = #{patterns := Ps, last := L}) ->
+    {reply, ok, St#{patterns := maps:remove({Loop, Kind}, Ps), last := maps:remove({Loop, Kind}, L)}};
+handle_call({set, Loop, Kind, Text}, _From, St = #{patterns := Ps, last := L}) ->
     %% a new pattern is heard at once, even if its first value equals the last
-    {reply, ok, St#{patterns := Ps#{{Slot, Kind} => Text}, last := maps:remove({Slot, Kind}, L)}};
+    {reply, ok, St#{patterns := Ps#{{Loop, Kind} => Text}, last := maps:remove({Loop, Kind}, L)}};
 handle_call({clear, all}, _From, St) ->
     {reply, ok, St#{patterns := #{}, last := #{}}};
-handle_call({clear, Slot}, _From, St = #{patterns := Ps, last := L}) ->
-    Keep = fun({S, _}, _) -> S =/= Slot end,
+handle_call({clear, Which}, _From, St = #{patterns := Ps, last := L}) ->
+    Keep = fun({{S, _} = Loop, _}, _) -> Loop =/= Which andalso S =/= Which end,
     {reply, ok, St#{patterns := maps:filter(Keep, Ps), last := maps:filter(Keep, L)}};
 handle_call(patterns, _From, St = #{patterns := Ps}) ->
     {reply, Ps, St};
@@ -82,20 +82,16 @@ terminate(_Reason, _St) -> ok.
 
 sample(B, St = #{patterns := Ps, last := L}) ->
     L1 = maps:fold(
-           fun({Slot, Kind} = K, Text, Acc) ->
+           fun({{Slot, N}, Kind} = K, Text, Acc) ->
                    case 'tidal_window@ps':windowSampler(B, 4, Text) of
                        {just, V} ->
                            case maps:get(K, Acc, none) of
                                V -> Acc;
                                _ ->
-                                   send(Slot, Kind, V),
+                                   rig_loops:place(Slot, N, Kind, V),
                                    Acc#{K => V}
                            end;
                        _ -> Acc   % a rest holds the last value
                    end
            end, L, Ps),
     St#{last := L1}.
-
-send(Slot, Kind, V) ->
-    Json = iolist_to_binary(json:encode(#{slot => Slot, cue => <<"place">>, binary_to_atom(Kind) => V})),
-    tidal_link_anchor:sync_broadcast(<<"cue ", Json/binary>>).

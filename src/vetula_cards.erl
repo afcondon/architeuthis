@@ -23,7 +23,7 @@
 %% `vetula-cards-stop` and by hush. Idle without a fresh Link anchor.
 -module(vetula_cards).
 
--export([play/0, stop/0, cards/0]).
+-export([play/0, stop/0, cards/0, route_note/8]).
 
 -define(PORT, <<"IAC Driver Tidal">>).
 -define(POLL_MS, 25).
@@ -136,7 +136,10 @@ tick(St) ->
             case Played of
                 [] -> ok;
                 _ -> tidal_link_anchor:sync_broadcast(
-                       <<"vetula-notes ", (iolist_to_binary(json:encode(lists:reverse(Played))))/binary>>)
+                       <<"vetula-notes ", (iolist_to_binary(json:encode(lists:reverse(Played))))/binary>>),
+                     %% the record buffer keeps what Vetula played, by voice
+                     catch rig_loops:record(<<"vetula">>,
+                             [{AtUs, P, V, G, C} || #{atUs := AtUs, pitch := P, vel := V, gateMs := G, ch := C} <- Played])
             end,
             St#{last_pulse => Last};
         _ ->
@@ -192,14 +195,15 @@ strike(St, Spec, Slot, SlotBeats, AnchorUs, BeatAtAnchor, Tempo, Acc) ->
 %% One note of the card on channel Ch: down its legs if the dashboard has
 %% routed the cards, else on its own channel of the IAC bus.
 play(St, Ch, Note, DurMs, SlotMs, AtUs) ->
-    Sock = maps:get(sock, St),
-    case maps:get(routing, St) of
-        none ->
-            Thunk = 'tidal_mIDIBridge@foreign':scheduleNoteAt(Sock, ?PORT, Ch, Note, ?VELOCITY, DurMs, AtUs),
-            Thunk();
-        Routing ->
-            Sends = 'reef_routing@ps':voiceRoutingSends(Routing, Ch - 1,
-                      #{note => Note, velocity => ?VELOCITY, atMs => 0.0,
-                        durMs => float(DurMs), stepMs => float(SlotMs)}),
-            lists:foreach(fun(S) -> routing_out:send(Sock, S, AtUs) end, array:to_list(Sends))
-    end.
+    route_note(maps:get(sock, St), maps:get(routing, St), Ch, Note, ?VELOCITY, DurMs, SlotMs, AtUs).
+
+%% One note on channel Ch, down its legs or on its own channel of the IAC
+%% bus; a loop on the rig (rig_loops) plays Vetula's notes through it too.
+route_note(Sock, none, Ch, Note, Vel, DurMs, _SlotMs, AtUs) ->
+    Thunk = 'tidal_mIDIBridge@foreign':scheduleNoteAt(Sock, ?PORT, Ch, Note, Vel, DurMs, AtUs),
+    Thunk();
+route_note(Sock, Routing, Ch, Note, Vel, DurMs, SlotMs, AtUs) ->
+    Sends = 'reef_routing@ps':voiceRoutingSends(Routing, Ch - 1,
+              #{note => Note, velocity => Vel, atMs => 0.0,
+                durMs => float(DurMs), stepMs => float(SlotMs)}),
+    lists:foreach(fun(S) -> routing_out:send(Sock, S, AtUs) end, array:to_list(Sends)).

@@ -156,6 +156,14 @@ init([]) ->
            shutdown => 5000,
            type => worker,
            modules => [odonus_feeds]},
+         %% The record buffer, its marks and the loops on the rig. After the
+         %% stage, whose routing text it follows.
+         #{id => rig_loops,
+           start => {rig_loops, start_link, []},
+           restart => permanent,
+           shutdown => 5000,
+           type => worker,
+           modules => [rig_loops]},
          %% Loop windows driven by patterns from Limulus (slide "…", widen "…").
          %% Last, so its restart under rest_for_one touches nothing else.
          #{id => window_patterns,

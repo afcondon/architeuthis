@@ -23,6 +23,8 @@
 -export([set_routing_json/1, routing/0,
          start/0, start/2, start_json/3, start_sim_json/3, start_sim_at_json/4,
          stop/0, ping/0, loop/1]).
+%% what a loop on the rig (rig_loops) plays a note through
+-export([route_note/7, maybe_schedule_cv/5, init_cv/0]).
 
 %% Lead time (us) for the smoke test — schedule far enough ahead that link-spike
 %% can receive + schedule (a 5ms lead gets dropped as already-past).
@@ -401,25 +403,33 @@ emit(Sock, BaseCh, Cv, Odo, F, WallUs, StepMs) ->
     %% renderHits is a 3-arg PS function → purs-backend-erl emits it uncurried as
     %% renderHits/3 (there is no renderHits/1), so call it directly, not curried.
     Hits = array:to_list('reef_render@ps':renderHits(Odo, StepMs, F)),
-    Routing = routing(),
-    lists:foreach(
-      fun(Hit) ->
-          AtUs  = round(WallUs + maps:get(offsetMs, Hit) * 1000.0),
-          DurMs = maps:get(durMs, Hit),
-          case Routing of
-              none ->
-                  Thunk = 'tidal_mIDIBridge@foreign':scheduleNoteAt(
-                            Sock, <<"IAC Driver Tidal">>, Ch, Note, Vel, DurMs, AtUs),
-                  Thunk();
-              _ ->
-                  %% where the routing table sends this head: Reef.Routing,
-                  %% the same function the page's own emit calls
-                  Sends = 'reef_routing@ps':voiceRoutingSends(Routing, HeadIdx,
-                            #{note => Note, velocity => Vel, atMs => 0.0,
-                              durMs => float(DurMs), stepMs => float(StepMs)}),
-                  lists:foreach(fun(S) -> routing_out:send(Sock, S, AtUs) end, array:to_list(Sends))
-          end
-      end, Hits).
+    Sent = [begin
+                AtUs  = round(WallUs + maps:get(offsetMs, Hit) * 1000.0),
+                DurMs = maps:get(durMs, Hit),
+                route_note(Sock, HeadIdx, Note, Vel, DurMs, StepMs, AtUs, Ch),
+                {AtUs, Note, Vel, DurMs, HeadIdx}
+            end || Hit <- Hits],
+    %% the record buffer keeps what Odonus played (docs/kb/plans/the-deck.md)
+    catch rig_loops:record(<<"odonus">>, Sent).
+
+%% One note of head HeadIdx: where the routing table sends it (Reef.Routing,
+%% the same function the page's own emit calls), or before a table arrives,
+%% the head's own channel of the IAC bus.
+route_note(Sock, HeadIdx, Note, Vel, DurMs, StepMs, AtUs) ->
+    route_note(Sock, HeadIdx, Note, Vel, DurMs, StepMs, AtUs, ?BASE_CHANNEL + HeadIdx).
+
+route_note(Sock, HeadIdx, Note, Vel, DurMs, StepMs, AtUs, Ch) ->
+    case routing() of
+        none ->
+            Thunk = 'tidal_mIDIBridge@foreign':scheduleNoteAt(
+                      Sock, <<"IAC Driver Tidal">>, Ch, Note, Vel, DurMs, AtUs),
+            Thunk();
+        Routing ->
+            Sends = 'reef_routing@ps':voiceRoutingSends(Routing, HeadIdx,
+                      #{note => Note, velocity => Vel, atMs => 0.0,
+                        durMs => float(DurMs), stepMs => float(StepMs)}),
+            lists:foreach(fun(S) -> routing_out:send(Sock, S, AtUs) end, array:to_list(Sends))
+    end.
 
 %% Route this fired head's note to its ES-9 CV bus(es). Looks up the head's route
 %% (from init_cv's head => route map); no route for this head (or CV off) → no-op.

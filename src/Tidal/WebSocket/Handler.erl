@@ -691,6 +691,19 @@ try_parse_prefixed(<<"stage-put ", Rest/binary>>) ->
 %% only reader of Tidal, to sample its patterns for steps ahead; see
 %% odonus_samples/1.
 try_parse_prefixed(<<"odonus-sample ", Json/binary>>) -> {odonus_sample, Json};
+%% The record buffer and its loops (rig_loops), from a machine's page:
+%%   loops-sync                 tell every page the marks and loops
+%%   loops-record <json>        notes a page played itself (Solo):
+%%                              {"machine", "notes": [{"us","pitch","vel","gateMs","voice"}]}
+%%   loops-window <json>        a mark's window as the page drew it, in beats:
+%%                              {"machine", "n", "from", "to"}
+%%   loops-delete <json>        {"machine", "n"}
+try_parse_prefixed(<<"loops-sync", _/binary>>) -> {loops_sync};
+%%   loops-notes <machine>      the machine's record buffer, to this page alone
+try_parse_prefixed(<<"loops-notes ", M/binary>>) -> {loops_notes, trim_binary(M)};
+try_parse_prefixed(<<"loops-record ", Json/binary>>) -> {loops_page, record, Json};
+try_parse_prefixed(<<"loops-window ", Json/binary>>) -> {loops_page, window, Json};
+try_parse_prefixed(<<"loops-delete ", Json/binary>>) -> {loops_page, delete, Json};
 try_parse_prefixed(<<"stage-text-subscribe">>) -> {stage_text_subscribe};
 try_parse_prefixed(<<"stage-text-subscribe ", _/binary>>) -> {stage_text_subscribe};
 try_parse_prefixed(<<"stage-text-del ", Key/binary>>) -> {stage_text, trim_binary(Key), null};
@@ -949,6 +962,13 @@ handle_pattern_message(Text, State) ->
             {reply, {text, <<"OK: stage-subscribe">>}, State};
         {odonus_sample, Json} ->
             {reply, {text, odonus_samples(Json)}, State};
+        {loops_sync} ->
+            catch rig_loops:sync(),
+            {reply, {text, <<"OK: loops-sync">>}, State};
+        {loops_notes, M} ->
+            {reply, {text, rig_loops:notes_json(M)}, State};
+        {loops_page, What, Json} ->
+            {reply, {text, loops_page(What, Json)}, State};
         {stage_text_subscribe} ->
             Table = tidal_stage:text_subscribe(self()),
             Json = iolist_to_binary(json:encode(Table)),
@@ -1943,12 +1963,14 @@ machine_hush(Block) ->
 
 hush_machine(<<"odonus">>) ->
     catch window_patterns:clear(<<"odonus">>),
+    catch rig_loops:hush(<<"odonus">>, all),
     [gen_server:cast(Pid, hush) || Pid <- odonus_voice_sup:which_voices()],
     catch reef_voice:stop(),
     catch tidal_stage:stopped(odonus),
     <<"OK: odonus hushed">>;
 hush_machine(<<"vetula">>) ->
     catch window_patterns:clear(<<"vetula">>),
+    catch rig_loops:hush(<<"vetula">>, all),
     catch vetula_cards:stop(),
     catch reef_vetula_voice:stop(),
     catch reef_vetula_brush:stop(),
@@ -2019,15 +2041,15 @@ machine_statement(Block) ->
             case review_cue(Line) of
                 none ->
                     case cue_word(Line) of
-                        true -> <<"ERR: odonus: a cue line is mark, loop [N | off | hush], reset, slide / widen / narrow N or \"PATTERN\" or off, chained with # (moves go on a line of their own)">>;
+                        true -> <<"ERR: odonus: a cue line is mark, loop [N] [hush], reset, slide / widen / narrow N or \"PATTERN\" or off, chained with # (moves go on a line of their own)">>;
                         false -> odonus_line(Line)
                     end;
-                Cue -> send_cue(Cue)
+                {M, Cues} -> run_cues(M, Cues)
             end;
         <<"vetula", _/binary>> = Line ->
             case review_cue(Line) of
-                none -> <<"ERR: vetula: a vetula line is a cue (mark, loop, loop N, loop off); a card is v3 $ ... (Limulus writes cards to the stage)">>;
-                Cue -> send_cue(Cue)
+                none -> <<"ERR: vetula: a vetula line is a cue (mark, loop [N] [hush], slide / widen / narrow, reset); a voice is v3 $ ... (Limulus writes voices to the stage)">>;
+                {M, Cues} -> run_cues(M, Cues)
             end;
         <<"drums", Rest/binary>> -> drums_line(Rest);
         <<"conspicillum", _/binary>> ->
@@ -2059,20 +2081,21 @@ drums_line(Rest) ->
         _ -> <<"ERR: drums: a drums line is drums $ <pattern>">>
     end.
 
-%% Review cues (docs/kb/plans/text-on-the-stage.md, slice 2): time markers on
-%% a machine's Review surface, and their loops, from the live-coding station.
-%%   odonus $ mark        drop a mark now, as the surface's own mark control
-%%   odonus $ loop 2      loop mark 2 (counting from 1) on the Review surface
-%%   odonus $ loop        loop the latest mark
-%%   odonus $ loop off    stop the loop (or `loop hush`: the loop, not the machine)
-%%   odonus $ slide -1    move the loop window by bars (a fraction is fine)
-%%   odonus $ widen 2     move its end later by bars; narrow N, earlier
-%%                        (each acts on the mark looping, else the latest)
+%% Review cues: marks in a machine's record buffer, and the loops that play
+%% them on the rig (rig_loops; docs/kb/plans/the-deck.md, step 3b).
+%%   odonus $ mark            drop a mark now (marks count from 1, in order)
+%%   odonus $ loop 2          loop mark 2 from the next downbeat
+%%   odonus $ loop            loop the latest mark
+%%   odonus $ loop 2 hush     stop loop 2 (`loop 2 off` too)
+%%   odonus $ loop hush       stop every loop of the machine (`loop off` too;
+%%                            `odonus $ hush` is the machine)
+%%   odonus $ slide -1        move the window by bars (a fraction is fine)
+%%   odonus $ widen 2         move its end later by bars; narrow N, earlier
 %%   odonus $ slide "<0 -1>"  follow a pattern (window_patterns); slide off
-%%   odonus $ reset       window back at its mark, patterns dropped
-%% `loop off`, `odonus $ hush` and `hush` drop the patterns too.
-%% The marks and their notes live in the page, so the rig only relays the cue
-%% to every page (`cue <json>`), and the page of that machine acts on it.
+%%   odonus $ reset           window back at its mark, patterns dropped
+%% Cues chain with #, and a window cue acts on the loop the chain names
+%% (`loop 2 # slide "<0 -1>"`), else on the loop started last, else on the
+%% latest mark.
 review_cue(Line) ->
     case binary:split(Line, <<" ">>) of
         [Head, Rest] when Head =:= <<"odonus">>; Head =:= <<"vetula">> ->
@@ -2080,16 +2103,10 @@ review_cue(Line) ->
                                    <<"$", After/binary>> -> After;
                                    Other -> Other
                                end),
-            case split_hashes(Body) of
-                [_] -> one_cue(Head, Body);
-                Parts ->
-                    %% `loop # slide "<0 -1>"`: cues chain as moves do; all
-                    %% of them must be cues, or the line is not one
-                    Cues = [one_cue(Head, P) || P <- Parts],
-                    case lists:member(none, Cues) of
-                        true -> none;
-                        false -> {many, Cues}
-                    end
+            Cues = [one_cue(P) || P <- split_hashes(Body)],
+            case lists:member(none, Cues) of
+                true -> none;
+                false -> {Head, Cues}
             end;
         _ -> none
     end.
@@ -2119,75 +2136,134 @@ split_hashes([C | T], Q, Cur, Acc) ->
     split_hashes(T, Q, [C | Cur], Acc).
 trim_part(Rev) -> string:trim(list_to_binary(lists:reverse(Rev))).
 
-one_cue(Head, Body) ->
-            case Body of
-                <<"mark">> -> {Head, #{cue => <<"mark">>}};
-                <<"loop">> -> {Head, #{cue => <<"loop">>, n => 0}};
-                <<"loop off">> -> {Head, #{cue => <<"stop">>}};
-                %% the loop, not the machine (`odonus $ hush` is the machine)
-                <<"loop hush">> -> {Head, #{cue => <<"stop">>}};
-                %% the window back where the mark made it, patterns dropped
-                <<"reset">> -> {Head, #{cue => <<"place">>, slide => 0.0, widen => 0.0}};
-                <<"slide", By/binary>> -> window_cue(Head, <<"slide">>, By);
-                <<"widen", By/binary>> -> window_cue(Head, <<"widen">>, By);
-                <<"narrow", By/binary>> -> window_cue(Head, <<"narrow">>, By);
-                <<"loop ", N/binary>> ->
-                    case string:to_integer(string:trim(N)) of
-                        {I, <<>>} when I >= 1 -> {Head, #{cue => <<"loop">>, n => I}};
-                        _ -> none
-                    end;
+one_cue(Body) ->
+    case Body of
+        <<"mark">> -> mark;
+        <<"loop">> -> {loop, 0};
+        <<"loop off">> -> {loop_hush, all};
+        <<"loop hush">> -> {loop_hush, all};
+        <<"reset">> -> reset;
+        <<"slide", By/binary>> -> window_cue(slide, By);
+        <<"widen", By/binary>> -> window_cue(widen, By);
+        <<"narrow", By/binary>> -> window_cue(narrow, By);
+        <<"loop ", Rest/binary>> ->
+            case string:split(string:trim(Rest), <<" ">>) of
+                [N] -> loop_number(N, fun(I) -> {loop, I} end);
+                [N, W] when W =:= <<"hush">>; W =:= <<"off">> ->
+                    loop_number(N, fun(I) -> {loop_hush, I} end);
                 _ -> none
-            end.
+            end;
+        _ -> none
+    end.
+
+loop_number(N, K) ->
+    case string:to_integer(N) of
+        {I, <<>>} when I >= 1 -> K(I);
+        _ -> none
+    end.
 
 %% A window cue's count of bars: a number, default 1; or a pattern of them
 %% in quotes (`slide "<0 -1 -2>"`, bars from where the mark was made), which
 %% window_patterns follows; or `off`, to stop following it.
-window_cue(Head, Kind, ByBin) ->
+window_cue(Kind, ByBin) ->
     case string:trim(ByBin) of
-        <<>> -> {Head, #{cue => Kind, by => 1.0}};
-        <<"off">> when Kind =/= <<"narrow">> -> {pattern, Head, Kind, off};
-        <<"\"", _/binary>> = Q when Kind =/= <<"narrow">> ->
+        <<>> -> {nudge, Kind, 1.0};
+        <<"off">> when Kind =/= narrow -> {pattern, Kind, off};
+        <<"\"", _/binary>> = Q when Kind =/= narrow ->
             case string:trim(Q, both, "\"") of
                 <<>> -> none;
-                Text -> {pattern, Head, Kind, Text}
+                Text -> {pattern, Kind, Text}
             end;
         B ->
             case parse_number(B) of
-                {ok, N} -> {Head, #{cue => Kind, by => N}};
+                {ok, N} -> {nudge, Kind, N};
                 error -> none
             end
     end.
 
-send_cue({many, Cues}) ->
-    iolist_to_binary(lists:join(<<"\n">>, [send_cue(C) || C <- Cues]));
-send_cue({pattern, Slot, Kind, off}) ->
-    window_patterns:set(Slot, Kind, off),
-    <<"OK: ", Slot/binary, " ", Kind/binary, " follows no pattern">>;
-send_cue({pattern, Slot, Kind, Text}) ->
-    case 'tidal_window@ps':checkWindow(Text) of
-        {left, Why} -> <<"ERR: ", Slot/binary, ": ", Why/binary>>;
-        {right, _} ->
-            window_patterns:set(Slot, Kind, Text),
-            <<"OK: ", Slot/binary, " ", Kind/binary, " follows \"", Text/binary, "\" (bars from the mark, each beat)">>
+%% Run a chain of cues in order. The loop they act on is the one the chain
+%% names (or marks), else 0: the loop started last, else the latest mark.
+run_cues(M, Cues) ->
+    {_, Says} = lists:foldl(fun(C, {T, Acc}) ->
+                                    {T1, Say} = run_cue(M, C, T),
+                                    {T1, [Say | Acc]}
+                            end, {0, []}, Cues),
+    iolist_to_binary(lists:join(<<"\n">>, lists:reverse(Says))).
+
+run_cue(M, mark, T) ->
+    case rig_loops:mark(M) of
+        {ok, N} -> {N, say(M, io_lib:format("mark ~p", [N]))};
+        Err -> {T, err(M, Err)}
     end;
-send_cue({Slot, Cue}) ->
-    %% loop off and reset drop the window's patterns: a pattern with no loop
-    %% to move has nothing to do, and a reset is back to the mark
-    case Cue of
-        #{cue := C} when C =:= <<"stop">>; C =:= <<"place">> -> catch window_patterns:clear(Slot);
-        _ -> ok
-    end,
-    Json = iolist_to_binary(json:encode(Cue#{slot => Slot})),
-    tidal_link_anchor:sync_broadcast(<<"cue ", Json/binary>>),
-    Say = case Cue of
-              #{cue := <<"mark">>} -> <<"mark dropped">>;
-              #{cue := <<"loop">>, n := 0} -> <<"looping the latest mark">>;
-              #{cue := <<"loop">>, n := N} -> iolist_to_binary(io_lib:format("looping mark ~p", [N]));
-              #{cue := <<"stop">>} -> <<"loop stopped, window patterns dropped">>;
-              #{cue := <<"place">>} -> <<"window back at its mark, patterns dropped">>;
-              #{cue := K, by := By} -> iolist_to_binary(io_lib:format("~s ~p bars", [K, By]))
-          end,
-    <<"OK: ", Slot/binary, " ", Say/binary, " (on its Review surface, if the page is open)">>.
+run_cue(M, {loop, N0}, T) ->
+    case rig_loops:play(M, N0) of
+        {ok, N} -> {N, say(M, io_lib:format("loop ~p, from the next downbeat", [N]))};
+        Err -> {T, err(M, Err)}
+    end;
+run_cue(M, {loop_hush, all}, T) ->
+    rig_loops:hush(M, all),
+    catch window_patterns:clear(M),
+    {T, say(M, "every loop hushed, window patterns dropped")};
+run_cue(M, {loop_hush, N0}, T) ->
+    case rig_loops:hush(M, N0) of
+        {ok, N} ->
+            catch window_patterns:clear({M, N}),
+            {T, say(M, io_lib:format("loop ~p hushed", [N]))};
+        Err -> {T, err(M, Err)}
+    end;
+run_cue(M, reset, T) ->
+    case rig_loops:reset(M, T) of
+        {ok, N} ->
+            catch window_patterns:clear({M, N}),
+            {N, say(M, io_lib:format("loop ~p back at its mark, patterns dropped", [N]))};
+        Err -> {T, err(M, Err)}
+    end;
+run_cue(M, {nudge, Kind, By}, T) ->
+    Move = case Kind of
+               slide -> {slide, By};
+               widen -> {widen, By};
+               narrow -> {widen, -By}
+           end,
+    case rig_loops:nudge(M, T, Move) of
+        {ok, N} -> {N, say(M, io_lib:format("loop ~p: ~s ~p bars", [N, Kind, By]))};
+        Err -> {T, err(M, Err)}
+    end;
+run_cue(M, {pattern, Kind, Text}, T) ->
+    K = atom_to_binary(Kind),
+    case rig_loops:target(M, T) of
+        {ok, N} when Text =:= off ->
+            window_patterns:set({M, N}, K, off),
+            {N, say(M, io_lib:format("loop ~p: ~s follows no pattern", [N, K]))};
+        {ok, N} ->
+            case 'tidal_window@ps':checkWindow(Text) of
+                {left, Why} -> {N, <<"ERR: ", M/binary, ": ", Why/binary>>};
+                {right, _} ->
+                    window_patterns:set({M, N}, K, Text),
+                    {N, say(M, io_lib:format("loop ~p: ~s follows \"~s\" (bars from the mark, each beat)", [N, K, Text]))}
+            end;
+        Err -> {T, err(M, Err)}
+    end.
+
+say(M, Io) -> iolist_to_binary([<<"OK: ">>, M, <<" ">>, Io]).
+err(M, {error, Why}) -> iolist_to_binary([<<"ERR: ">>, M, <<": ">>, Why]).
+
+loops_page(What, Json) ->
+    case catch json:decode(Json) of
+        #{<<"machine">> := M, <<"notes">> := Ns} when What =:= record ->
+            rig_loops:record(M, [{round(U), P, V, G, Vc}
+                                 || #{<<"us">> := U, <<"pitch">> := P, <<"vel">> := V,
+                                      <<"gateMs">> := G, <<"voice">> := Vc} <- Ns]),
+            <<"OK: loops-record">>;
+        #{<<"machine">> := M, <<"n">> := N, <<"from">> := F, <<"to">> := T} when What =:= window ->
+            case rig_loops:set_window(M, N, F, T) of
+                {ok, _} -> <<"OK: loops-window">>;
+                {error, Why} -> <<"ERR: loops-window: ", Why/binary>>
+            end;
+        #{<<"machine">> := M, <<"n">> := N} when What =:= delete ->
+            rig_loops:delete(M, N),
+            <<"OK: loops-delete">>;
+        _ -> <<"ERR: loops-", (atom_to_binary(What))/binary, ": not the shape expected">>
+    end.
 
 %% Odonus's patterns sampled for a page that plays it itself (Solo), as
 %% reef_voice samples them for its own voice: the same samplers, at the same
@@ -4102,6 +4178,8 @@ hush_everything() ->
     tidal_voice_sup:hush_all(),
     %% the loop windows' patterns are patterns too
     catch window_patterns:clear(all),
+    %% and the loops on the rig (the marks and the record buffer stay)
+    catch rig_loops:hush_all(),
     OdonusPids = odonus_voice_sup:which_voices(),
     lists:foreach(
       fun(Pid) -> gen_server:cast(Pid, hush) end, OdonusPids),
