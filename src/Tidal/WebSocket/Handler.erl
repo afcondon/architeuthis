@@ -556,6 +556,10 @@ try_parse_prefixed(<<"selene ", Rest/binary>>) ->
     %% form `polysignal <json>`, where the JSON envelope is exactly
     %% what fh2-config's `--apply-polysignal` reads on stdin.
     {selene, Rest};
+try_parse_prefixed(<<"selene-reapply ", Rest/binary>>) ->
+    %% The Dashboard, after asking Bosun to restart a daemon: give it back
+    %% what Selene had applied (selene_keeper).
+    {selene_reapply, trim_binary(Rest)};
 try_parse_prefixed(<<"selene-apply ", Rest/binary>>) ->
     %% Triggerfish's Selene rack (#142) pushes each CV/gate destination
     %% as `selene-apply <socket> <bank> <json>`: socket ∈ es9 | fh2 picks
@@ -1319,6 +1323,12 @@ handle_pattern_message(Text, State) ->
                              "unreachable; spago shell-out, ~7s)">>}
             end,
             {reply, Reply, State};
+        {selene_reapply, Socket} ->
+            Reply = case catch selene_keeper:reapply(Socket) of
+                {ok, N} -> <<"OK: selene re-applied ", (integer_to_binary(N))/binary, " bank(s) to ", Socket/binary>>;
+                _ -> <<"ERR: selene-reapply: the keeper is not running">>
+            end,
+            {reply, {text, Reply}, State};
         {selene_apply, Socket, Bank, Json} ->
             %% Triggerfish Selene → modular (#142). Relay one CV/gate
             %% destination's apply-polysignal envelope to the right daemon
@@ -1330,6 +1340,12 @@ handle_pattern_message(Text, State) ->
             SockPath = selene_socket_path(Socket),
             Reply = case daemon_call(SockPath, <<"apply-polysignal ", Json/binary>>) of
                 {ok, ReplyBin} ->
+                    %% the rig remembers what the modular was given, to give
+                    %% it again when a daemon comes back (selene_keeper)
+                    case ReplyBin of
+                        <<"OK", _/binary>> -> catch selene_keeper:record(Socket, Bank, Json);
+                        _ -> ok
+                    end,
                     {text, <<"selene-reply ", Socket/binary, " ", Bank/binary, " ", ReplyBin/binary>>};
                 {error, Reason} ->
                     ReasonBin = list_to_binary(io_lib:format("~p", [Reason])),
@@ -2003,6 +2019,7 @@ hush_machine(<<"conspicillum">>) ->
 %% the reply says they keep going.
 hush_machine(<<"selene">>) ->
     _ = daemon_call(es9_daemon_socket_path(), <<"panic">>),
+    catch selene_keeper:hushed(),
     catch tidal_stage:stopped(selene),
     <<"OK: selene hushed (the ES-9's signals; the FH-2's banks run on the FH-2 and keep going)">>.
 
@@ -4288,4 +4305,6 @@ hush_everything() ->
     %% still report OK. The FH-2 has no equivalent yet — its
     %% release-claim is bookkeeping-only and --silent leaves the LFOs
     %% running (RIG-ISSUES-2026-08-07 #3/#4/#5).
-    _ = daemon_call(es9_daemon_socket_path(), <<"panic">>).
+    _ = daemon_call(es9_daemon_socket_path(), <<"panic">>),
+    %% and a daemon that comes back is not given back what was silenced
+    catch selene_keeper:hushed().

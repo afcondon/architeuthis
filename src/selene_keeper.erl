@@ -1,0 +1,126 @@
+%% @doc What Selene has applied to the modular, kept by the rig and applied
+%% again when a daemon comes back (AC, 2026-10-04: "the Dashboard decides,
+%% the rig remembers").
+%%
+%% Selene's polysignals live in the daemons' memory (es9-daemon, the FH-2's
+%% fh2-daemon): a daemon restarted, or one that lost the ES-9 when the rack
+%% was powered down and was replaced, comes back with nothing, and the page's
+%% Apply had to be pressed again. So every apply that a daemon accepted is
+%% kept here, per socket and bank, and on disk, and sent again:
+%%
+%%  * when a daemon that had stopped answering answers again (polled), and
+%%  * on `selene-reapply <socket>`, which the Dashboard sends after it has
+%%    asked Bosun to restart a daemon (a restart quicker than the poll).
+%%
+%% Hush silences, clear forgets: `selene $ hush` and `hush` mark the sockets
+%% hushed, so a returning daemon is not given back what was silenced; the
+%% next apply wakes them. Nothing here forgets an apply.
+-module(selene_keeper).
+-behaviour(gen_server).
+
+-export([start_link/0, record/3, reapply/1, hushed/0]).
+-export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
+
+-define(POLL_MS, 2000).
+-define(SOCKETS, [<<"es9">>, <<"fh2">>]).
+
+start_link() -> gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
+
+%% A daemon accepted `apply-polysignal Json` for Bank: keep it.
+record(Socket, Bank, Json) -> gen_server:cast(?MODULE, {record, Socket, Bank, Json}).
+
+%% Send every kept apply for Socket again. Returns how many were sent.
+reapply(Socket) -> gen_server:call(?MODULE, {reapply, Socket}, 15000).
+
+%% Everything was silenced: do not give it back on a daemon's return.
+hushed() -> gen_server:cast(?MODULE, hushed).
+
+init([]) ->
+    erlang:send_after(?POLL_MS, self(), poll),
+    {ok, #{applied => load(), up => #{}, hushed => #{}}}.
+
+handle_call({reapply, Socket}, _From, St) ->
+    {N, St1} = send_all(Socket, St),
+    {reply, {ok, N}, St1};
+handle_call(_, _From, St) -> {reply, {error, unknown}, St}.
+
+handle_cast({record, Socket, Bank, Json}, St = #{applied := A, hushed := H}) ->
+    A1 = A#{{Socket, Bank} => Json},
+    save(A1),
+    {noreply, St#{applied := A1, hushed := maps:remove(Socket, H)}};
+handle_cast(hushed, St) ->
+    {noreply, St#{hushed := maps:from_list([{S, true} || S <- ?SOCKETS])}};
+handle_cast(_, St) -> {noreply, St}.
+
+%% A daemon that answers after not answering has come back with nothing.
+%% The first answer after the rig starts is taken as it stands.
+handle_info(poll, St = #{up := Up}) ->
+    erlang:send_after(?POLL_MS, self(), poll),
+    St1 = lists:foldl(
+            fun(S, Acc = #{up := U}) ->
+                    Now = answers(S),
+                    Acc1 = Acc#{up := U#{S => Now}},
+                    case {maps:get(S, Up, unknown), Now} of
+                        {false, true} -> element(2, send_all(S, Acc1));
+                        _ -> Acc1
+                    end
+            end, St, ?SOCKETS),
+    {noreply, St1};
+handle_info(_, St) -> {noreply, St}.
+
+send_all(Socket, St = #{applied := A, hushed := H}) ->
+    case maps:get(Socket, H, false) of
+        true -> {0, St};
+        false ->
+            Mine = [J || {{S, _B}, J} <- maps:to_list(A), S =:= Socket],
+            [call(path(Socket), <<"apply-polysignal ", J/binary>>) || J <- Mine],
+            case Mine of
+                [] -> ok;
+                _ -> logger:notice("selene_keeper: re-applied ~p bank(s) to ~s", [length(Mine), Socket])
+            end,
+            {length(Mine), St}
+    end.
+
+answers(Socket) ->
+    case call(path(Socket), <<"ping">>) of
+        {ok, <<"OK", _/binary>>} -> true;
+        _ -> false
+    end.
+
+path(<<"fh2">>) -> home(".fh2/control.sock", "/tmp/fh2-control.sock");
+path(_) -> home(".es9/control.sock", "/tmp/es9-control.sock").
+
+home(Rel, Fallback) ->
+    case os:getenv("HOME") of
+        false -> Fallback;
+        Home -> filename:join(Home, Rel)
+    end.
+
+call(SockPath, Command) ->
+    case gen_tcp:connect({local, SockPath}, 0, [{active, false}, binary, {packet, line}], 1000) of
+        {ok, Sock} ->
+            try
+                ok = gen_tcp:send(Sock, [Command, $\n]),
+                case gen_tcp:recv(Sock, 0, 5000) of
+                    {ok, Reply} -> {ok, string:trim(Reply)};
+                    E -> E
+                end
+            after gen_tcp:close(Sock)
+            end;
+        E -> E
+    end.
+
+%% On disk, so the rig remembers across its own restarts too.
+file() -> home(".architeuthis/selene-applied.term", "/tmp/selene-applied.term").
+
+load() ->
+    case file:read_file(file()) of
+        {ok, Bin} -> try binary_to_term(Bin) of M when is_map(M) -> M; _ -> #{} catch _:_ -> #{} end;
+        _ -> #{}
+    end.
+
+save(A) ->
+    F = file(),
+    _ = filelib:ensure_dir(F),
+    _ = file:write_file(F, term_to_binary(A)),
+    ok.

@@ -164,6 +164,14 @@ init([]) ->
            shutdown => 5000,
            type => worker,
            modules => [rig_loops]},
+         %% What Selene applied to the modular, applied again when a daemon
+         %% comes back.
+         #{id => selene_keeper,
+           start => {selene_keeper, start_link, []},
+           restart => permanent,
+           shutdown => 5000,
+           type => worker,
+           modules => [selene_keeper]},
          %% Loop windows driven by patterns from Limulus (slide "…", widen "…").
          %% Last, so its restart under rest_for_one touches nothing else.
          #{id => window_patterns,
