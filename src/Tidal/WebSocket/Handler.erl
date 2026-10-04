@@ -556,6 +556,9 @@ try_parse_prefixed(<<"selene ", Rest/binary>>) ->
     %% form `polysignal <json>`, where the JSON envelope is exactly
     %% what fh2-config's `--apply-polysignal` reads on stdin.
     {selene, Rest};
+try_parse_prefixed(<<"selene-resume", _/binary>>) ->
+    %% undo `selene $ hush`: every daemon given back what it had
+    selene_resume;
 try_parse_prefixed(<<"selene-applied", _/binary>>) ->
     %% what the modular has been given (selene_keeper), for the Dashboard
     selene_applied;
@@ -1326,6 +1329,13 @@ handle_pattern_message(Text, State) ->
                              "unreachable; spago shell-out, ~7s)">>}
             end,
             {reply, Reply, State};
+        selene_resume ->
+            Reply = case catch selene_keeper:resume() of
+                {ok, N} ->
+                    <<"OK: selene resumed (", (integer_to_binary(N))/binary, " bank(s))">>;
+                _ -> <<"ERR: selene-resume: the keeper is not running">>
+            end,
+            {reply, {text, Reply}, State};
         selene_applied ->
             Reply = case catch selene_keeper:applied() of
                 L when is_list(L) -> <<"selene-applied ", (iolist_to_binary(json:encode(L)))/binary>>;

@@ -18,7 +18,7 @@
 -module(selene_keeper).
 -behaviour(gen_server).
 
--export([start_link/0, record/3, reapply/1, hushed/0, applied/0]).
+-export([start_link/0, record/3, reapply/1, hushed/0, applied/0, resume/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -define(POLL_MS, 2000).
@@ -37,8 +37,16 @@ reapply(Socket) -> gen_server:call(?MODULE, {reapply, Socket}, 15000).
 %% silenced it since.
 applied() -> gen_server:call(?MODULE, applied, 5000).
 
-%% Everything was silenced: do not give it back on a daemon's return.
+%% Everything was silenced: do not give it back on a daemon's return. The
+%% ES-9's banks are stopped by es9-daemon's panic (the caller's); the FH-2
+%% runs its banks on the module, where nothing stops them, so each is sent
+%% again with every slot at depth 0 (AC, 2026-10-04, a stopgap: a `silence`
+%% verb in the FH-2's daemon is the real fix). What was applied is kept.
 hushed() -> gen_server:cast(?MODULE, hushed).
+
+%% Undo a hush: give every daemon back what it was given. Returns how many
+%% banks were sent.
+resume() -> gen_server:call(?MODULE, resume, 15000).
 
 init([]) ->
     erlang:send_after(?POLL_MS, self(), poll),
@@ -47,9 +55,25 @@ init([]) ->
 handle_call({reapply, Socket}, _From, St) ->
     {N, St1} = send_all(Socket, St),
     {reply, {ok, N}, St1};
+handle_call(resume, _From, St) ->
+    St1 = St#{hushed := #{}},
+    {N1, _} = send_all(<<"es9">>, St1),
+    {N2, _} = send_all(<<"fh2">>, St1),
+    {reply, {ok, N1 + N2}, St1};
 handle_call(applied, _From, St = #{applied := A, hushed := H}) ->
     {reply, [describe(S, B, J, maps:get(S, H, false)) || {{S, B}, J} <- maps:to_list(A)], St};
 handle_call(_, _From, St) -> {reply, {error, unknown}, St}.
+
+%% A bank with every slot's depth at 0: the same claim, no output.
+silent(Json) ->
+    case catch json:decode(Json) of
+        M = #{<<"slots">> := Slots} when is_list(Slots) ->
+            iolist_to_binary(json:encode(M#{<<"slots">> := [quiet(S) || S <- Slots]}));
+        _ -> Json
+    end.
+
+quiet(S) when is_map(S) -> S#{<<"depth">> => 0};
+quiet(S) -> S.
 
 describe(Socket, Bank, Json, Hushed) ->
     D = case catch json:decode(Json) of
@@ -67,7 +91,9 @@ handle_cast({record, Socket, Bank, Json}, St = #{applied := A, hushed := H}) ->
     A1 = A#{{Socket, Bank} => Json},
     save(A1),
     {noreply, St#{applied := A1, hushed := maps:remove(Socket, H)}};
-handle_cast(hushed, St) ->
+handle_cast(hushed, St = #{applied := A}) ->
+    [call(path(<<"fh2">>), <<"apply-polysignal ", (silent(J))/binary>>)
+     || {{<<"fh2">>, _B}, J} <- maps:to_list(A)],
     {noreply, St#{hushed := maps:from_list([{S, true} || S <- ?SOCKETS])}};
 handle_cast(_, St) -> {noreply, St}.
 
