@@ -18,7 +18,7 @@
 -module(selene_keeper).
 -behaviour(gen_server).
 
--export([start_link/0, record/3, reapply/1, hushed/0]).
+-export([start_link/0, record/3, reapply/1, hushed/0, applied/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -define(POLL_MS, 2000).
@@ -32,6 +32,11 @@ record(Socket, Bank, Json) -> gen_server:cast(?MODULE, {record, Socket, Bank, Js
 %% Send every kept apply for Socket again. Returns how many were sent.
 reapply(Socket) -> gen_server:call(?MODULE, {reapply, Socket}, 15000).
 
+%% What the modular has been given, for the Dashboard's chart: one map per
+%% socket and bank, with its family, its slot count, and whether a hush has
+%% silenced it since.
+applied() -> gen_server:call(?MODULE, applied, 5000).
+
 %% Everything was silenced: do not give it back on a daemon's return.
 hushed() -> gen_server:cast(?MODULE, hushed).
 
@@ -42,7 +47,21 @@ init([]) ->
 handle_call({reapply, Socket}, _From, St) ->
     {N, St1} = send_all(Socket, St),
     {reply, {ok, N}, St1};
+handle_call(applied, _From, St = #{applied := A, hushed := H}) ->
+    {reply, [describe(S, B, J, maps:get(S, H, false)) || {{S, B}, J} <- maps:to_list(A)], St};
 handle_call(_, _From, St) -> {reply, {error, unknown}, St}.
+
+describe(Socket, Bank, Json, Hushed) ->
+    D = case catch json:decode(Json) of
+            M when is_map(M) -> M;
+            _ -> #{}
+        end,
+    Slots = case maps:get(<<"slots">>, D, []) of
+                L when is_list(L) -> length(L);
+                _ -> 0
+            end,
+    #{socket => Socket, bank => Bank, family => maps:get(<<"family">>, D, <<>>),
+      slots => Slots, hushed => Hushed}.
 
 handle_cast({record, Socket, Bank, Json}, St = #{applied := A, hushed := H}) ->
     A1 = A#{{Socket, Bank} => Json},
