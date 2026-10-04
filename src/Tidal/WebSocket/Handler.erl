@@ -1960,7 +1960,7 @@ tidal_line(Block) ->
 %% stage. Its page starts it again (entering Rig, pressing play), or for
 %% drums and Conspicillum, the next line written.
 machine_hush(Block) ->
-    case re:run(Block, <<"^\\s*(odonus|vetula|balistes|drums|conspicillum)\\s*\\$\\s*hush\\s*$">>,
+    case re:run(Block, <<"^\\s*(odonus|vetula|balistes|drums|conspicillum|selene)\\s*\\$\\s*hush\\s*$">>,
                 [{capture, all_but_first, binary}]) of
         {match, [Machine]} -> {hush, Machine};
         nomatch -> none
@@ -1996,7 +1996,15 @@ hush_machine(<<"drums">>) ->
 hush_machine(<<"conspicillum">>) ->
     catch reef_conspicillum_voice:stop(),
     catch tidal_stage:stopped(conspicillum),
-    <<"OK: conspicillum hushed">>.
+    <<"OK: conspicillum hushed">>;
+%% Selene's polysignals are not voices: once applied they run in es9-daemon's
+%% audio callback, so its `panic` is the stop, as in `hush`. The FH-2's banks
+%% run on the FH-2 and have no stop yet (RIG-ISSUES-2026-08-07 #3-#5), so
+%% the reply says they keep going.
+hush_machine(<<"selene">>) ->
+    _ = daemon_call(es9_daemon_socket_path(), <<"panic">>),
+    catch tidal_stage:stopped(selene),
+    <<"OK: selene hushed (the ES-9's signals; the FH-2's banks run on the FH-2 and keep going)">>.
 
 %% A block may hold several machine lines (`odonus $ loop` then `odonus $
 %% slide "<0 -1>"`, with no blank line between): each line that starts with
