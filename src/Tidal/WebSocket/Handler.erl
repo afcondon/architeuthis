@@ -2057,7 +2057,7 @@ machine_statements(Block) ->
     %% in one (`odonus $ loop  -- loop the latest`), or be only one
     Lines = [L || L0 <- binary:split(string:trim(Block), <<"\n">>, [global]),
                   L <- [strip_comment(L0)], string:trim(L) =/= <<>>],
-    Heads = [<<"odonus">>, <<"vetula">>, <<"drums">>, <<"conspicillum">>, <<"balistes">>, <<"selene">>],
+    Heads = [<<"odonus">>, <<"vetula">>, <<"drums">>, <<"conspicillum">>, <<"balistes">>, <<"selene">>, <<"route">>],
     Starts = fun(L) -> lists:any(fun(H) -> starts_word(L, H) end, Heads) end,
     Groups = lists:foldl(
                fun(L, []) -> [[L]];
@@ -2116,6 +2116,7 @@ machine_statement_(Block) ->
         <<"balistes", _/binary>> ->
             <<"ERR: balistes: only balistes $ hush, so far">>;
         <<"selene", Rest/binary>> -> selene_line(Rest);
+        <<"route", Rest/binary>> -> route_line(Rest);
         _ -> tidal_pattern_line(Block)
     end.
 
@@ -2424,10 +2425,11 @@ odonus_samples(Json) ->
                       #{<<"pattern">> := P, <<"root">> := R} -> {just, #{pattern => P, root => R}};
                       _ -> {nothing}
                   end,
-            Patterns = #{harmony => Opt(<<"harmony">>), scale => Opt(<<"scale">>), outScale => Out},
+            Patterns = #{harmony => Opt(<<"harmony">>), scale => Opt(<<"scale">>), outScale => Out,
+                         gridHarmony => Opt(<<"gridHarmony">>)},
             Inputs = [begin
                           Pos = Step * Q,
-                          H = fun(T) -> 'tidal_harmony@ps':harmonySampler(Pos, 16, T) end,
+                          H = fun(T) -> 'tidal_harmony@ps':voicingSampler(Pos, 16, T) end,
                           S = fun(T) -> 'tidal_scales@ps':scaleSampler(Pos, 16, T) end,
                           'reef_protocol@ps':encodeInput(('reef_engine@ps':samplePatterns(H, S, Patterns)))
                       end || Step <- lists:seq(From, From + Count - 1)],
@@ -2462,6 +2464,28 @@ odonus_line(Line) ->
     catch
         Class:Why ->
             iolist_to_binary(io_lib:format("ERR: odonus: ~p:~p", [Class, Why]))
+    end.
+
+%% `route $ odonus.grid <- vetula 2` (or `<- none`): one harmony route, as
+%% Limulus writes it (docs/kb/plans/harmony-routes-coherent.md). The table on
+%% the stage with that input's route set or cleared (Reef.Route.applyLine), then
+%% kept exactly as a table from the Dashboard is (apply_routes), so there is
+%% one table and one check, whichever surface wrote it.
+route_line(Rest) ->
+    case string:trim(Rest, leading) of
+        <<"$", Body0/binary>> ->
+            Body = string:trim(Body0),
+            case 'reef_route@ps':applyLine(Body, current_routes()) of
+                {left, Why} -> <<"ERR: route: ", Why/binary>>;
+                {right, New} ->
+                    Text = case array:size(New) of
+                               0 -> null;
+                               _ -> 'reef_route@ps':print(New)
+                           end,
+                    apply_routes(Text)
+            end;
+        _ ->
+            <<"ERR: route: a route line is route $ INPUT <- SOURCE (odonus.grid or odonus.out; scale \"...\" ROOT, harmony \"...\", vetula key, vetula N, or none)">>
     end.
 
 %% **Harmony routes** (Reef.Route, docs/kb/plans/matrix-router.md): what

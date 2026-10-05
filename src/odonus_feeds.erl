@@ -13,11 +13,11 @@
 %% (`Reef.Route.feedInputs`), as one move, so the page follows in lockstep.
 %% Editing a card under a route re-feeds Odonus as changing the route does.
 %%
-%% A card's `# out odo` and the route say the same thing, kept in step both
-%% ways: a card turning to `→ odo` routes `odonus.out <- vetula N` to its
-%% channel (turning away clears that route if it still names the card), and
-%% a route to `vetula N` written in the matrix turns that card to `→ odo`
-%% and any other card on it back to MIDI.
+%% A card turning to `→ odo` routes `odonus.out <- vetula N` to its channel
+%% (turning away clears that route if it still names the card). The other
+%% way round went 2026-10-05 (docs/kb/plans/harmony-routes-coherent.md): a
+%% route never rewrites a card, since a voice that sounds may also shape
+%% Odonus (AC), and turning it to `→ odo` took it off MIDI.
 %%
 %% What it resolves it also publishes, as the stage object `odonus/feeds`
 %% (Reef.Route.printFeeds), for a page that plays Odonus itself (Solo) and
@@ -74,7 +74,7 @@ handle_info({stage_broadcast, <<"stage-text ", Json/binary>>}, St) ->
         #{<<"key">> := K, <<"text">> := T} ->
             St1 = take(K, T, St),
             St2 = shortcut(K, maps:get(cards, St), St1),
-            {noreply, feed(mirror(maps:get(routes, St), St2))};
+            {noreply, feed(St2)};
         _ ->
             {noreply, St}
     end;
@@ -145,37 +145,6 @@ shortcut(<<"vetula/v", _/binary>> = K, OldCards, St) ->
     end;
 shortcut(_, _, St) ->
     St.
-
-%% The other way round: when odonus.out comes to name a different source,
-%% the cards say so. Cards on the newly routed channel turn to `→ odo`, and
-%% any other card left on `→ odo` turns back to MIDI, written to the stage
-%% (from the rig, so the Vetula page and Limulus show it). Their broadcasts
-%% come back here and agree with the routes, so nothing loops.
-mirror(OldRoutes, St) ->
-    Out = fun(Rs) -> 'reef_route@ps':sourceOf({odonusOut}, Rs) end,
-    New = Out(maps:get(routes, St)),
-    case Out(OldRoutes) =:= New of
-        true -> St;
-        false ->
-            Want = case New of
-                       {just, {vetulaVoice, Ch}} -> Ch;
-                       _ -> none
-                   end,
-            Cards = maps:fold(
-                      fun(K, Spec = #{channel := Ch, term := Term}, Acc) ->
-                              Odo = Term =:= {tOdo},
-                              case {Ch =:= Want, Odo} of
-                                  {true, false} -> rewrite(K, Spec#{term => {tOdo}}, Acc);
-                                  {false, true} -> rewrite(K, Spec#{term => {tMidi}}, Acc);
-                                  _ -> Acc
-                              end
-                      end, maps:get(cards, St), maps:get(cards, St)),
-            St#{cards => Cards}
-    end.
-
-rewrite(K, Spec, Cards) ->
-    tidal_stage:put_text(K, 'reef_vetula_lepidoptera@ps':printCard(Spec), rig),
-    Cards#{K => Spec}.
 
 odo_channel(#{term := {tOdo}, channel := Ch}) -> {ch, Ch};
 odo_channel(_) -> none.

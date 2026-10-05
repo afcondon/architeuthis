@@ -349,7 +349,8 @@ drain(St, Step, Horizon, AnchorUs, BeatAtAnchor, Tempo) ->
             AheadSim = lists:foldl(
                          fun({_, I}, S) -> ('reef_input@ps':applyInput(I))(S) end,
                          Sim0, [E || {Tk, _} = E <- Keep, Tk =< LeadStep]),
-            HSample = fun(Txt) -> 'tidal_harmony@ps':harmonySampler(LeadStep * Quarters, 16, Txt) end,
+            %% chords as voiced, octaves kept (docs/kb/plans/harmony-routes-coherent.md)
+            HSample = fun(Txt) -> 'tidal_harmony@ps':voicingSampler(LeadStep * Quarters, 16, Txt) end,
             SSample = fun(Txt) -> 'tidal_scales@ps':scaleSampler(LeadStep * Quarters, 16, Txt) end,
             Sampled = 'reef_engine@ps':sampleInput(HSample, SSample, AheadSim),
             SampledJson = 'reef_protocol@ps':encodeInput(Sampled),
