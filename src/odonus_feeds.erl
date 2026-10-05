@@ -35,6 +35,7 @@
 -define(ROUTES, <<"routing/harmony">>).
 -define(KEY, <<"vetula/key">>).
 -define(FEEDS, <<"odonus/feeds">>).
+-define(VOICES, <<"vetula/harmonies">>).
 
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
@@ -52,7 +53,7 @@ feeds() -> gen_server:call(?MODULE, feeds).
 init([]) ->
     Table = tidal_stage:text_subscribe(self()),
     St0 = #{routes => array:new(), cards => #{}, key => {nothing}, applied => unfed(),
-            published => none},
+            published => none, voices_published => none},
     St = maps:fold(fun(K, #{text := T}, Acc) -> take(K, T, Acc) end, St0, Table),
     %% a voice already running (this process restarted under it) is fed afresh
     {ok, feed(St)}.
@@ -153,7 +154,7 @@ odo_channel(_) -> none.
 %% publish them if they changed.
 feed(St) ->
     Feeds = current(St),
-    St1 = publish(Feeds, St),
+    St1 = publish_voices(publish(Feeds, St)),
     case whereis(reef_voice) of
         undefined ->
             %% nothing to feed; a voice that starts takes the lot (to_voice)
@@ -173,6 +174,38 @@ publish(Feeds, St) ->
                    end,
             tidal_stage:put_text(?FEEDS, Text, rig),
             St#{published => Feeds}
+    end.
+
+%% Vetula's voices as the rig reads them, for the pages that show them (Vetula's
+%% drawer, docs/kb/plans/harmony-routes-coherent.md): one line a voice,
+%% `CHANNEL TERM HARMONY`, TERM where its card sends it (midi, rig, odo) and
+%% HARMONY its chords as a Tidal pattern, which a page names by asking the rig
+%% to sample it (odonus-sample), since only the rig reads Tidal.
+publish_voices(St) ->
+    Cards = lists:sort(fun({A, _}, {B, _}) -> card_no(A) =< card_no(B) end,
+                       maps:to_list(maps:get(cards, St))),
+    Lines = lists:filtermap(
+              fun({_, Spec}) ->
+                      case 'tidal_vetula_card@ps':cardHarmony(Spec) of
+                          {just, H} ->
+                              Term = case maps:get(term, Spec, {tMidi}) of
+                                         {tOdo} -> <<"odo">>;
+                                         {tRig} -> <<"rig">>;
+                                         _ -> <<"midi">>
+                                     end,
+                              {true, iolist_to_binary([integer_to_binary(maps:get(channel, Spec)), " ", Term, " ", H])};
+                          _ -> false
+                      end
+              end, Cards),
+    Text = case Lines of
+               [] -> null;
+               _ -> iolist_to_binary(lists:join(<<"\n">>, Lines))
+           end,
+    case maps:get(voices_published, St) of
+        Text -> St;
+        _ ->
+            tidal_stage:put_text(?VOICES, Text, rig),
+            St#{voices_published => Text}
     end.
 
 send(Pid, Inputs) ->
