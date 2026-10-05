@@ -3,8 +3,8 @@ module Calypso.Generated.Session where
 import Calypso.Prelude
 import Studio (iac, bass1, bass2, bass3, bass4)
 
--- Genre: subzero minimal techno (seed 56)
--- subzero minimal techno | c aeolian | density 0.6
+-- Genre: house (seed 64)
+-- house | e mixolydian | density 0.47
 
 drumsKit :: DrumKit
 drumsKit = midiDrumKit iac 10
@@ -23,16 +23,25 @@ drumsKit = midiDrumKit iac 10
   , hit "ht" 50 100 40
   , hit "cr" 49 90 80
   , hit "rd" 51 80 60
+  , hit "maracas" 48 90 25
+  , hit "timbale" 47 100 40
+  , hit "cowbell" 50 100 40
+  , hit "congahi" 43 100 40
+  , hit "congalo" 40 100 40
+  , hit "clave" 51 100 30
+  , hit "shekere" 48 90 25
+  , hit "block" 37 100 30
+  , hit "agogo" 50 100 30
   ]
 
 part0 :: PitchedPart
-part0 = on vBass bass1 (swingByR 12 96 8 (inKey cAeolian (degree "~ ~ 0 ~ ~ ~ 0 ~ ~ ~ 0 ~ ~ ~ 0 ~")))
+part0 = on vBass bass1 (swingByR 16 96 4 (rev (inKey cMixolydian (degree "0 ~ 0 ~ 4 ~ 2 ~ 0 ~ 0 ~ 4 ~ 2 ~"))))
 
 part1 :: PitchedPart
-part1 = on vFugue bass2 (swingByR 12 96 8 (inKey cAeolian (degree "~ ~ ~ ~ ~ ~ [0,2,4,6] ~ ~ ~ ~ ~ ~ ~ [0,2,4,6] ~")))
+part1 = on vFugue bass2 (swingByR 16 96 4 (rev (inKey cMixolydian (degree "~ ~ [0,2,4] ~ ~ ~ [0,2,4] ~ ~ ~ [0,2,4] ~ ~ ~ [0,2,4] ~"))))
 
 partDrums :: DrumPart
-partDrums = on vDrums drumsKit (swingByR 12 96 8 (stack [ toPattern (drum "bd ~ ~ ~ bd ~ ~ ~ bd ~ ~ ~ bd ~ ~ ~"), toPattern (drum "~ ~ hh ~ ~ ~ hh ~ ~ ~ hh ~ ~ ~ hh ~"), toPattern (drum "~ ~ ~ ~ sn ~ ~ ~ ~ ~ ~ ~ sn ~ ~ sn"), toPattern (drum "~ ~ ~ ~ ~ perc ~ ~ ~ perc ~ ~ ~ ~ ~ ~") ]))
+partDrums = on vDrums drumsKit (swingByR 16 96 4 (stack [ (toPattern (drum "bd ~ ~ ~ bd ~ ~ ~ bd ~ ~ ~ bd ~ ~ ~") # gain "1.0 ~ ~ ~ 1.0 ~ ~ ~ 1.0 ~ ~ ~ 1.0 ~ ~ ~"), (toPattern (drum "~ ~ ~ ~ cp ~ ~ ~ ~ ~ ~ ~ cp ~ ~ ~") # gain "~ ~ ~ ~ 1.0 ~ ~ ~ ~ ~ ~ ~ 1.0 ~ ~ ~"), (toPattern (drum "~ ~ hh ~ ~ ~ hh ~ ~ ~ hh ~ ~ ~ hh ~") # gain "~ ~ 1.0 ~ ~ ~ 1.0 ~ ~ ~ 1.0 ~ ~ ~ 1.0 ~") ]))
 
 piece :: Section
 piece = stack [ armPart part0, armPart part1, armPart partDrums ]

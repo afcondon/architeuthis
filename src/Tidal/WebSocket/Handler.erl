@@ -2139,7 +2139,10 @@ selene_line(Rest) ->
             case catch 'reef_selene_line@ps':rigLine(Body, Rack) of
                 {left, Why} -> <<"ERR: selene: ", Why/binary>>;
                 {right, #{rack := NewRack, line := Line, socket := Socket, bank := Bank, json := Json}} ->
-                    _ = tidal_stage:put_text(<<"selene/rack">>, NewRack, self()),
+                    %% to every subscriber, the sender too: a module dropped on
+                    %% the Selene page comes from that page, and it must follow
+                    %% (Limulus does not edit selene/rack, so it ignores it)
+                    _ = tidal_stage:put_text(<<"selene/rack">>, NewRack, nobody),
                     case Socket of
                         <<>> -> <<"OK: selene: kept (not a modular bank, nothing sent): ", Line/binary>>;
                         _ ->
