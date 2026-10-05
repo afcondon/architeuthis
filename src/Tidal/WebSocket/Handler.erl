@@ -2057,7 +2057,7 @@ machine_statements(Block) ->
     %% in one (`odonus $ loop  -- loop the latest`), or be only one
     Lines = [L || L0 <- binary:split(string:trim(Block), <<"\n">>, [global]),
                   L <- [strip_comment(L0)], string:trim(L) =/= <<>>],
-    Heads = [<<"odonus">>, <<"vetula">>, <<"drums">>, <<"conspicillum">>, <<"balistes">>],
+    Heads = [<<"odonus">>, <<"vetula">>, <<"drums">>, <<"conspicillum">>, <<"balistes">>, <<"selene">>],
     Starts = fun(L) -> lists:any(fun(H) -> starts_word(L, H) end, Heads) end,
     Groups = lists:foldl(
                fun(L, []) -> [[L]];
@@ -2115,7 +2115,47 @@ machine_statement_(Block) ->
             <<"ERR: conspicillum: its line goes through the stage (Limulus writes conspicillum/line); here only conspicillum $ hush">>;
         <<"balistes", _/binary>> ->
             <<"ERR: balistes: only balistes $ hush, so far">>;
+        <<"selene", Rest/binary>> -> selene_line(Rest);
         _ -> tidal_pattern_line(Block)
+    end.
+
+%% `selene $ <kind> <bank> # <param> <value> …`: one bank of polysignals,
+%% changing only what the line names (docs/kb/plans/selene-in-tidal.md). The
+%% rack lives on the stage as `selene/rack` (the Selene page keeps it there);
+%% reef's Selene language applies the line to it (Reef.Selene.Line.rigLine,
+%% the same code the page runs), the rack goes back on the stage (so the page
+%% follows), and the one bank touched goes to its daemon as one
+%% apply-polysignal: atomic, its eight outputs changing on the same instant.
+%% The keeper records it, as a page's apply, so hush, resume and a daemon's
+%% return treat it alike.
+selene_line(Rest) ->
+    case string:trim(Rest, leading) of
+        <<"$", Body0/binary>> ->
+            Body = string:trim(Body0),
+            Rack = case tidal_stage:get_text(<<"selene/rack">>) of
+                       T when is_binary(T) -> T;
+                       _ -> <<>>
+                   end,
+            case catch 'reef_selene_line@ps':rigLine(Body, Rack) of
+                {left, Why} -> <<"ERR: selene: ", Why/binary>>;
+                {right, #{rack := NewRack, line := Line, socket := Socket, bank := Bank, json := Json}} ->
+                    _ = tidal_stage:put_text(<<"selene/rack">>, NewRack, self()),
+                    case Socket of
+                        <<>> -> <<"OK: selene: kept (not a modular bank, nothing sent): ", Line/binary>>;
+                        _ ->
+                            case daemon_call(selene_socket_path(Socket), <<"apply-polysignal ", Json/binary>>) of
+                                {ok, <<"OK", _/binary>>} ->
+                                    catch selene_keeper:record(Socket, Bank, Json),
+                                    <<"OK: selene: ", Line/binary>>;
+                                {ok, Said} -> <<"ERR: selene: the ", Socket/binary, " daemon said ", Said/binary>>;
+                                {error, Reason} ->
+                                    iolist_to_binary(io_lib:format("ERR: selene: the ~s daemon is not answering (~p); the rack is changed, the modular is not", [Socket, Reason]))
+                            end
+                    end;
+                Other ->
+                    iolist_to_binary(io_lib:format("ERR: selene: ~p", [Other]))
+            end;
+        _ -> <<"ERR: selene: a line is selene $ <kind> <bank> # <parameter> <value>, as in selene $ lfo es9main # rate 0.5">>
     end.
 
 %% `drums $ <control pattern>`: Tidal, played on the drum kit. The pattern is
