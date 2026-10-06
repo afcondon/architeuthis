@@ -133,8 +133,8 @@ read_cards(St) ->
 %% away (or going) clears the route if it names the card's channel. The
 %% write comes back as a stage broadcast, which feeds Odonus.
 shortcut(<<"vetula/v", _/binary>> = K, OldCards, St) ->
-    Was = odo_channel(maps:get(K, OldCards, none)),
-    Now = odo_channel(maps:get(K, maps:get(cards, St), none)),
+    Was = odo_voice(K, maps:get(K, OldCards, none)),
+    Now = odo_voice(K, maps:get(K, maps:get(cards, St), none)),
     Routes = maps:get(routes, St),
     Out = 'reef_route@ps':sourceOf({odonusOut}, Routes),
     New = case {Was, Now} of
@@ -158,8 +158,9 @@ shortcut(<<"vetula/v", _/binary>> = K, OldCards, St) ->
 shortcut(_, _, St) ->
     St.
 
-odo_channel(#{term := {tOdo}, channel := Ch}) -> {ch, Ch};
-odo_channel(_) -> none.
+%% The voice (its number) a card turning to `→ odo` routes to Odonus's output.
+odo_voice(K, #{term := {tOdo}}) -> {ch, card_no(K)};
+odo_voice(_, _) -> none.
 
 %% Send the running voice what moves it from the feeds it last took, and
 %% publish them if they changed.
@@ -189,22 +190,24 @@ publish(Feeds, St) ->
 
 %% Vetula's voices as the rig reads them, for the pages that show them (Vetula's
 %% drawer, docs/kb/plans/harmony-routes-coherent.md): one line a voice,
-%% `CHANNEL TERM HARMONY`, TERM where its card sends it (midi, rig, odo) and
+%% `VOICE TERM HARMONY` (VOICE its number, P = 1), TERM where its card sends
+%% it (midi, rig, odo; mute: silent, still conducting) and
 %% HARMONY its chords as a Tidal pattern, which a page names by asking the rig
 %% to sample it (odonus-sample), since only the rig reads Tidal.
 publish_voices(St) ->
     Cards = lists:sort(fun({A, _}, {B, _}) -> card_no(A) =< card_no(B) end,
                        maps:to_list(maps:get(cards, St))),
     Lines = lists:filtermap(
-              fun({_, Spec}) ->
+              fun({K, Spec}) ->
                       case 'tidal_vetula_card@ps':cardHarmony(Spec) of
                           {just, H} ->
-                              Term = case maps:get(term, Spec, {tMidi}) of
-                                         {tOdo} -> <<"odo">>;
-                                         {tRig} -> <<"rig">>;
+                              Term = case {maps:get(muted, Spec, false), maps:get(term, Spec, {tMidi})} of
+                                         {true, _} -> <<"mute">>;
+                                         {_, {tOdo}} -> <<"odo">>;
+                                         {_, {tRig}} -> <<"rig">>;
                                          _ -> <<"midi">>
                                      end,
-                              {true, iolist_to_binary([integer_to_binary(maps:get(channel, Spec)), " ", Term, " ", H])};
+                              {true, iolist_to_binary([integer_to_binary(card_no(K)), " ", Term, " ", H])};
                           _ -> false
                       end
               end, Cards),
@@ -237,9 +240,9 @@ context(St) ->
     Cards = lists:sort(fun({A, _}, {B, _}) -> card_no(A) =< card_no(B) end,
                        maps:to_list(maps:get(cards, St))),
     Voices = lists:filtermap(
-               fun({_, Spec}) ->
+               fun({K, Spec}) ->
                        case 'tidal_vetula_card@ps':cardHarmony(Spec) of
-                           {just, H} -> {true, #{channel => maps:get(channel, Spec), harmony => H}};
+                           {just, H} -> {true, #{voice => card_no(K), harmony => H}};
                            _ -> false
                        end
                end, Cards),

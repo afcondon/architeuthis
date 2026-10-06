@@ -59,11 +59,10 @@ cardSounds spec = not spec.muted && spec.term /= TOdo && Array.length spec.chord
 -- | chord sounds, not how: the sequence and the layers that always move it in
 -- | time or pitch (`Reef.Vetula.Harmony.seqHarmony`, as the page conducted).
 -- | Odonus's cycle is a bar; a plain card's is a beat, so its pattern runs
--- | four times as fast. Nothing for a muted card or one with no chords.
+-- | four times as fast. A muted voice still conducts (AC, 2026-10-06: mute
+-- | silences its sound; hush removes it). Nothing for one with no chords.
 cardHarmony :: VoiceSpec -> Maybe String
-cardHarmony spec
-  | spec.muted = Nothing
-  | otherwise = do
+cardHarmony spec = do
       p <- VH.seqHarmony spec.chords (if cardOnBar spec then spec.seqText else "") (mapMaybe shape spec.stack)
       pure (if cardOnBar spec then p else "[" <> p <> "]*4")
   where
