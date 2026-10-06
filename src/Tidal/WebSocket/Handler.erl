@@ -2014,6 +2014,7 @@ hush_machine(<<"odonus">>) ->
     [gen_server:cast(Pid, hush) || Pid <- odonus_voice_sup:which_voices()],
     catch reef_voice:stop(),
     catch tidal_stage:stopped(odonus),
+    catch tidal_link_anchor:sync_broadcast(<<"hushed odonus">>),
     <<"OK: odonus hushed">>;
 hush_machine(<<"vetula">>) ->
     catch rig_loops:run(<<"vetula">>, false),
@@ -2023,10 +2024,12 @@ hush_machine(<<"vetula">>) ->
     catch reef_vetula_voice:stop(),
     catch reef_vetula_brush:stop(),
     catch tidal_stage:stopped(vetula),
+    catch tidal_link_anchor:sync_broadcast(<<"hushed vetula">>),
     <<"OK: vetula hushed">>;
 hush_machine(<<"balistes">>) ->
     catch reef_balistes_voice:stop(),
     catch tidal_stage:stopped(balistes),
+    catch tidal_link_anchor:sync_broadcast(<<"hushed balistes">>),
     <<"OK: balistes hushed">>;
 hush_machine(<<"drums">>) ->
     case whereis(tidal_dirt_voice:registered_name(drums)) of
@@ -4370,6 +4373,9 @@ hush_everything() ->
     catch reef_conspicillum_voice:stop(),
     %% and tell the stage, so every page shows the slots stopped.
     tidal_stage:stopped_all(),
+    %% and the pages, whose transports would otherwise start their voices
+    %% again at their next push (a machine's shell stops on `hushed`)
+    catch tidal_link_anchor:sync_broadcast(<<"hushed">>),
     %% and the four PER-MACHINE voice trees. Until 2026-08-07 hush missed
     %% all of these: a voice under one of them was unreachable by every UI
     %% action AND invisible to `state` (which samples only tidal_clock +
