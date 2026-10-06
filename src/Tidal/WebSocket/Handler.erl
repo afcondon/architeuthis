@@ -991,6 +991,12 @@ handle_pattern_message(Text, State) ->
         {stage_text, <<"routing/harmony">>, Body} ->
             %% the router's harmony routes: the rig reads these itself
             {reply, {text, apply_routes(Body)}, State};
+        {stage_text, <<"vetula/v", _/binary>> = Key, Body} when Body =:= <<"hush">>; Body =:= <<"silence">> ->
+            %% `v3 $ hush` (or Tidal's `silence`) removes the voice: the card
+            %% goes, announced to every page and to the Limulus that wrote it
+            %% (from `rig`, so the writer hears it too)
+            Ver = tidal_stage:put_text(Key, null, rig),
+            {reply, {text, iolist_to_binary(io_lib:format("OK: stage-text ~s deleted (version ~p): voice removed", [Key, Ver]))}, State};
         {stage_text, Key, Body} ->
             %% (not `Text`: that is this function's argument, and a bound
             %% variable in a pattern is a comparison)
