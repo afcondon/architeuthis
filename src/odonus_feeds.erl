@@ -52,7 +52,7 @@ feeds() -> gen_server:call(?MODULE, feeds).
 
 init([]) ->
     Table = tidal_stage:text_subscribe(self()),
-    St0 = #{routes => array:new(), cards => #{}, key => {nothing}, applied => unfed(),
+    St0 = #{routes => array:new(), cards => #{}, texts => #{}, progs => #{}, key => {nothing}, applied => unfed(),
             published => none, voices_published => none},
     St = maps:fold(fun(K, #{text := T}, Acc) -> take(K, T, Acc) end, St0, Table),
     %% a voice already running (this process restarted under it) is fed afresh
@@ -104,19 +104,30 @@ take(?KEY, T, St) ->
     end,
     St#{key => Key};
 take(<<"vetula/v", N/binary>> = K, T, St) ->
-    Cards = maps:get(cards, St),
-    Cards1 = case {string:to_integer(N), T} of
-        {{_, <<>>}, null} -> maps:remove(K, Cards);
-        {{_, <<>>}, _} ->
-            case 'reef_vetula_lepidoptera@ps':parseCard(T) of
-                {just, Spec} -> Cards#{K => Spec};
-                _ -> maps:remove(K, Cards)
-            end;
-        _ -> Cards
+    Texts = maps:get(texts, St),
+    Texts1 = case {string:to_integer(N), T} of
+        {{_, <<>>}, null} -> maps:remove(K, Texts);
+        {{_, <<>>}, _} -> Texts#{K => T};
+        _ -> Texts
     end,
-    St#{cards => Cards1};
-take(_, _, St) ->
-    St.
+    read_cards(St#{texts => Texts1});
+take(K, T, St) ->
+    %% a saved progression: the cards that name it are read again
+    case vetula_progressions:take(K, T, maps:get(progs, St)) of
+        {changed, Progs} -> read_cards(St#{progs => Progs});
+        same -> St
+    end.
+
+%% The cards the texts make, each read with the progressions it may name.
+read_cards(St) ->
+    Progs = maps:get(progs, St),
+    Cards = maps:filtermap(fun(K, Text) ->
+                                   case vetula_progressions:parse(Progs, card_no(K), Text) of
+                                       {just, Spec} -> {true, Spec};
+                                       _ -> false
+                                   end
+                           end, maps:get(texts, St)),
+    St#{cards => Cards}.
 
 %% `# out odo`: a card turning to `→ odo` routes odonus.out to it; turning
 %% away (or going) clears the route if it names the card's channel. The

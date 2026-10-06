@@ -61,13 +61,20 @@ cards() ->
 init() ->
     {ok, Sock} = gen_udp:open(0, [binary]),
     Table = tidal_stage:text_subscribe(self()),
-    Cards = maps:fold(fun(Key, #{text := T}, Acc) -> put_card(Key, T, Acc) end, #{}, Table),
+    Progs = maps:fold(fun(Key, #{text := T}, Acc) ->
+                              case vetula_progressions:take(Key, T, Acc) of
+                                  {changed, Acc1} -> Acc1;
+                                  same -> Acc
+                              end
+                      end, #{}, Table),
+    Texts = maps:fold(fun(Key, #{text := T}, Acc) -> put_text(Key, T, Acc) end, #{}, Table),
     Routing = case maps:find(<<"vetula/routing">>, Table) of
                   {ok, #{text := RT}} -> routing(RT, none);
                   error -> none
               end,
     erlang:send_after(?POLL_MS, self(), tick),
-    loop(#{sock => Sock, cards => Cards, routing => Routing, last_pulse => -1}).
+    loop(#{sock => Sock, texts => Texts, progs => Progs, cards => read_cards(Texts, Progs),
+           routing => Routing, last_pulse => -1}).
 
 %% The stage's routing text, decoded; one that does not decode leaves the last.
 routing(null, _) -> none;
@@ -94,7 +101,12 @@ loop(St) ->
                 #{<<"key">> := <<"vetula/routing">>, <<"text">> := T} ->
                     loop(St#{routing => routing(T, maps:get(routing, St))});
                 #{<<"key">> := Key, <<"text">> := T} ->
-                    loop(St#{cards => put_card(Key, T, maps:get(cards, St))});
+                    Progs = maps:get(progs, St),
+                    {Texts1, Progs1} = case vetula_progressions:take(Key, T, Progs) of
+                                           {changed, P} -> {maps:get(texts, St), P};
+                                           same -> {put_text(Key, T, maps:get(texts, St)), Progs}
+                                       end,
+                    loop(St#{texts => Texts1, progs => Progs1, cards => read_cards(Texts1, Progs1)});
                 _ ->
                     loop(St)
             end;
@@ -103,21 +115,28 @@ loop(St) ->
     end.
 
 %% A card written (or, with null, deleted) on the stage. Only `vetula/v<N>`
-%% keys are cards; a line the parser refuses is dropped (the page rejects it).
-put_card(<<"vetula/v", N/binary>>, Text, Cards) ->
+%% keys are cards; their text is kept as written, and read (read_cards) with
+%% the progressions it may name, so a progression saved again reaches it.
+put_text(<<"vetula/v", N/binary>>, Text, Texts) ->
     case string:to_integer(N) of
         {Id, <<>>} ->
             case Text of
-                null -> maps:remove(Id, Cards);
-                _ ->
-                    case 'reef_vetula_lepidoptera@ps':parseCard(Text) of
-                        {just, Spec} -> Cards#{Id => Spec};
-                        _ -> maps:remove(Id, Cards)
-                    end
+                null -> maps:remove(Id, Texts);
+                _ -> Texts#{Id => Text}
             end;
-        _ -> Cards
+        _ -> Texts
     end;
-put_card(_, _, Cards) -> Cards.
+put_text(_, _, Texts) -> Texts.
+
+%% The cards the texts make; a line the parser refuses is dropped (the page
+%% rejects it).
+read_cards(Texts, Progs) ->
+    maps:filtermap(fun(Id, Text) ->
+                           case vetula_progressions:parse(Progs, Id, Text) of
+                               {just, Spec} -> {true, Spec};
+                               _ -> false
+                           end
+                   end, Texts).
 
 tick(St) ->
     NowUs = erlang:system_time(microsecond),
