@@ -37,6 +37,7 @@ import Haskell.Rational as Rat
 import Reef.PatternArg (PatternArg, argSrc)
 import Reef.Vetula.Harmony (Shape(..), seqHarmony) as VH
 import Reef.Vetula.Lepidoptera (VoiceSpec)
+import Reef.Vetula.Perf (wrapAt)
 import Reef.Vetula.PerformTypes (Layer, PerfFx(..), PerfSel(..), PerfTerm(..), VoiceShape(..), When(..), arpOrder, parseVoiceShape)
 import Tidal.Pattern.Core (cat, every, fast, slow, whenCycle)
 import Tidal.Pattern.Mini (parseMiniPattern)
@@ -104,13 +105,14 @@ fromChords :: Array (Array Int) -> Pattern (Array Int)
 fromChords = cat <<< map pure
 
 -- | The sequence over the card's chord indices (cycle = one bar); an index
--- | past the end is a rest. Nothing when empty or unparseable.
+-- | past the end wraps, a progression being a stream of itself. Nothing when
+-- | empty or unparseable.
 seqPattern :: Array (Array Int) -> String -> Maybe (Pattern (Array Int))
 seqPattern chords txt
   | trim txt == "" = Nothing
   | otherwise = case parseMiniPattern txt of
       Left _ -> Nothing
-      Right idxPat -> Just (map (\s -> fromMaybe [] (fromString (trim s) >>= index chords)) idxPat)
+      Right idxPat -> Just (map (\s -> fromMaybe [] (fromString (trim s) >>= wrapAt chords)) idxPat)
 
 onsetWhole :: forall a. Event a -> Maybe Arc
 onsetWhole ev = do
