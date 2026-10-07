@@ -18,7 +18,8 @@
 take(<<?PREFIX, Name/binary>>, null, Progs) when Name =/= <<>> ->
     {changed, maps:remove(Name, Progs)};
 take(<<?PREFIX, Name/binary>>, Text, Progs) when Name =/= <<>> ->
-    {changed, Progs#{Name => 'reef_vetula_lepidoptera@ps':readProgression(Text)}};
+    %% its chords and, if it was tapped in, their lengths in beats
+    {changed, Progs#{Name => 'reef_vetula_lepidoptera@ps':readStaged(Text)}};
 take(_, _, _) ->
     same.
 
@@ -26,7 +27,7 @@ take(_, _, _) ->
 parse(Progs, N, Text) ->
     Lookup = fun(Name) ->
                      case maps:find(Name, Progs) of
-                         {ok, Chords} -> {just, Chords};
+                         {ok, Staged} -> {just, Staged};
                          error -> {nothing}
                      end
              end,
