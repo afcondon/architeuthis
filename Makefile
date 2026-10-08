@@ -62,6 +62,7 @@ erl-quick:
 	@find output-erl -name "*.erl" -exec erlc -disable-feature maybe_expr -o ebin {} \; 2>&1 | grep -v "Warning:" || true
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_log.erl
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_anchor_log.erl
+	@erlc -disable-feature maybe_expr -o ebin src/tidal_step_window.erl
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_link_anchor.erl
 	@erlc -disable-feature maybe_expr -o ebin src/purerl_tidal_app.erl
 	@erlc -disable-feature maybe_expr -o ebin src/purerl_tidal_sup.erl
