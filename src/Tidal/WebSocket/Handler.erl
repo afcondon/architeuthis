@@ -149,26 +149,6 @@ try_parse_prefixed(<<"vetula-perf ", Rest/binary>>) ->
     %% phase-hold is needed; the → odo voice conducts reef_voice's chord overlay. A
     %% second push swaps the performance in place (live edit). Start Odonus first.
     {vetula_perf, trim_binary(Rest)};
-try_parse_prefixed(<<"vetula-voicings ", Rest/binary>>) ->
-    %% vetula-voicings <channel> <renderer> <json> — the palette→brush handoff
-    %% (Option B). Plays a Vetula progression's HAND-PICKED voicings (JSON `Array
-    %% (Array Int)`, each inner array one voiced chord's ascending MIDI) as a real
-    %% Tidal Pattern via reef_vetula_brush — a self-contained reef-family voice on
-    %% Odonus's Link 1/16 grid (no Calypso, no dispatcher). channel = 1..16 MIDI
-    %% channel the frontend is claiming; renderer ∈ {block, arp, held}. One chord
-    %% per cycle for now; dwell/skip → mininotation weighting later. A re-push live
-    %% re-voices in place.
-    case binary:split(trim_binary(Rest), <<" ">>) of
-        [ChBin, Rest2] when ChBin =/= <<>> ->
-            case binary:split(trim_binary(Rest2), <<" ">>) of
-                [Renderer, Json] when Renderer =/= <<>>, Json =/= <<>> ->
-                    try binary_to_integer(ChBin) of
-                        Ch -> {vetula_voicings, Ch, Renderer, trim_binary(Json)}
-                    catch _:_ -> none end;
-                _ -> none
-            end;
-        _ -> none
-    end;
 try_parse_prefixed(<<"conspicillum-scene ", Rest/binary>>) ->
     %% conspicillum-scene <json> — the Conspicillum handoff: a whole resolved
     %% Scene (corpus + query + cloud spec + seed, Reef.Conspicillum.Protocol wire
@@ -464,7 +444,7 @@ try_parse_prefixed(<<"stop-piece ", _/binary>>) ->
     {stop_piece};
 %% Per-voice stops for the reef family (Triggerfish ATLANTIS per-tab transport):
 %% stop ONE reef voice, not the global hush.  Restart is the voice's own handoff
-%% verb (reef-sim-at / balistes-sim-at / vetula-voicings).  Idempotent — stopping
+%% verb (reef-sim-at / balistes-sim-at / vetula-cards-play).  Idempotent — stopping
 %% an absent voice is a no-op (the :stop() call is wrapped in `catch`).
 try_parse_prefixed(<<"reef-stop">>) -> {reef_stop};
 try_parse_prefixed(<<"reef-stop ", _/binary>>) -> {reef_stop};
@@ -1088,8 +1068,7 @@ handle_pattern_message(Text, State) ->
             vetula_cards:stop(),
             {reply, {text, <<"OK: vetula-cards-stop">>}, State};
         {vetula_stop} ->
-            %% Per-tab ATLANTIS stop: silence just the Vetula brush voice.
-            catch reef_vetula_brush:stop(),
+            %% Per-tab ATLANTIS stop: silence just Vetula's voices.
             catch vetula_cards:stop(),
             {reply, {text, <<"OK: vetula-stop">>}, State};
         {log_level, N} ->
@@ -1217,21 +1196,6 @@ handle_pattern_message(Text, State) ->
                 {error, Reason} ->
                     RB = list_to_binary(io_lib:format("~p", [Reason])),
                     {reply, {text, <<"ERR: vetula-perf ", RB/binary>>}, State}
-            end;
-        {vetula_voicings, Ch, Renderer, Json} ->
-            %% Palette→brush handoff (Option B): build a real Tidal Pattern from the
-            %% pushed voicings (Tidal.Vetula.Bridge: JSON → Voicings → renderer) and
-            %% play it on the claimed channel via reef_vetula_brush — a self-contained
-            %% reef-family voice on Odonus's Link grid, queried per pulse. A re-push
-            %% swaps the pattern in place (live re-voice). No Calypso/dispatcher.
-            case reef_vetula_brush:start_json(Ch, Renderer, Json) of
-                {ok, _Pid} ->
-                    {reply, {text, <<"OK: vetula-voicings ch",
-                                     (integer_to_binary(Ch))/binary, " ",
-                                     Renderer/binary>>}, State};
-                {error, Reason} ->
-                    RB = list_to_binary(io_lib:format("~p", [Reason])),
-                    {reply, {text, <<"ERR: vetula-voicings ", RB/binary>>}, State}
             end;
         {conspicillum_scene, Json} ->
             %% Conspicillum handoff: run (or live-swap) the pushed cloud, and
@@ -2044,7 +2008,6 @@ hush_machine(<<"vetula">>) ->
     catch rig_loops:hush(<<"vetula">>, all),
     catch vetula_cards:stop(),
     catch reef_vetula_voice:stop(),
-    catch reef_vetula_brush:stop(),
     catch tidal_stage:stopped(vetula),
     catch tidal_link_anchor:sync_broadcast(<<"hushed vetula">>),
     <<"OK: vetula hushed">>;
@@ -4388,9 +4351,6 @@ hush_everything() ->
     %% and the Vetula performance conductor (vetula-perf). It emits no MIDI,
     %% but stop it so a hushed rig isn't still re-conducting a revived Odonus.
     catch reef_vetula_voice:stop(),
-    %% and the Vetula brush voice (vetula-voicings, Option B) — a real MIDI
-    %% emitter, so hush must silence it.
-    catch reef_vetula_brush:stop(),
     %% and Vetula's cards (vetula-cards-play)
     catch vetula_cards:stop(),
     %% and the Conspicillum grain cloud (conspicillum-scene) — also a

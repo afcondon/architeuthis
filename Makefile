@@ -92,7 +92,6 @@ erl-quick:
 	@erlc -disable-feature maybe_expr -o ebin src/routing_out.erl
 	@erlc -disable-feature maybe_expr -o ebin src/reef_balistes_voice.erl
 	@erlc -disable-feature maybe_expr -o ebin src/reef_vetula_voice.erl
-	@erlc -disable-feature maybe_expr -o ebin src/reef_vetula_brush.erl
 	@erlc -disable-feature maybe_expr -o ebin src/vetula_cards.erl
 	@erlc -disable-feature maybe_expr -o ebin src/vetula_progressions.erl
 	@erlc -disable-feature maybe_expr -o ebin src/dirt_osc.erl
