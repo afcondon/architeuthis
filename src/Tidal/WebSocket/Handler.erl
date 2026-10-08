@@ -2007,6 +2007,28 @@ machine_hush(Block) ->
         nomatch -> none
     end.
 
+%% `<machine> $ play`: the page's ▶ Play, from a line, so a voice started in
+%% Limulus is not met with silence because the machine was never started.
+%% Vetula's cards live on the stage, so the rig starts them itself, page or
+%% no page; Odonus and Balistes play what their page pushes, so for them the
+%% broadcast is the whole of it. Either way an open page follows it (its
+%% transport shows playing, and its next push starts the voices), as it
+%% follows `hush`.
+machine_play(Block) ->
+    case re:run(Block, <<"^\\s*(odonus|vetula|balistes)\\s*\\$\\s*play\\s*$">>,
+                [{capture, all_but_first, binary}]) of
+        {match, [Machine]} -> {play, Machine};
+        nomatch -> none
+    end.
+
+play_machine(<<"vetula">>) ->
+    catch vetula_cards:play(),
+    catch tidal_link_anchor:sync_broadcast(<<"played vetula">>),
+    <<"OK: vetula playing">>;
+play_machine(Machine) ->
+    catch tidal_link_anchor:sync_broadcast(<<"played ", Machine/binary>>),
+    <<"OK: ", Machine/binary, " play asked of its page (it plays what the page pushes: open it if it is not)">>.
+
 hush_machine(<<"odonus">>) ->
     catch rig_loops:run(<<"odonus">>, false),
     catch window_patterns:clear(<<"odonus">>),
@@ -2100,7 +2122,11 @@ machine_statement(Block) ->
     %% it, or among others in a block
     case machine_hush(Block) of
         {hush, Machine} -> hush_machine(Machine);
-        none -> machine_statement_(Block)
+        none ->
+            case machine_play(Block) of
+                {play, Machine} -> play_machine(Machine);
+                none -> machine_statement_(Block)
+            end
     end.
 
 machine_statement_(Block) ->
@@ -2116,7 +2142,7 @@ machine_statement_(Block) ->
             end;
         <<"vetula", _/binary>> = Line ->
             case review_cue(Line) of
-                none -> <<"ERR: vetula: a vetula line is a cue (mark, loop [N] [hush], slide / widen / narrow, reset, clear); a voice is v3 $ ... (Limulus writes voices to the stage)">>;
+                none -> <<"ERR: vetula: a vetula line is play, hush or a cue (mark, loop [N] [hush], slide / widen / narrow, reset, clear); a voice is v3 $ ... (Limulus writes voices to the stage)">>;
                 {M, Cues} -> run_cues(M, Cues)
             end;
         <<"drums", Rest/binary>> -> drums_line(Rest);
