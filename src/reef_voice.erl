@@ -36,12 +36,10 @@
 %% Schedule this far ahead so link-spike has lead time (mirrors the frontend's
 %% lookaheadMs and the old fixed LEAD_US).
 -define(LOOKAHEAD_MS, 200.0).
-%% Model step length in beats: 0.25 is a 1/16 note (the page's ÷1), 1.0 a quarter (÷4).
-%% Must match the frontend's model-step length for the tick indices to align;
-%% carried as a voice field so a future handoff can set it per-instrument.
-%% defaultOdonus's heads are clock multipliers (×4/×2/×8/×3) over a model
-%% step the page divides to a quarter note (÷4); a bare start plays them there.
--define(STEP_BEATS, 1.0).
+%% Model step length in beats: 0.25, a 16th note, as on the page. Odonus's
+%% clock and each head's ratio of it live in the model (Reef.Odonus), so the
+%% step never changes; it is still carried as a voice field (`reef-steplen`).
+-define(STEP_BEATS, 0.25).
 %% Treat the Link source as offline past this age (mirrors tidal_link_anchor).
 -define(STALE_ANCHOR_US, 2000000).
 %% If the next step to emit is more than this many steps AHEAD of the currently
