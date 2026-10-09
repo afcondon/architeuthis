@@ -400,7 +400,10 @@ emit(Sock, BaseCh, Cv, Odo, F, WallUs, StepMs) ->
     %% CV fork (task #190/#192): schedule this head's pitch CV (and gate, if the
     %% route has one) to land at the step onset. Independent of MIDI (the VCO has
     %% no MIDI in); the note still goes out for browser/Ableton comparison.
-    maybe_schedule_cv(Sock, Cv, HeadIdx, Note, WallUs),
+    %% A head faster than the clock fires several notes in one step, each at
+    %% its own tick inside it (Reef.Odonus.headTicks); the CV lands there too.
+    SubUs   = round('reef_render@ps':subOffsetMs(StepMs, F) * 1000.0),
+    maybe_schedule_cv(Sock, Cv, HeadIdx, Note, WallUs + SubUs),
     %% renderHits is a 3-arg PS function → purs-backend-erl emits it uncurried as
     %% renderHits/3 (there is no renderHits/1), so call it directly, not curried.
     Hits = array:to_list('reef_render@ps':renderHits(Odo, StepMs, F)),
