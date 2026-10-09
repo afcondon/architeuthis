@@ -2545,9 +2545,11 @@ unreadable_harmony(Move) ->
                                     <<"SetHeadsPattern">> -> 'tidal_harmony@ps':checkHarmony(T);
                                     _ -> 'tidal_scales@ps':checkScalePattern(T)
                                 end,
-                        case Check of
-                            {left, Why} -> {bad, Why};
-                            {right, _} -> ok
+                        case {Tag, Check} of
+                            %% the check is harmony's, and names it; say heads
+                            {<<"SetHeadsPattern">>, {left, <<"harmony ", Rest/binary>>}} -> {bad, <<"heads ", Rest/binary>>};
+                            {_, {left, Why}} -> {bad, Why};
+                            {_, {right, _}} -> ok
                         end;
                    (_, Bad) -> Bad
                 end, ok, Texts).
