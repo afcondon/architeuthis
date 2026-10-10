@@ -160,13 +160,10 @@ init([]) ->
                    {ok, #{text := T}} -> vetula_routing(T, none);
                    error -> none
                end,
-    Self = self(),
-    %% the CV routes' calibration tables, fetched once, off the hot path
-    spawn(fun() -> Self ! {cv, catch reef_voice:init_cv()} end),
     erlang:send_after(?POLL_MS, self(), tick),
     erlang:send_after(?PRUNE_MS, self(), prune),
     {ok, #{sock => Sock, marks => #{}, loops => #{}, focus => #{},
-           next => 1, cv => undefined, vrouting => VRouting, runs => #{},
+           next => 1, vrouting => VRouting, runs => #{},
            cuts => #{}, undo => #{}}}.
 
 handle_call({mark, M}, _From, St) ->
@@ -375,14 +372,6 @@ handle_info({announce, M}, St) ->
 handle_info(prune, St) ->
     prune(St),
     erlang:send_after(?PRUNE_MS, self(), prune),
-    {noreply, St};
-handle_info({cv, Cv}, St) when is_map(Cv) ->
-    {noreply, St#{cv := Cv}};
-handle_info({cv, _}, St) ->
-    {noreply, St};
-handle_info({emit_cv, Bus, Value}, St) ->
-    %% a loop's pitch CV, deferred to its onset (reef_voice:maybe_schedule_cv)
-    es9_cv:send_cv(maps:get(sock, St), Bus, Value),
     {noreply, St};
 handle_info({stage_broadcast, <<"stage-text ", Json/binary>>}, St) ->
     case catch json:decode(Json) of
@@ -621,9 +610,8 @@ send_range(M, A, B, Shift, St, {AnchorUs, BeatAtAnchor, Tempo}) ->
       end, Notes).
 
 send_note(<<"odonus">>, Head, Pitch, Vel, DurMs, Tempo, AtUs, St) ->
-    Sock = maps:get(sock, St),
-    reef_voice:maybe_schedule_cv(Sock, maps:get(cv, St), Head, Pitch, AtUs),
-    reef_voice:route_note(Sock, Head, Pitch, Vel, DurMs, 15000.0 / Tempo, AtUs);
+    %% down the same legs and ES-9 lines as live Odonus, as plain notes
+    reef_voice:route_note(maps:get(sock, St), Head, Pitch, Vel, DurMs, 15000.0 / Tempo, AtUs);
 send_note(<<"vetula">>, Ch, Pitch, Vel, DurMs, Tempo, AtUs, St) ->
     vetula_cards:route_note(maps:get(sock, St), maps:get(vrouting, St), Ch, Pitch, Vel,
                             DurMs, 60000.0 / Tempo, AtUs);

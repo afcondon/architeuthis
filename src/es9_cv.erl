@@ -15,7 +15,7 @@
 %% (localhost, tiny bodies) to avoid pulling in inets — keeps the runtime lean
 %% ([[feedback_minimize_system_complexity]]).
 -module(es9_cv).
--export([send_cv/3, send_trig_at/5, encode_cv/2, encode_trig_at/4,
+-export([send_cv/3, send_slew/4, send_trig_at/5, encode_cv/2, encode_trig_at/4,
          realise/2, note_to_hz/1, fetch_tables/1]).
 
 %% es9-daemon's OSC intake (moved 57120 -> 57130 in workstream C; see the
@@ -43,6 +43,16 @@ encode_cv(Bus, Value) ->
     Tags = pad_string(<<",if">>),
     Body = <<Bus:32/big-signed-integer, (float(Value)):32/float-big>>,
     <<Addr/binary, Tags/binary, Body/binary>>.
+
+%% Send `/cv/slew <bus> <value> <lag_sec>`: move the bus to `value` through
+%% es9-daemon's first-order smoother, whose lag (a time constant, seconds)
+%% stays on the bus until set again. A slide is a slew with a long lag; a plain
+%% note restores the short one (Reef.Articulation).
+send_slew(Sock, Bus, Value, LagSec) ->
+    Addr = pad_string(<<"/cv/slew">>),
+    Tags = pad_string(<<",iff">>),
+    Body = <<Bus:32/big-signed-integer, (float(Value)):32/float-big, (float(LagSec)):32/float-big>>,
+    gen_udp:send(Sock, ?ES9_IP, ?ES9_PORT, <<Addr/binary, Tags/binary, Body/binary>>).
 
 %% Send `/cv/trig/at <bus> <value> <dur_ms> <delay_ms>` — a SAMPLE-ACCURATE
 %% scheduled trigger (the note-gate facet). The daemon raises `bus` to `value`

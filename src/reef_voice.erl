@@ -11,9 +11,11 @@
 %% identity is what P4c's tick-tagged inputs will key on.
 %%
 %% Each step advances `reef_engine@ps:stepTick` (the ONE shared per-tick
-%% composite: runGen -> tickChord -> stepEmit) and emits the fired notes to IAC
-%% via link-spike's MIDI dispatcher, scheduled at the step's anchor-derived wall
-%% time. For now the SimState runs with NO gen sources (gen = []) and a fixed
+%% composite: runGen -> tickChord -> stepEmit) and plays the fired notes where
+%% the routing table says (Reef.Articulation: MIDI lines with their legato,
+%% triggers, a Rample, ES-9 lines with their slides), scheduled at the step's
+%% anchor-derived wall time. The rig is the only sender to hardware
+%% (docs/kb/plans/hardware-through-the-rig.md): no table, no sound. For now the SimState runs with NO gen sources (gen = []) and a fixed
 %% seed — generation + seed arrive with the handoff (P4d) and inputs (P4c); this
 %% phase is purely: clock-lock the pushed Odonus record and step it in time.
 %%
@@ -24,7 +26,7 @@
          start/0, start/2, start_json/3, start_sim_json/3, start_sim_at_json/4,
          stop/0, ping/0, loop/1]).
 %% what a loop on the rig (rig_loops) plays a note through
--export([route_note/7, maybe_schedule_cv/5, init_cv/0]).
+-export([route_note/7]).
 
 %% Lead time (us) for the smoke test — schedule far enough ahead that link-spike
 %% can receive + schedule (a 5ms lead gets dropped as already-past).
@@ -50,16 +52,15 @@
 %% How far past the last computed step a move is tagged (see the {move, _}
 %% clause): Triggerfish tags its own gestures inputBufferSteps (2) ahead.
 -define(MOVE_LEAD_STEPS, 2).
-%% Default base channel: heads emit on BASE_CHANNEL + headIdx → 12/13/14/15, one
-%% MIDI channel per head so they're separable in Ableton (per-voice recording,
-%% frontend-vs-backend comparison, golden capture).
+%% The channel a bare start/0 records in its state. Where the heads play is
+%% the routing table's to say (route_note, play), never a default channel.
 -define(BASE_CHANNEL, 12).
 
 %% The heads' routing (Reef.Routing.VoiceRouting), pushed by the Odonus page
 %% (`odonus-routing <json>`) from the routing table: each head's live legs,
 %% resolved to whole port names. Kept outside any one voice, and on the stage
-%% (odonus/routing) across restarts. Until one arrives the heads play as they
-%% always have, on IAC Driver Tidal ch BASE_CHANNEL + head (12-15).
+%% (odonus/routing) across restarts. Until one arrives the heads are silent:
+%% a default destination is a sound no route names.
 -define(ROUTING_KEY, {?MODULE, routing}).
 
 set_routing_json(Json) ->
@@ -69,17 +70,6 @@ set_routing_json(Json) ->
     end.
 
 routing() -> persistent_term:get(?ROUTING_KEY, none).
-
-%% CV out (task #190/#192): beside the MIDI emit, fork fired heads to the ES-9
-%% as calibrated CV. Each ROUTE binds a head to an ES-9 pitch bus and an Amphora
-%% calibration label, with an optional `trig_bus` (+ trig_v / trig_ms) for a gate
-%% and `pitch_lead_ms` to settle the pitch first; the es9_cv realiser keeps the
-%% VCO in tune. Routes come from the `odonus_cv` app env, and there are NONE
-%% (2026-10-10): the last ones were a patch from July that sent head 0's trigger
-%% to ES-9 out 2 whatever the page's routing table said, heard as noise on the
-%% ES-9. Odonus's CV is chosen in the routing table now (ES-9 CV destinations,
-%% played by the page in Solo); taking those legs on the rig is CR 2.
--define(DEFAULT_ODONUS_CV, #{enabled => false, routes => []}).
 
 %% Single-note smoke test: fire middle C (60) on ch 16, +200ms.
 ping() ->
@@ -91,12 +81,10 @@ ping() ->
     gen_udp:close(Sock),
     R.
 
-%% Base channel 12 by default → the four heads land on ch 12/13/14/15, each on its
-%% own MIDI channel (see emit/5) so they're separable in Ableton Session view for
-%% eyeballing + frontend-vs-backend comparison.
+%% defaultOdonus, for a shell: it sounds wherever the routing table on the stage
+%% sends Odonus's heads, and nowhere if there is none.
 start() -> start(?BASE_CHANNEL, ?STEP_BEATS).
 
-%% BaseChannel (heads on BaseChannel+headIdx, so keep it ≤ 13 for four heads),
 %% StepBeats (model step length in beats). Hardcoded defaultOdonus.
 start(BaseChannel, StepBeats) ->
     do_start('reef_odonus@ps':defaultOdonus(), BaseChannel, StepBeats).
@@ -156,55 +144,15 @@ do_start(Odo, Channel, StepBeats) ->
 %% holds the state for absolute step N (the phase-aligned reef-sim-at path).
 do_start_sim(Sim, Channel, StepBeats, LastStep) ->
     stop(),
-    Cv = init_cv(),
     Pid = spawn(fun() ->
         {ok, Sock} = gen_udp:open(0, [binary]),
         erlang:send_after(?POLL_MS, self(), poll),
         loop(#{ socket => Sock, channel => Channel, step_beats => StepBeats,
                 sim => Sim, last_step => LastStep, pending => [], swing => 0.0,
-                cv => Cv })
+                held => array:from_list([{nothing}, {nothing}, {nothing}, {nothing}]) })
     end),
     catch register(reef_voice, Pid),
     {ok, Pid}.
-
-%% Load each route's calibration table from Amphora once at voice start (never on
-%% the hot path) and return a `head => route-with-table` map. Returns `undefined`
-%% when CV-out is off, no route's table loads, or the fetch fails — the voice then
-%% runs MIDI-only, so a down Amphora never silences the rig. See es9_cv +
-%% CALIBRATION.md.
-init_cv() ->
-    case application:get_env(purerl_tidal, odonus_cv, ?DEFAULT_ODONUS_CV) of
-        #{enabled := true, routes := Routes} when is_list(Routes) ->
-            Labels = [maps:get(label, R) || R <- Routes],
-            case es9_cv:fetch_tables(Labels) of
-                {ok, Tables} ->
-                    ByHead = build_routes(Routes, Tables),
-                    tidal_log:info(
-                      "reef_voice CV-out ON: ~B/~B route(s) have tables (heads ~p)~n",
-                      [maps:size(ByHead), length(Routes), lists:sort(maps:keys(ByHead))]),
-                    case maps:size(ByHead) of
-                        0 -> undefined;
-                        _ -> ByHead
-                    end;
-                {error, Why} ->
-                    tidal_log:err(
-                      "reef_voice CV-out OFF (Amphora fetch failed: ~p) — MIDI only~n",
-                      [Why]),
-                    undefined
-            end;
-        _ ->
-            undefined
-    end.
-
-%% Zip routes with their fetched tables (same order, one per label) into a
-%% head => route#{points => Table} map, dropping any route whose table didn't
-%% load (missing label in Amphora).
-build_routes(Routes, Tables) ->
-    lists:foldl(
-      fun({_Route, undefined}, Acc) -> Acc;
-         ({Route, Points}, Acc) ->
-              Acc#{maps:get(head, Route) => Route#{points => Points}}
-      end, #{}, lists:zip(Routes, Tables)).
 
 stop() ->
     case whereis(reef_voice) of
@@ -228,7 +176,16 @@ ensure_bin(L) when is_list(L) -> list_to_binary(L).
 loop(St) ->
     receive
         stop ->
-            gen_udp:close(maps:get(socket, St));
+            %% let go of every held note and open gate, then close
+            Sock = maps:get(socket, St),
+            case routing() of
+                none -> ok;
+                Routing ->
+                    Releases = 'reef_articulation@ps':releaseAll(Routing, maps:get(held, St)),
+                    Now = erlang:system_time(microsecond),
+                    lists:foreach(fun(S) -> routing_out:send(Sock, S, Now) end, array:to_list(Releases))
+            end,
+            gen_udp:close(Sock);
         {apply_input, Tick, Input} ->
             Pending = maps:get(pending, St),
             loop(St#{pending => Pending ++ [{Tick, Input}]});
@@ -265,12 +222,6 @@ loop(St) ->
             %% odd model steps lag the audible onset. Timing expression only (never
             %% touches the model), so it just updates the field — no last_step reset.
             loop(St#{swing => S});
-        {emit_cv, Bus, Value} ->
-            %% Scheduled pitch-CV send (task #190): emit/7 defers each head's
-            %% `/cv` to its step onset via send_after so the analog VCO's pitch
-            %% lands ON the beat, not up to a lookahead early. Fire-and-continue.
-            es9_cv:send_cv(maps:get(socket, St), Bus, Value),
-            loop(St);
         poll ->
             St2 = tick(St),
             erlang:send_after(?POLL_MS, self(), poll),
@@ -353,7 +304,7 @@ drain(St, Step, Horizon, AnchorUs, BeatAtAnchor, Tempo) ->
             Res = 'reef_engine@ps':stepTick(Sim0),
             Sim1 = maps:get(sim, Res),
             Odo1 = maps:get(odo, Sim1),
-            Fired = array:to_list(maps:get(fired, Res)),
+            Fired = maps:get(fired, Res),
             %% Invert the affine map: the wall time at which beat StepBeat occurs.
             WallUs0 = round(AnchorUs + (StepBeat - BeatAtAnchor) * 60000000.0 / Tempo),
             StepMs = StepBeats * 60000.0 / Tempo,
@@ -361,99 +312,56 @@ drain(St, Step, Horizon, AnchorUs, BeatAtAnchor, Tempo) ->
             %% `swing × stepMs` on the audible onset — the SAME shift, on the same
             %% absolute-step parity, the frontend applies (Grid.purs: swingMs on
             %% modelStep rem 2 == 1). Shifts the whole step's onset together, so the
-            %% shared renderHits offsets ride along unchanged.
+            %% articulation's offsets ride along unchanged.
             SwingUs = case Step rem 2 of
                           1 -> round(maps:get(swing, St) * StepMs * 1000.0);
                           _ -> 0
                       end,
             WallUs = WallUs0 + SwingUs,
-            Ch = maps:get(channel, St),
             Sock = maps:get(socket, St),
-            Cv = maps:get(cv, St, undefined),
-            lists:foreach(fun(F) -> emit(Sock, Ch, Cv, Odo1, F, WallUs, StepMs) end, Fired),
-            drain(St#{sim => Sim1, last_step => Step, pending => Keep1, last_sample => SampledJson},
+            %% Heads muted since the last step let go of what they hold first.
+            Muted = 'reef_articulation@ps':newlyMuted(maps:get(odo, maps:get(sim, St)), Odo1),
+            Held = play(Sock, Odo1, Fired, Muted, maps:get(held, St), WallUs, StepMs),
+            record(Odo1, Fired, WallUs, StepMs),
+            drain(St#{sim => Sim1, last_step => Step, pending => Keep1, last_sample => SampledJson,
+                      held => Held},
                   Step + 1, Horizon, AnchorUs, BeatAtAnchor, Tempo)
     end.
 
-%% Each head emits on its OWN channel = BaseCh + headIdx (12/13/14/15 by default),
-%% mirroring the frontend's per-head channels (heads I-IV on ch 1-4) so every voice
-%% is separable in Ableton for comparison + golden capture. Note LENGTH and RATCHET
-%% retriggers come from the SHARED renderer (reef_render@ps:renderHits) — the same
-%% code the frontend uses — so gate/ratchet render identically on both runtimes
-%% (lockstep P4f stage 1). Each hit is scheduled at the step onset + its offsetMs.
-emit(Sock, BaseCh, Cv, Odo, F, WallUs, StepMs) ->
-    Note    = maps:get(pitch, F),
-    Vel     = maps:get(vel, F),
-    HeadIdx = maps:get(headIdx, F),
-    Ch      = BaseCh + HeadIdx,
-    %% CV fork (task #190/#192): schedule this head's pitch CV (and gate, if the
-    %% route has one) to land at the step onset. Independent of MIDI (the VCO has
-    %% no MIDI in); the note still goes out for browser/Ableton comparison.
-    %% A head faster than the clock fires several notes in one step, each at
-    %% its own tick inside it (Reef.Odonus.headTicks); the CV lands there too.
-    SubUs   = round('reef_render@ps':subOffsetMs(StepMs, F) * 1000.0),
-    maybe_schedule_cv(Sock, Cv, HeadIdx, Note, WallUs + SubUs),
-    %% renderHits is a 3-arg PS function → purs-backend-erl emits it uncurried as
-    %% renderHits/3 (there is no renderHits/1), so call it directly, not curried.
-    Hits = array:to_list('reef_render@ps':renderHits(Odo, StepMs, F)),
-    Sent = [begin
-                AtUs  = round(WallUs + maps:get(offsetMs, Hit) * 1000.0),
-                DurMs = maps:get(durMs, Hit),
-                route_note(Sock, HeadIdx, Note, Vel, DurMs, StepMs, AtUs, Ch),
-                {AtUs, Note, Vel, DurMs, HeadIdx}
-            end || Hit <- Hits],
-    %% the record buffer keeps what Odonus played (docs/kb/plans/the-deck.md)
+%% Play one step down the routing table: Reef.Articulation decides every send
+%% (legato, slides, triggers, ES-9 lines) from the fired notes and what each
+%% head was holding, and returns what each holds now. No table, no sound.
+play(Sock, Odo, Fired, Muted, Held, WallUs, StepMs) ->
+    case routing() of
+        none -> Held;
+        Routing ->
+            Notes = array:from_list([#{fired => F, velocity => maps:get(vel, F)}
+                                     || F <- array:to_list(Fired)]),
+            Played = 'reef_articulation@ps':playStep(Routing,
+                       #{odo => Odo, stepMs => float(StepMs), held => Held,
+                         newlyMuted => Muted, notes => Notes}),
+            lists:foreach(fun(S) -> routing_out:send(Sock, S, WallUs) end,
+                          array:to_list(maps:get(sends, Played))),
+            maps:get(held, Played)
+    end.
+
+%% The record buffer keeps what Odonus played (docs/kb/plans/the-deck.md): each
+%% fired note at its own time in the step, for its gate.
+record(Odo, Fired, WallUs, StepMs) ->
+    Sent = [{WallUs + round('reef_render@ps':subOffsetMs(float(StepMs), F) * 1000.0),
+             maps:get(pitch, F), maps:get(vel, F),
+             'reef_render@ps':gateMs(Odo, float(StepMs), F), maps:get(headIdx, F)}
+            || F <- array:to_list(Fired)],
     catch rig_loops:record(<<"odonus">>, Sent).
 
-%% One note of head HeadIdx: where the routing table sends it (Reef.Routing,
-%% the same function the page's own emit calls), or before a table arrives,
-%% the head's own channel of the IAC bus.
-route_note(Sock, HeadIdx, Note, Vel, DurMs, StepMs, AtUs) ->
-    route_note(Sock, HeadIdx, Note, Vel, DurMs, StepMs, AtUs, ?BASE_CHANNEL + HeadIdx).
-
-route_note(Sock, HeadIdx, Note, Vel, DurMs, StepMs, AtUs, Ch) ->
+%% One recorded note of head HeadIdx, as a loop on the rig replays it: down the
+%% same legs and ES-9 lines as live, as a plain note (a loop keeps the notes,
+%% not their slides). No table, no sound.
+route_note(Sock, HeadIdx, Note, Vel, DurMs, _StepMs, AtUs) ->
     case routing() of
-        none ->
-            Thunk = 'tidal_mIDIBridge@foreign':scheduleNoteAt(
-                      Sock, <<"IAC Driver Tidal">>, Ch, Note, Vel, DurMs, AtUs),
-            Thunk();
+        none -> ok;
         Routing ->
-            Sends = 'reef_routing@ps':voiceRoutingSends(Routing, HeadIdx,
-                      #{note => Note, velocity => Vel, atMs => 0.0,
-                        durMs => float(DurMs), stepMs => float(StepMs)}),
+            Sends = 'reef_articulation@ps':plainSends(Routing, HeadIdx,
+                      #{pitch => Note, velocity => Vel, gateMs => float(DurMs), atMs => 0.0}),
             lists:foreach(fun(S) -> routing_out:send(Sock, S, AtUs) end, array:to_list(Sends))
     end.
-
-%% Route this fired head's note to its ES-9 CV bus(es). Looks up the head's route
-%% (from init_cv's head => route map); no route for this head (or CV off) → no-op.
-%%   PITCH: realise the note through the route's calibration table, then defer the
-%%     `/cv` DC send via send_after so it lands `pitch_lead_ms` BEFORE the strike —
-%%     the VCO is settled when the envelope fires. (There's no scheduled `/cv/at`.)
-%%   GATE (optional): a sample-accurate `/cv/trig/at` sent NOW, carrying the full
-%%     time-to-beat as delay_ms; the daemon fires the pulse on the exact frame.
-maybe_schedule_cv(_Sock, undefined, _HeadIdx, _Note, _WallUs) -> ok;
-maybe_schedule_cv(Sock, ByHead, HeadIdx, Note, WallUs) when is_map(ByHead) ->
-    case maps:get(HeadIdx, ByHead, undefined) of
-        undefined -> ok;
-        Route ->
-            Points   = maps:get(points, Route),
-            PitchBus = maps:get(pitch_bus, Route),
-            Hz       = es9_cv:note_to_hz(Note),
-            Volts    = es9_cv:realise(Points, Hz),
-            Value    = Volts / 10.0,
-            DelayMs  = max(0, (WallUs - erlang:system_time(microsecond)) div 1000),
-            LeadMs   = maps:get(pitch_lead_ms, Route, 5),
-            erlang:send_after(max(0, DelayMs - LeadMs), self(),
-                              {emit_cv, PitchBus, Value}),
-            maybe_send_trig(Sock, Route, DelayMs),
-            ok
-    end.
-
-%% Fire the gate for a route that has a trig_bus (+5 V / 10 ms defaults). Sent
-%% immediately with the time-to-beat as delay_ms so the daemon schedules it
-%% sample-accurately. No trig_bus → pitch-only route (the Saïch shape) → no-op.
-maybe_send_trig(Sock, #{trig_bus := TrigBus} = Route, DelayMs) ->
-    TrigV  = maps:get(trig_v, Route, 5.0),
-    TrigMs = maps:get(trig_ms, Route, 10.0),
-    es9_cv:send_trig_at(Sock, TrigBus, TrigV / 10.0, TrigMs, DelayMs);
-maybe_send_trig(_Sock, _Route, _DelayMs) -> ok.

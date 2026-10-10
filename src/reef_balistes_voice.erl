@@ -38,11 +38,6 @@
 %% Balistes emits on ONE channel. Drums-always-ch-10 convention (2026-07-12):
 %% frontend and rig both play ch 10, matching Triggerfish.Midi.Routing drumsChannel.
 -define(DEFAULT_CHANNEL, 10).
-%% The CoreMIDI port drums go to. <<"FH-2">> fans the note-filtered trigger MCVs
-%% out to the FHX-8GT → QuadDrum; <<"IAC Driver Tidal">> sends drums to Ableton.
-%% Un-hardcoded from fire/N (2026-07-12, #198): every start seeds this into St, so
-%% it's one place to change and structurally ready for a per-voice runtime setter.
--define(DEFAULT_PORT, <<"FH-2">>).
 %% Where the routing table is kept: outside any one voice, so every start,
 %% of any engine, plays through the table last pushed.
 -define(ROUTING_KEY, {?MODULE, routing}).
@@ -51,9 +46,9 @@ start() -> start(?DEFAULT_CHANNEL, ?STEP_BEATS).
 
 %% The drum routing table, pushed by the browser (`balistes-routing <json>`,
 %% Reef.Routing's wire form): per canonKit lane, the legs to send each hit
-%% down. Until one arrives the voice plays as it always has, every hit to the
-%% FH-2 on channel 10; after, it plays what the browser's table says, through
-%% the same Reef.Routing.drumSends the browser calls.
+%% down. Until one arrives the voice is silent; after, it plays what the
+%% browser's table says, through the same Reef.Routing.drumSends the browser
+%% calls. The stage keeps the last one (balistes/routing) across restarts.
 set_routing_json(Json) ->
     case 'reef_routing@ps':decodeDrumRouting(ensure_bin(Json)) of
         {right, Routing} ->
@@ -100,7 +95,6 @@ do_start_at(Bal, Channel, StepBeats, LastStep) ->
         {ok, Sock} = gen_udp:open(0, [binary]),
         erlang:send_after(?POLL_MS, self(), poll),
         loop(#{ socket => Sock, channel => Channel, step_beats => StepBeats,
-                port => ?DEFAULT_PORT,
                 mode => grids, bal => Bal, last_step => LastStep, pending => [] })
     end),
     catch register(reef_balistes_voice, Pid),
@@ -125,8 +119,7 @@ start_fixed_json(Json, Channel, StepBeats) ->
                         {ok, Sock} = gen_udp:open(0, [binary]),
                         erlang:send_after(?POLL_MS, self(), poll),
                         loop(#{ socket => Sock, channel => Channel, step_beats => StepBeats,
-                                port => ?DEFAULT_PORT,
-                                mode => fixed, pattern => Pat, last_step => -1, pending => [] })
+                                                mode => fixed, pattern => Pat, last_step => -1, pending => [] })
                     end),
                     catch register(reef_balistes_voice, NewPid),
                     {ok, NewPid}
@@ -207,9 +200,7 @@ drain(St, Step, Horizon, AnchorUs, BeatAtAnchor, Tempo) ->
             %% Invert the affine map: the wall time at which beat StepBeat occurs.
             WallUs = round(AnchorUs + (StepBeat - BeatAtAnchor) * 60000000.0 / Tempo),
             StepMs = StepBeats * 60000.0 / Tempo,
-            Ch = maps:get(channel, St),
             Sock = maps:get(socket, St),
-            Port = maps:get(port, St),
             St2 = case maps:get(mode, St) of
                 fixed ->
                     %% Fixed rhythm: a pure function of the ABSOLUTE Step (no state, no
@@ -217,7 +208,7 @@ drain(St, Step, Horizon, AnchorUs, BeatAtAnchor, Tempo) ->
                     %% both runtimes reading the same Link step agree with no handoff.
                     FEvents = array:to_list(
                                 'reef_balistes_fixed@ps':renderFixed(maps:get(pattern, St), Step)),
-                    lists:foreach(fun(E) -> emit(Sock, Ch, Port, E, WallUs, StepMs) end, FEvents),
+                    lists:foreach(fun(E) -> emit(Sock, E, WallUs, StepMs) end, FEvents),
                     St#{last_step => Step};
                 _ ->
                     %% Grids: apply any tick-tagged inputs whose step has arrived BEFORE
@@ -237,7 +228,7 @@ drain(St, Step, Horizon, AnchorUs, BeatAtAnchor, Tempo) ->
                     Fired = maps:get(fired, Res),
                     GEvents = array:to_list(
                                 'reef_balistes_sim@ps':renderStep(Bal0, PlayedStep, Fired)),
-                    lists:foreach(fun(E) -> emit(Sock, Ch, Port, E, WallUs, StepMs) end, GEvents),
+                    lists:foreach(fun(E) -> emit(Sock, E, WallUs, StepMs) end, GEvents),
                     St#{bal => Bal1, last_step => Step, pending => Keep}
             end,
             drain(St2, Step + 1, Horizon, AnchorUs, BeatAtAnchor, Tempo)
@@ -246,7 +237,7 @@ drain(St, Step, Horizon, AnchorUs, BeatAtAnchor, Tempo) ->
 %% One rendered event → scheduled MIDI. Mirrors the frontend's emitHit: the signed
 %% Dilla push (pushMs) offsets the onset; a ratchet count > 1 subdivides the step
 %% into N retriggers of ~90% gate each. Single channel (drums).
-emit(Sock, Ch, Port, E, WallUs, StepMs) ->
+emit(Sock, E, WallUs, StepMs) ->
     Note   = maps:get(note, E),
     Vel    = maps:get(velocity, E),
     PushMs = maps:get(pushMs, E),
@@ -255,43 +246,33 @@ emit(Sock, Ch, Port, E, WallUs, StepMs) ->
     Onset  = WallUs + round(PushMs * 1000.0),
     case N =< 1 of
         true ->
-            fire(Sock, Ch, Port, Note, Vel, DurMs, StepMs, Onset);
+            fire(Sock, Note, Vel, DurMs, StepMs, Onset);
         false ->
             Sub = StepMs / N,
             lists:foreach(
               fun(K) ->
                   AtUs = Onset + round(K * Sub * 1000.0),
-                  fire(Sock, Ch, Port, Note, Vel, Sub * 0.9, Sub, AtUs)
+                  fire(Sock, Note, Vel, Sub * 0.9, Sub, AtUs)
               end, lists:seq(0, N - 1))
     end.
 
 %% One drum hit from outside the voice (the Tidal `drums` stream): sent where
-%% the routing table says, as the voice's own hits are; with no table yet, to
-%% the default port on channel 10. `SpanMs` is what a chopped sample voice
-%% spreads its slices across.
+%% the routing table says, as the voice's own hits are. `SpanMs` is what a
+%% chopped sample voice spreads its slices across.
 play_hit(Sock, Note, Vel, DurMs, SpanMs, AtUs) ->
-    fire(Sock, ?DEFAULT_CHANNEL, ?DEFAULT_PORT, Note, Vel, DurMs, SpanMs, AtUs).
+    fire(Sock, Note, Vel, DurMs, SpanMs, AtUs).
 
-%% One hit, sent where the routing table says; with no table yet, the old
-%% single destination (Ch on Port).
-%% `StepMs` is the span a chopped sample voice spreads its slices across: the
-%% step, or one ratchet's share of it.
-fire(Sock, Ch, Port, Note, Vel, DurMs, StepMs, AtUs) ->
+%% One hit, sent where the routing table says. With no table, nothing: until
+%% 2026-10-10 every hit went to the FH-2 on channel 10, a sound no route named
+%% (docs/kb/plans/hardware-through-the-rig.md). `StepMs` is the span a chopped
+%% sample voice spreads its slices across: the step, or one ratchet's share.
+fire(Sock, Note, Vel, DurMs, StepMs, AtUs) ->
     case routing() of
         none ->
-            fire_one(Sock, Ch, Port, Note, Vel, DurMs, AtUs);
+            ok;
         Routing ->
             Hit = #{note => Note, velocity => Vel, atMs => 0.0, durMs => float(DurMs),
                     stepMs => float(StepMs)},
             lists:foreach(fun(Send) -> routing_out:send(Sock, Send, AtUs) end,
                           array:to_list('reef_routing@ps':drumSends(Routing, Hit)))
     end.
-
-%% Schedule one note to a CoreMIDI Port (by default ?DEFAULT_PORT).
-%% QuadDrum routing (2026-07-12, #197/#198): the default <<"FH-2">> fans the FH-2's
-%% note-filtered trigger MCVs (set-drum-trig, ch 10) out to FHX-8GT gate jacks → the
-%% vpme.de QuadDrum. <<"IAC Driver Tidal">> would send drums to Ableton instead.
-fire_one(Sock, Ch, Port, Note, Vel, DurMs, AtUs) ->
-    Thunk = 'tidal_mIDIBridge@foreign':scheduleNoteAt(
-              Sock, Port, Ch, Note, Vel, DurMs, AtUs),
-    Thunk().

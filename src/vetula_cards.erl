@@ -11,8 +11,9 @@
 %% pulse's wall time, down the card's legs in the routing table: the dashboard
 %% writes them to the stage as `vetula/routing` (a `Reef.Routing.VoiceRouting`,
 %% voice N-1 for channel N), and each note goes through `voiceRoutingSends`,
-%% as Odonus's heads do. Until one is written, a card plays its channel of
-%% `IAC Driver Tidal`, as it always did.
+%% as Odonus's heads do. Until one is written, the cards are silent: a
+%% default destination is a sound no route names
+%% (docs/kb/plans/hardware-through-the-rig.md).
 %% A card with a sequence plays one pattern cycle per bar (slots on the bar
 %% line), a plain card one chord per beat, as the page did.
 %%
@@ -25,7 +26,6 @@
 
 -export([play/0, stop/0, cards/0, route_note/8]).
 
--define(PORT, <<"IAC Driver Tidal">>).
 -define(POLL_MS, 25).
 -define(LOOKAHEAD_MS, 200.0).
 -define(STALE_ANCHOR_US, 2000000).   % as reef_voice
@@ -211,16 +211,14 @@ strike(St, Spec, Slot, SlotBeats, AnchorUs, BeatAtAnchor, Tempo, Acc) ->
           Acc2
       end, Acc, Hits).
 
-%% One note of the card on channel Ch: down its legs if the dashboard has
-%% routed the cards, else on its own channel of the IAC bus.
+%% One note of the card on channel Ch, down its legs.
 play(St, Ch, Note, DurMs, SlotMs, AtUs) ->
     route_note(maps:get(sock, St), maps:get(routing, St), Ch, Note, ?VELOCITY, DurMs, SlotMs, AtUs).
 
-%% One note on channel Ch, down its legs or on its own channel of the IAC
-%% bus; a loop on the rig (rig_loops) plays Vetula's notes through it too.
-route_note(Sock, none, Ch, Note, Vel, DurMs, _SlotMs, AtUs) ->
-    Thunk = 'tidal_mIDIBridge@foreign':scheduleNoteAt(Sock, ?PORT, Ch, Note, Vel, DurMs, AtUs),
-    Thunk();
+%% One note on channel Ch, down its legs, or nowhere without a table; a loop
+%% on the rig (rig_loops) plays Vetula's notes through it too.
+route_note(_Sock, none, _Ch, _Note, _Vel, _DurMs, _SlotMs, _AtUs) ->
+    ok;
 route_note(Sock, Routing, Ch, Note, Vel, DurMs, SlotMs, AtUs) ->
     Sends = 'reef_routing@ps':voiceRoutingSends(Routing, Ch - 1,
               #{note => Note, velocity => Vel, atMs => 0.0,

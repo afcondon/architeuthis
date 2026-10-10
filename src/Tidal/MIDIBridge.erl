@@ -3,7 +3,7 @@
 %% subprocess-spawn path with a single UDP send per event.
 
 -module(tidal_mIDIBridge@foreign).
--export([startClient/0, scheduleNoteAt/7, scheduleCCAt/6, setLinkTempo/2]).
+-export([startClient/0, scheduleNoteAt/7, scheduleNoteOnAt/6, scheduleNoteOffAt/5, scheduleCCAt/6, setLinkTempo/2]).
 
 -define(LINK_SPIKE_HOST, "127.0.0.1").
 -define(LINK_SPIKE_PORT, 57122).
@@ -33,6 +33,24 @@ scheduleNoteAt(Socket, PortName, Channel, Note, Velocity, DurationMs, UnixUsAt) 
         end,
         unit
     end.
+
+%% Send /midi/on/at and /midi/off/at: a note held until its note-off, for
+%% legato, where a held note's end is not known when it starts.
+scheduleNoteOnAt(Socket, PortName, Channel, Note, Velocity, UnixUsAt) ->
+    fun() -> send_or_log(Socket, "scheduleNoteOnAt",
+                         encode_on_at(PortName, Channel, Note, Velocity, UnixUsAt)) end.
+
+scheduleNoteOffAt(Socket, PortName, Channel, Note, UnixUsAt) ->
+    fun() -> send_or_log(Socket, "scheduleNoteOffAt",
+                         encode_off_at(PortName, Channel, Note, UnixUsAt)) end.
+
+send_or_log(Socket, What, Packet) ->
+    case gen_udp:send(Socket, ?LINK_SPIKE_HOST, ?LINK_SPIKE_PORT, Packet) of
+        ok -> ok;
+        {error, Reason} ->
+            tidal_log:err("MIDIBridge.~s: gen_udp:send failed: ~p~n", [What, Reason])
+    end,
+    unit.
 
 %% Send /midi/cc/at.
 scheduleCCAt(Socket, PortName, Channel, CC, Value, UnixUsAt) ->
@@ -82,6 +100,31 @@ encode_note_at(PortName, Channel, Note, Velocity, DurationMs, UnixUsAt) ->
         (round(Note)):32/big-signed-integer,
         (round(Velocity)):32/big-signed-integer,
         (round(DurationMs)):32/big-signed-integer,
+        (round(UnixUsAt)):64/big-signed-integer
+    >>,
+    <<Addr/binary, TypeTag/binary, PortPadded/binary, Body/binary>>.
+
+%% /midi/on/at  ,siiih  port channel note velocity unix_us_at
+encode_on_at(PortName, Channel, Note, Velocity, UnixUsAt) ->
+    Addr = pad_string(<<"/midi/on/at">>),
+    TypeTag = pad_string(<<",siiih">>),
+    PortPadded = pad_string(ensure_binary(PortName)),
+    Body = <<
+        (round(Channel)):32/big-signed-integer,
+        (round(Note)):32/big-signed-integer,
+        (round(Velocity)):32/big-signed-integer,
+        (round(UnixUsAt)):64/big-signed-integer
+    >>,
+    <<Addr/binary, TypeTag/binary, PortPadded/binary, Body/binary>>.
+
+%% /midi/off/at  ,siih  port channel note unix_us_at
+encode_off_at(PortName, Channel, Note, UnixUsAt) ->
+    Addr = pad_string(<<"/midi/off/at">>),
+    TypeTag = pad_string(<<",siih">>),
+    PortPadded = pad_string(ensure_binary(PortName)),
+    Body = <<
+        (round(Channel)):32/big-signed-integer,
+        (round(Note)):32/big-signed-integer,
         (round(UnixUsAt)):64/big-signed-integer
     >>,
     <<Addr/binary, TypeTag/binary, PortPadded/binary, Body/binary>>.
