@@ -70,27 +70,16 @@ set_routing_json(Json) ->
 
 routing() -> persistent_term:get(?ROUTING_KEY, none).
 
-%% CV out (task #190/#192): in addition to the MIDI emit, fork fired heads to the
-%% ES-9 as analog CV. Each ROUTE binds one head to an ES-9 pitch bus + calibration
-%% table (from Amphora), applied by the es9_cv realiser so an intended note lands
-%% in tune on the VCO; a route may also carry a `trig_bus` for a note-gate/trigger
-%% pulse (the modular-voice facet, Triggerfish #240). The BEAM half of "calibrate
-%% the output, not the module" (CALIBRATION.md). head→bus→table is a fact about the
-%% RIG PATCH, not the music, so it's read from the `odonus_cv` app env (see
-%% purerl_tidal.app.src) rather than the pushed pattern; this compiled fallback is
-%% used only when that env isn't set.
-%%
-%% Route keys: head (0-3), pitch_bus, label (Amphora calibration label), and
-%% optionally trig_bus (+ trig_v volts / trig_ms width) and pitch_lead_ms (how far
-%% ahead of the strike to land the pitch DC so the VCO is settled). No trig_bus =>
-%% pitch only (the Saïch shape). The default below is today's CIP single-voice
-%% patch: head 0 → CIP pitch on bus 8, trigger on bus 9.
--define(DEFAULT_ODONUS_CV,
-        #{enabled => true,
-          routes  =>
-            [#{head => 0, pitch_bus => 8, trig_bus => 9,
-               label => <<"cursus-iteritas-percido">>,
-               trig_v => 5.0, trig_ms => 10.0, pitch_lead_ms => 5}]}).
+%% CV out (task #190/#192): beside the MIDI emit, fork fired heads to the ES-9
+%% as calibrated CV. Each ROUTE binds a head to an ES-9 pitch bus and an Amphora
+%% calibration label, with an optional `trig_bus` (+ trig_v / trig_ms) for a gate
+%% and `pitch_lead_ms` to settle the pitch first; the es9_cv realiser keeps the
+%% VCO in tune. Routes come from the `odonus_cv` app env, and there are NONE
+%% (2026-10-10): the last ones were a patch from July that sent head 0's trigger
+%% to ES-9 out 2 whatever the page's routing table said, heard as noise on the
+%% ES-9. Odonus's CV is chosen in the routing table now (ES-9 CV destinations,
+%% played by the page in Solo); taking those legs on the rig is CR 2.
+-define(DEFAULT_ODONUS_CV, #{enabled => false, routes => []}).
 
 %% Single-note smoke test: fire middle C (60) on ch 16, +200ms.
 ping() ->
