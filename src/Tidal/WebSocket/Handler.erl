@@ -2408,7 +2408,7 @@ loops_page(What, Json) ->
 %% cycle), through the same Reef.Engine.samplePatterns. The request:
 %%   {"key": K, "from": N, "count": C, "quarters": Q,
 %%    "harmony": T|null, "scale": T|null, "outScale": {"pattern": T, "root": R}|null,
-%%    "gridHarmony": T|null, "heads": T|null}
+%%    "gridHarmony": T|null, "heads": T|null, "octave": T|null}
 %% The reply, to that page alone, one SetSampled a step from N:
 %%   odonus-samples {"key": K, "from": N, "inputs": [<input>, ...]}
 odonus_samples(Json) ->
@@ -2425,7 +2425,8 @@ odonus_samples(Json) ->
                       _ -> {nothing}
                   end,
             Patterns = #{harmony => Opt(<<"harmony">>), scale => Opt(<<"scale">>), outScale => Out,
-                         gridHarmony => Opt(<<"gridHarmony">>), heads => Opt(<<"heads">>)},
+                         gridHarmony => Opt(<<"gridHarmony">>), heads => Opt(<<"heads">>),
+                         octave => Opt(<<"octave">>)},
             Inputs = [begin
                           Pos = Step * Q,
                           H = fun(T) -> 'tidal_harmony@ps':voicingSampler(Pos, 16, T) end,
@@ -2530,7 +2531,7 @@ current_routes() ->
 routes_to_voice(Pid) ->
     odonus_feeds:to_voice(Pid).
 
-%% A `harmony "..."`, `heads "..."` or `scale "..."` pattern is read by
+%% A `harmony "..."`, `heads "..."`, `octave "..."` or `scale "..."` pattern is read by
 %% Littorina on each step, which treats one it cannot read as a rest (for
 %% `heads`, every head silent); refuse it here instead, with Tidal's reason
 %% (or, for a scale, the names it does not know).
@@ -2538,16 +2539,19 @@ unreadable_harmony(Move) ->
     Texts = [{Tag, T} || I <- array:to_list('reef_move@ps':inputsOf(Move)),
                   #{tag := Tag, txt := {just, T}} <- ['reef_input@ps':toWire(I)],
                   Tag =:= <<"SetHarmony">> orelse Tag =:= <<"SetHeadsPattern">>
+                      orelse Tag =:= <<"SetOctavePattern">>
                       orelse Tag =:= <<"SetScalePattern">> orelse Tag =:= <<"SetOutScale">>],
     lists:foldl(fun({Tag, T}, ok) ->
                         Check = case Tag of
                                     <<"SetHarmony">> -> 'tidal_harmony@ps':checkHarmony(T);
                                     <<"SetHeadsPattern">> -> 'tidal_harmony@ps':checkHarmony(T);
+                                    <<"SetOctavePattern">> -> 'tidal_harmony@ps':checkHarmony(T);
                                     _ -> 'tidal_scales@ps':checkScalePattern(T)
                                 end,
                         case {Tag, Check} of
                             %% the check is harmony's, and names it; say heads
                             {<<"SetHeadsPattern">>, {left, <<"harmony ", Rest/binary>>}} -> {bad, <<"heads ", Rest/binary>>};
+                            {<<"SetOctavePattern">>, {left, <<"harmony ", Rest/binary>>}} -> {bad, <<"octave ", Rest/binary>>};
                             {_, {left, Why}} -> {bad, Why};
                             {_, {right, _}} -> ok
                         end;
