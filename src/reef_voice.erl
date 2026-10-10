@@ -149,7 +149,8 @@ do_start_sim(Sim, Channel, StepBeats, LastStep) ->
         erlang:send_after(?POLL_MS, self(), poll),
         loop(#{ socket => Sock, channel => Channel, step_beats => StepBeats,
                 sim => Sim, last_step => LastStep, pending => [], swing => 0.0,
-                held => array:from_list([{nothing}, {nothing}, {nothing}, {nothing}]) })
+                held => array:from_list([{nothing}, {nothing}, {nothing}, {nothing}]),
+                polys => array:from_list([]) })
     end),
     catch register(reef_voice, Pid),
     {ok, Pid}.
@@ -181,7 +182,8 @@ loop(St) ->
             case routing() of
                 none -> ok;
                 Routing ->
-                    Releases = 'reef_articulation@ps':releaseAll(Routing, maps:get(held, St)),
+                    Releases = 'reef_articulation@ps':releaseAll(Routing, maps:get(held, St),
+                                                                 maps:get(polys, St)),
                     Now = erlang:system_time(microsecond),
                     lists:foreach(fun(S) -> routing_out:send(Sock, S, Now) end, array:to_list(Releases))
             end,
@@ -321,28 +323,31 @@ drain(St, Step, Horizon, AnchorUs, BeatAtAnchor, Tempo) ->
             Sock = maps:get(socket, St),
             %% Heads muted since the last step let go of what they hold first.
             Muted = 'reef_articulation@ps':newlyMuted(maps:get(odo, maps:get(sim, St)), Odo1),
-            Held = play(Sock, Odo1, Fired, Muted, maps:get(held, St), WallUs, StepMs),
+            {Held, Polys} = play(Sock, Odo1, Fired, Muted, maps:get(held, St), maps:get(polys, St),
+                                 WallUs, StepMs),
             record(Odo1, Fired, WallUs, StepMs),
             drain(St#{sim => Sim1, last_step => Step, pending => Keep1, last_sample => SampledJson,
-                      held => Held},
+                      held => Held, polys => Polys},
                   Step + 1, Horizon, AnchorUs, BeatAtAnchor, Tempo)
     end.
 
 %% Play one step down the routing table: Reef.Articulation decides every send
-%% (legato, slides, triggers, ES-9 lines) from the fired notes and what each
-%% head was holding, and returns what each holds now. No table, no sound.
-play(Sock, Odo, Fired, Muted, Held, WallUs, StepMs) ->
+%% (legato, slides, triggers, ES-9 lines, and the instruments that allocate
+%% across voices) from the fired notes, what each head was holding and each
+%% allocator's state, and returns both as they stand now. The allocators keep
+%% time in the step's wall milliseconds. No table, no sound.
+play(Sock, Odo, Fired, Muted, Held, Polys, WallUs, StepMs) ->
     case routing() of
-        none -> Held;
+        none -> {Held, Polys};
         Routing ->
             Notes = array:from_list([#{fired => F, velocity => maps:get(vel, F)}
                                      || F <- array:to_list(Fired)]),
             Played = 'reef_articulation@ps':playStep(Routing,
-                       #{odo => Odo, stepMs => float(StepMs), held => Held,
-                         newlyMuted => Muted, notes => Notes}),
+                       #{odo => Odo, stepMs => float(StepMs), nowMs => WallUs / 1000.0,
+                         polys => Polys, held => Held, newlyMuted => Muted, notes => Notes}),
             lists:foreach(fun(S) -> routing_out:send(Sock, S, WallUs) end,
                           array:to_list(maps:get(sends, Played))),
-            maps:get(held, Played)
+            {maps:get(held, Played), maps:get(polys, Played)}
     end.
 
 %% The record buffer keeps what Odonus played (docs/kb/plans/the-deck.md): each
