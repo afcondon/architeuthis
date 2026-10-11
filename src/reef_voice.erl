@@ -214,7 +214,10 @@ loop(St) ->
                               tidal_link_anchor:sync_broadcast(<<"reef-input ", Json/binary>>)
                           end, Now ++ Later),
             Pending = maps:get(pending, St),
-            loop(St#{pending => Pending ++ Now ++ Later});
+            %% and send the patterns' sample again, even unchanged: a line
+            %% evaluated again (`octave "0"`, `heads "1"`) re-applies what it
+            %% says over a control moved by hand since (AC, 2026-10-11)
+            loop(St#{pending => Pending ++ Now ++ Later, last_sample => none});
         {set_step_beats, B} when is_number(B), B > 0 ->
             %% STEP LENGTH sync (lockstep P4c): the frontend's STEP LENGTH divides
             %% the 1/16 grid; match it so we step at the same rate and share the same
