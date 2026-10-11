@@ -52,6 +52,7 @@
 start_json(Json) ->
     case 'reef_conspicillum_protocol@ps':decodeScene(ensure_bin(Json)) of
         {right, Scene} ->
+            ensure_corpus(Scene),
             case whereis(reef_conspicillum_voice) of
                 Pid when is_pid(Pid) ->
                     Pid ! {set_scene, Scene},
@@ -82,6 +83,7 @@ start_json(Json) ->
 audition(Json, Cycles, Bpm) ->
     case 'reef_conspicillum_protocol@ps':decodeScene(ensure_bin(Json)) of
         {right, Scene} ->
+            ensure_corpus(Scene),
             {ok, Sock} = gen_udp:open(0, [binary]),
             Name = maps:get(name, maps:get(corpus, Scene)),
             Cps = Bpm / 240.0,
@@ -231,6 +233,21 @@ set_begin(Ev, B) ->
     case maps:is_key(begin_, Ev) of
         true -> Ev#{begin_ => B};
         false -> Ev#{'begin' => B}
+    end.
+
+%% Ask SuperDirt to read the scene's corpus in full. Takes, sets and tapes
+%% are registered lazily at boot (superdirt-daemon.scd: read whole they were
+%% 3.9 GB), and a lazy bank loses its first hit; a scene arrives a cycle or
+%% more ahead of its first grain, so asking here keeps every grain. SuperDirt
+%% reads a bank once, so asking on every edit costs nothing after the first.
+ensure_corpus(Scene) ->
+    Name = maps:get(name, maps:get(corpus, Scene)),
+    case gen_udp:open(0, [binary]) of
+        {ok, S} ->
+            _ = gen_udp:send(S, ?SUPERDIRT_HOST, ?SUPERDIRT_PORT,
+                             dirt_osc:encode_msg(<<"/atlantis/ensure">>, [Name])),
+            gen_udp:close(S);
+        _ -> ok
     end.
 
 %% =========================================================================
