@@ -1,8 +1,9 @@
--- | **Balistes's rhythms, played by name** (docs/kb/plans/the-deck.md, the
--- | Balistes line). `balistes $ "<fox-drum owl-drum>"` is a Tidal pattern of
--- | words; each word is a rhythm Balistes saved, on the stage as
--- | `balistes/rhythm/<word>` (the word is the name's slug,
--- | `Reef.Balistes.Lepidoptera.rhythmSlug`).
+-- | **A machine's saved things, played by name** (docs/kb/plans/the-deck.md).
+-- | `balistes $ "<fox-drum owl-drum>"` and `odonus $ "<verse chorus>"` are
+-- | Tidal patterns of words; each word is a thing the machine's page saved,
+-- | on the stage under the machine's prefix (`balistes/rhythm/<word>`,
+-- | `odonus/patch/<word>`; the word is `Reef.Word`'s). Balistes plays a
+-- | beat from the top as its word's event begins; Odonus recalls a patch.
 -- |
 -- | A word may equally be a Grids beat Balistes saved by name, which runs the
 -- | Grids engine from that point, carrying on where it left off each time it
@@ -14,11 +15,12 @@
 -- | begins, as a sample is triggered, so `"<a b>"` gives each one bar and
 -- | `"<a@2 b>"` gives `a` two. Reef never reads Tidal: this module hands it a
 -- | word and a step.
-module Tidal.Rhythms
-  ( rhythmSampler
-  , rhythmWords
+module Tidal.Named
+  ( wordSampler
+  , wordsIn
   , stageRhythm
   , stageGrids
+  , recallPatch
   ) where
 
 import Prelude
@@ -35,22 +37,23 @@ import Reef.Balistes.Lepidoptera (parsePattern)
 import Reef.Balistes.Pattern (toWire)
 import Reef.Balistes.Protocol (decodeBalSim)
 import Reef.Balistes.Sim (BalSim)
+import Reef.Input (Input(..))
 import Tidal.Eval.Interpret (tpatToPattern)
 import Tidal.Parse.Haskell (Vocable(..))
 import Tidal.Parse.Parser (parseTPat)
 import Tidal.Pattern.Core (queryArc)
 import Tidal.Pattern.Types (Arc(..), Event(..), Pattern)
 
-parseRhythms :: String -> Either String (Pattern String)
-parseRhythms src = case parseTPat src of
+parseWords :: String -> Either String (Pattern String)
+parseWords src = case parseTPat src of
   Right tpat -> Right (map (\(Vocable v) -> v) (tpatToPattern tpat))
-  Left err -> Left ("balistes \"" <> src <> "\": " <> show err)
+  Left err -> Left ("\"" <> src <> "\": " <> show err)
 
 -- | The pattern read once, then asked at each sixteenth `q` (counted from
 -- | Link beat 0, a cycle a bar): the word holding there and the sixteenth its
 -- | event began on, or Nothing for a rest.
-rhythmSampler :: String -> Either String (Int -> Maybe { word :: String, start :: Int })
-rhythmSampler src = map sampleAt (parseRhythms src)
+wordSampler :: String -> Either String (Int -> Maybe { word :: String, start :: Int })
+wordSampler src = map sampleAt (parseWords src)
   where
   sampleAt p q =
     let t = ratio (Integer.fromInt q) (Integer.fromInt 16)
@@ -63,14 +66,19 @@ rhythmSampler src = map sampleAt (parseRhythms src)
 -- | The words the pattern plays in its first eight cycles, each once: what
 -- | the rig checks against the stage when the line is evaluated, to say which
 -- | are silent because Balistes has saved no rhythm by that name.
-rhythmWords :: String -> Array String
-rhythmWords src = case rhythmSampler src of
+wordsIn :: String -> Array String
+wordsIn src = case wordSampler src of
   Right at -> nub (mapMaybe (map _.word <<< at) (range 0 (8 * 16 - 1)))
   Left _ -> []
 
 -- | A rhythm's stage text, as the shared eval plays it.
 stageRhythm :: String -> Maybe FixedPattern
 stageRhythm text = map toWire (parsePattern text)
+
+-- | The input that recalls an Odonus patch, as a move's does
+-- | (phase-preserving: the playheads carry on).
+recallPatch :: String -> Input
+recallPatch text = RecallPatch text
 
 -- | A Grids beat's stage text (`grids ` and its engine state, as
 -- | `Triggerfish.Balistes.Stage` writes it): the state it plays from.

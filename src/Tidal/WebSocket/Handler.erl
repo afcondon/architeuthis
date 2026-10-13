@@ -2164,42 +2164,60 @@ selene_line(Rest) ->
         _ -> <<"ERR: selene: a line is selene $ <kind> <bank> # <parameter> <value>, as in selene $ lfo es9main # rate 0.5">>
     end.
 
-%% `balistes $ "<fox-drum owl-drum>"`: Balistes's saved rhythms, by name
-%% (Tidal.Rhythms). Each word is a rhythm's slug, on the stage as
-%% balistes/rhythm/<word>; a word plays its rhythm from the top when its
-%% event begins, a cycle a bar, so "<a@2 b>" gives `a` two bars. The reply
-%% names any word Balistes has saved no rhythm for (silent until it does),
-%% and says so when no drum routing has reached the rig.
+%% `balistes $ "<fox-drum owl-drum>"`: Balistes's saved beats, by word
+%% (Tidal.Named), on the stage as balistes/rhythm/<word>; a word plays its
+%% beat from the top when its event begins, a cycle a bar, so "<a@2 b>" gives
+%% `a` two bars.
 balistes_line(Rest) ->
     Usage = <<"ERR: balistes: a line is balistes $ \"<beat names>\", as in balistes $ \"<lo-house-110 disco-120>\" (the names are Balistes's saved beats; drag one in to get its word)">>,
     case string:trim(Rest, leading) of
         <<"$", Body0/binary>> ->
             case unquote(string:trim(Body0)) of
                 {ok, Src} ->
-                    case reef_balistes_voice:start_named(Src) of
-                        {ok, _} ->
-                            Words = array:to_list('tidal_rhythms@ps':rhythmWords(Src)),
-                            Missing = [W || W <- Words,
-                                            not is_binary(tidal_stage:get_text(<<"balistes/rhythm/", W/binary>>))],
-                            Unsaved = case Missing of
-                                          [] -> <<>>;
-                                          _ -> iolist_to_binary([<<"; no beat saved in Balistes as ">>,
-                                                                 lists:join(<<", ">>, Missing),
-                                                                 <<", so that is silent">>])
-                                      end,
-                            Unrouted = case reef_balistes_voice:routing() of
-                                           none -> <<"; no drum routing has reached the rig, so nothing sounds: open Balistes once">>;
-                                           _ -> <<>>
-                                       end,
-                            %% every open Balistes page shows the line as playing,
-                            %% and its Play resumes it after a Stop
-                            catch tidal_link_anchor:sync_broadcast(<<"played balistes line ", Src/binary>>),
-                            <<"OK: balistes playing ", Src/binary, Unsaved/binary, Unrouted/binary>>;
-                        {error, Why} -> <<"ERR: ", Why/binary>>
-                    end;
+                    named_line(#{machine => <<"balistes">>, prefix => <<"balistes/rhythm/">>,
+                                 thing => <<"beat">>, page => <<"Balistes">>,
+                                 start => fun reef_balistes_voice:start_named/1,
+                                 routed => reef_balistes_voice:routing() =/= none,
+                                 unrouted => <<"no drum routing has reached the rig">>}, Src);
                 error -> Usage
             end;
         _ -> Usage
+    end.
+
+%% `odonus $ "<verse chorus>"`: Odonus's saved patches, by word (Tidal.Named),
+%% on the stage as odonus/patch/<word>; each recalled as its word's event
+%% begins (reef_voice:start_named). Nothing else about Odonus changes, so
+%% moves on other lines go on working over whichever patch is in.
+odonus_named(Src) ->
+    named_line(#{machine => <<"odonus">>, prefix => <<"odonus/patch/">>,
+                 thing => <<"preset">>, page => <<"Odonus">>,
+                 start => fun reef_voice:start_named/1,
+                 routed => reef_voice:routing() =/= none,
+                 unrouted => <<"no routing has reached the rig">>}, Src).
+
+%% A machine's line of saved things by word: start (or switch) its voice to
+%% play them, say which words name nothing saved (silent until saved) and
+%% whether the rig has routing to sound through, and tell every open page of
+%% that machine the line plays (its transport shows it; its Play resumes it).
+named_line(#{machine := M, prefix := Prefix, thing := Thing, page := Page,
+             start := Start, routed := Routed, unrouted := Unrouted}, Src) ->
+    case Start(Src) of
+        {ok, _} ->
+            Words = array:to_list('tidal_named@ps':wordsIn(Src)),
+            Missing = [W || W <- Words,
+                            not is_binary(tidal_stage:get_text(<<Prefix/binary, W/binary>>))],
+            Unsaved = case Missing of
+                          [] -> <<>>;
+                          _ -> iolist_to_binary([<<"; no ">>, Thing, <<" saved in ">>, Page, <<" as ">>,
+                                                 lists:join(<<", ">>, Missing), <<", so that is silent">>])
+                      end,
+            NoRoute = case Routed of
+                          true -> <<>>;
+                          false -> <<"; ", Unrouted/binary, ", so nothing sounds: open ", Page/binary, " once">>
+                      end,
+            catch tidal_link_anchor:sync_broadcast(<<"played ", M/binary, " line ", Src/binary>>),
+            <<"OK: ", M/binary, " playing ", Src/binary, Unsaved/binary, NoRoute/binary>>;
+        {error, Why} -> <<"ERR: ", M/binary, ": ", Why/binary>>
     end.
 
 unquote(<<"\"", More/binary>>) ->
@@ -2496,6 +2514,28 @@ odonus_samples(Json) ->
 %% A move on the Odonus voice: parsed by the shared Reef.Move, applied by
 %% reef_voice on its next step (and restored after n bars, for `for n`).
 odonus_line(Line) ->
+    case named_body(<<"odonus">>, Line) of
+        {ok, Src} -> odonus_named(Src);
+        none -> odonus_move(Line)
+    end.
+
+%% The pattern of a `<machine> $ "<…>"` line, if that is what the line is.
+named_body(M, Line) ->
+    Size = byte_size(M),
+    case string:trim(Line) of
+        <<M:Size/binary, Rest/binary>> ->
+            case string:trim(Rest, leading) of
+                <<"$", Body/binary>> ->
+                    case unquote(string:trim(Body)) of
+                        {ok, Src} -> {ok, Src};
+                        error -> none
+                    end;
+                _ -> none
+            end;
+        _ -> none
+    end.
+
+odonus_move(Line) ->
     try 'reef_move@ps':parse(Line) of
         {left, Reason} ->
             <<"ERR: odonus: ", Reason/binary>>;

@@ -127,13 +127,13 @@ start_fixed_json(Json, Channel, StepBeats) ->
         {left, Errs} -> {error, {decode, Errs}}
     end.
 
-%% `balistes $ "<a b>"` (Tidal.Rhythms): play the rhythms a pattern of their
+%% `balistes $ "<a b>"` (Tidal.Named): play the rhythms a pattern of their
 %% names gives, each from its top when its event begins (a cycle a bar). The
 %% rhythms are read off the stage (balistes/rhythm/<word>) at the step they
 %% play, so a rhythm edited in Balistes is heard from the next step. A running
 %% voice of any mode switches in place, as a pushed fixed rhythm does.
 start_named(Src) ->
-    case 'tidal_rhythms@ps':rhythmSampler(ensure_bin(Src)) of
+    case 'tidal_named@ps':wordSampler(ensure_bin(Src)) of
         {left, Why} -> {error, Why};
         {right, Sampler} ->
             case whereis(reef_balistes_voice) of
@@ -328,10 +328,10 @@ stage_beat(Word, Rhythms) ->
     end.
 
 parse_beat(Text) ->
-    case 'tidal_rhythms@ps':stageGrids(Text) of
+    case 'tidal_named@ps':stageGrids(Text) of
         {just, Bal} -> {grids, Bal};
         {nothing} ->
-            case 'tidal_rhythms@ps':stageRhythm(Text) of
+            case 'tidal_named@ps':stageRhythm(Text) of
                 {just, Pat} -> {fixed, Pat};
                 {nothing} -> none
             end

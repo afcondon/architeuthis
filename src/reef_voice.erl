@@ -24,7 +24,7 @@
 -module(reef_voice).
 -export([set_routing_json/1, routing/0,
          start/0, start/2, start_json/3, start_sim_json/3, start_sim_at_json/4,
-         stop/0, ping/0, loop/1]).
+         start_named/1, stop/0, ping/0, loop/1]).
 %% what a loop on the rig (rig_loops) plays a note through
 -export([route_note/7]).
 
@@ -156,6 +156,25 @@ do_start_sim(Sim, Channel, StepBeats, LastStep) ->
     catch register(reef_voice, Pid),
     {ok, Pid}.
 
+%% `odonus $ "<verse chorus>"` (Tidal.Named): recall the saved patches a
+%% pattern of their words gives, each as its word's event begins (a cycle a
+%% bar), phase-preserving as a recall from the page is. The patches are read
+%% off the stage (odonus/patch/<word>) as their words come round, so a patch
+%% saved again on the page is heard the next time. A running voice takes the
+%% line in place; with none, one is started on Odonus's defaults, the first
+%% patch recalled at once.
+start_named(Src) ->
+    case 'tidal_named@ps':wordSampler(ensure_bin(Src)) of
+        {left, Why} -> {error, Why};
+        {right, Sampler} ->
+            Pid = case whereis(reef_voice) of
+                      P when is_pid(P) -> P;
+                      _ -> {ok, P} = start(), P
+                  end,
+            Pid ! {set_named, Sampler},
+            {ok, Pid}
+    end.
+
 stop() ->
     case whereis(reef_voice) of
         undefined -> ok;
@@ -218,6 +237,9 @@ loop(St) ->
             %% evaluated again (`octave "0"`, `heads "1"`) re-applies what it
             %% says over a control moved by hand since (AC, 2026-10-11)
             loop(St#{pending => Pending ++ Now ++ Later, last_sample => none});
+        {set_named, Sampler} ->
+            %% a line naming patches: announced afresh from the next step
+            loop(St#{named => Sampler, shown => none});
         {set_step_beats, B} when is_number(B), B > 0 ->
             %% STEP LENGTH sync (lockstep P4c): the frontend's STEP LENGTH divides
             %% the 1/16 grid; match it so we step at the same rate and share the same
@@ -279,7 +301,9 @@ drain(St, Step, Horizon, AnchorUs, BeatAtAnchor, Tempo) ->
             %% deferred gesture lands on the same model step on both runtimes. `=<`
             %% (not `==`) self-heals: an input buffered while no anchor was fresh
             %% applies on the first step that runs; applied entries drop from Keep.
-            Pending = maps:get(pending, St),
+            %% A line naming patches: the patch for the step a move would land
+            %% on, queued and broadcast as it changes (named_lead).
+            {Pending, Shown} = named_lead(St, Step + ?MOVE_LEAD_STEPS, maps:get(pending, St)),
             {Due, Keep} = lists:partition(fun({T, _I}) -> T =< Step end, Pending),
             Sim0 = lists:foldl(
                      fun({_T, I}, S) -> ('reef_input@ps':applyInput(I))(S) end,
@@ -332,9 +356,38 @@ drain(St, Step, Horizon, AnchorUs, BeatAtAnchor, Tempo) ->
                                            maps:get(sounding, St), maps:get(polys, St),
                                            WallUs, StepMs),
             record(Odo1, Fired, WallUs, StepMs),
-            drain(St#{sim => Sim1, last_step => Step, pending => Keep1, last_sample => SampledJson,
+            drain(St#{sim => Sim1, last_step => Step, pending => Keep1, last_sample => SampledJson, shown => Shown,
                       held => Held, sounding => Sounding, polys => Polys},
                   Step + 1, Horizon, AnchorUs, BeatAtAnchor, Tempo)
+    end.
+
+%% The patch an `odonus $ "<a b>"` line names for step LeadStep: when the
+%% line's event there is a new one, its word's patch (off the stage) is queued
+%% as a RecallPatch for that step and broadcast tick-tagged, as a move's
+%% gestures are, so a following page recalls it on the same step. A rest, or
+%% a word with no patch saved, leaves the patch playing as it is.
+named_lead(St, LeadStep, Pending) ->
+    Shown = maps:get(shown, St, none),
+    case maps:get(named, St, none) of
+        none -> {Pending, Shown};
+        Sampler ->
+            Event = case Sampler(LeadStep) of
+                        {just, #{word := W, start := S}} -> {W, S};
+                        _ -> rest
+                    end,
+            case {Event =:= Shown, Event} of
+                {true, _} -> {Pending, Shown};
+                {false, {Word, _}} ->
+                    case tidal_stage:get_text(<<"odonus/patch/", Word/binary>>) of
+                        Text when is_binary(Text) ->
+                            Input = 'tidal_named@ps':recallPatch(Text),
+                            Json = 'reef_protocol@ps':encodeTagged(#{tick => LeadStep, input => Input}),
+                            tidal_link_anchor:sync_broadcast(<<"reef-input ", Json/binary>>),
+                            {Pending ++ [{LeadStep, Input}], Event};
+                        _ -> {Pending, Event}
+                    end;
+                {false, rest} -> {Pending, rest}
+            end
     end.
 
 %% Play one step down the routing table: Reef.Articulation decides every send
