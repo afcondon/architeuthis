@@ -1060,6 +1060,11 @@ handle_pattern_message(Text, State) ->
             %% on a named voice reported OK and changed nothing.
             catch reef_balistes_voice:stop(),
             stop_voice_tree(balistes_voice_sup),
+            %% A page following a line hears the voice stopped, and drops any bar
+            %% the voice announced before stopping (that arrives first, this
+            %% after). Not `hushed balistes`, which stops the transports: the
+            %% page that sent this may be going on to play in the browser.
+            catch tidal_link_anchor:sync_broadcast(<<"stopped balistes">>),
             {reply, {text, <<"OK: balistes-stop">>}, State};
         {vetula_cards_play} ->
             vetula_cards:play(),
@@ -2111,8 +2116,7 @@ machine_statement_(Block) ->
         <<"drums", Rest/binary>> -> drums_line(Rest);
         <<"conspicillum", _/binary>> ->
             <<"ERR: conspicillum: its line goes through the stage (Limulus writes conspicillum/line); here only conspicillum $ hush">>;
-        <<"balistes", _/binary>> ->
-            <<"ERR: balistes: only balistes $ hush, so far">>;
+        <<"balistes", Rest/binary>> -> balistes_line(Rest);
         <<"selene", Rest/binary>> -> selene_line(Rest);
         <<"route", Rest/binary>> -> route_line(Rest);
         _ -> tidal_pattern_line(Block)
@@ -2159,6 +2163,51 @@ selene_line(Rest) ->
             end;
         _ -> <<"ERR: selene: a line is selene $ <kind> <bank> # <parameter> <value>, as in selene $ lfo es9main # rate 0.5">>
     end.
+
+%% `balistes $ "<fox-drum owl-drum>"`: Balistes's saved rhythms, by name
+%% (Tidal.Rhythms). Each word is a rhythm's slug, on the stage as
+%% balistes/rhythm/<word>; a word plays its rhythm from the top when its
+%% event begins, a cycle a bar, so "<a@2 b>" gives `a` two bars. The reply
+%% names any word Balistes has saved no rhythm for (silent until it does),
+%% and says so when no drum routing has reached the rig.
+balistes_line(Rest) ->
+    Usage = <<"ERR: balistes: a line is balistes $ \"<beat names>\", as in balistes $ \"<lo-house-110 disco-120>\" (the names are Balistes's saved beats; drag one in to get its word)">>,
+    case string:trim(Rest, leading) of
+        <<"$", Body0/binary>> ->
+            case unquote(string:trim(Body0)) of
+                {ok, Src} ->
+                    case reef_balistes_voice:start_named(Src) of
+                        {ok, _} ->
+                            Words = array:to_list('tidal_rhythms@ps':rhythmWords(Src)),
+                            Missing = [W || W <- Words,
+                                            not is_binary(tidal_stage:get_text(<<"balistes/rhythm/", W/binary>>))],
+                            Unsaved = case Missing of
+                                          [] -> <<>>;
+                                          _ -> iolist_to_binary([<<"; no beat saved in Balistes as ">>,
+                                                                 lists:join(<<", ">>, Missing),
+                                                                 <<", so that is silent">>])
+                                      end,
+                            Unrouted = case reef_balistes_voice:routing() of
+                                           none -> <<"; no drum routing has reached the rig, so nothing sounds: open Balistes once">>;
+                                           _ -> <<>>
+                                       end,
+                            %% every open Balistes page shows the line as playing,
+                            %% and its Play resumes it after a Stop
+                            catch tidal_link_anchor:sync_broadcast(<<"played balistes line ", Src/binary>>),
+                            <<"OK: balistes playing ", Src/binary, Unsaved/binary, Unrouted/binary>>;
+                        {error, Why} -> <<"ERR: ", Why/binary>>
+                    end;
+                error -> Usage
+            end;
+        _ -> Usage
+    end.
+
+unquote(<<"\"", More/binary>>) ->
+    case binary:split(More, <<"\"">>) of
+        [Src, <<>>] -> {ok, Src};
+        _ -> error
+    end;
+unquote(_) -> error.
 
 %% `drums $ <control pattern>`: Tidal, played on the drum kit. The pattern is
 %% read as `d1`'s would be and installed on the `drums` stream, which turns

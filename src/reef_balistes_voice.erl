@@ -20,7 +20,7 @@
 %% as the frontend's emitHit does.
 -module(reef_balistes_voice).
 -export([start/0, start/2, start_sim_json/3, start_sim_at_json/4,
-         start_fixed_json/3, stop/0, loop/1,
+         start_fixed_json/3, start_named/1, stop/0, loop/1,
          set_routing_json/1, routing/0, play_hit/6]).
 
 %% Scheduler poll interval (ms). Timing is absolute (WallUs from the anchor), so
@@ -127,6 +127,32 @@ start_fixed_json(Json, Channel, StepBeats) ->
         {left, Errs} -> {error, {decode, Errs}}
     end.
 
+%% `balistes $ "<a b>"` (Tidal.Rhythms): play the rhythms a pattern of their
+%% names gives, each from its top when its event begins (a cycle a bar). The
+%% rhythms are read off the stage (balistes/rhythm/<word>) at the step they
+%% play, so a rhythm edited in Balistes is heard from the next step. A running
+%% voice of any mode switches in place, as a pushed fixed rhythm does.
+start_named(Src) ->
+    case 'tidal_rhythms@ps':rhythmSampler(ensure_bin(Src)) of
+        {left, Why} -> {error, Why};
+        {right, Sampler} ->
+            case whereis(reef_balistes_voice) of
+                Pid when is_pid(Pid) ->
+                    Pid ! {set_named, Sampler},
+                    {ok, Pid};
+                _ ->
+                    NewPid = spawn(fun() ->
+                        {ok, Sock} = gen_udp:open(0, [binary]),
+                        erlang:send_after(?POLL_MS, self(), poll),
+                        loop(#{ socket => Sock, channel => ?DEFAULT_CHANNEL, step_beats => ?STEP_BEATS,
+                                mode => named, sampler => Sampler, rhythms => #{},
+                                shown => none, last_step => -1, pending => [] })
+                    end),
+                    catch register(reef_balistes_voice, NewPid),
+                    {ok, NewPid}
+            end
+    end.
+
 stop() ->
     case whereis(reef_balistes_voice) of
         undefined -> ok;
@@ -152,6 +178,11 @@ loop(St) ->
             %% reef_balistes_input@ps term — we never inspect it, only apply it.
             Pending = maps:get(pending, St),
             loop(St#{pending => Pending ++ [{Tick, Input}]});
+        {set_named, Sampler} ->
+            %% A new `balistes $` line: the pattern of names swapped in place,
+            %% the rhythms already read kept.
+            loop(St#{mode => named, sampler => Sampler, rhythms => maps:get(rhythms, St, #{}),
+                     shown => none});
         {set_pattern, Pat} ->
             %% Live fixed-rhythm edit: swap the pattern IN PLACE (keeping the socket +
             %% last_step, so no restart / audio gap). Also switches a running Grids
@@ -210,6 +241,11 @@ drain(St, Step, Horizon, AnchorUs, BeatAtAnchor, Tempo) ->
                                 'reef_balistes_fixed@ps':renderFixed(maps:get(pattern, St), Step)),
                     lists:foreach(fun(E) -> emit(Sock, E, WallUs, StepMs) end, FEvents),
                     St#{last_step => Step};
+                named ->
+                    {NEvents, Rhythms, Shown} = named_step(Step, maps:get(sampler, St),
+                                                           maps:get(rhythms, St), maps:get(shown, St, none)),
+                    lists:foreach(fun(E) -> emit(Sock, E, WallUs, StepMs) end, NEvents),
+                    St#{rhythms => Rhythms, shown => Shown, last_step => Step};
                 _ ->
                     %% Grids: apply any tick-tagged inputs whose step has arrived BEFORE
                     %% stepping — the same order the frontend applies them, so a deferred
@@ -232,6 +268,73 @@ drain(St, Step, Horizon, AnchorUs, BeatAtAnchor, Tempo) ->
                     St#{bal => Bal1, last_step => Step, pending => Keep}
             end,
             drain(St2, Step + 1, Horizon, AnchorUs, BeatAtAnchor, Tempo)
+    end.
+
+%% A `balistes $` line's step: the word its pattern gives at sixteenth Step,
+%% and that word's beat. A Rytm rhythm plays from where the word's event
+%% began; a Grids beat steps its own engine once, carrying on from where it
+%% last left off, so it keeps evolving each time its word comes round. Nothing
+%% for a rest, or a word with nothing on the stage.
+%%
+%% Each event, and each rest, is announced to open pages as it begins (ahead
+%% of its step, by the drain's lookahead), so Balistes can show what is
+%% playing: `balistes-now <step> <word>`, with the engine state a Grids beat
+%% plays on from, or `balistes-now <step> ~` (Triggerfish.Balistes.Follow).
+named_step(Step, Sampler, Rhythms, Shown) ->
+    case Sampler(Step) of
+        {just, #{word := Word, start := Start}} ->
+            Event = {Word, Start},
+            case stage_beat(Word, Rhythms) of
+                {{fixed, Pat}, R1} ->
+                    announce(Step, Event, Shown, <<>>),
+                    {array:to_list('reef_balistes_fixed@ps':renderFixed(Pat, Step - Start)), R1, Event};
+                {{grids, Bal0}, R1} ->
+                    announce(Step, Event, Shown,
+                             <<" ", ('reef_balistes_protocol@ps':encodeBalSim(Bal0))/binary>>),
+                    Res = 'reef_balistes_sim@ps':stepBal(Bal0),
+                    Events = array:to_list('reef_balistes_sim@ps':renderStep(
+                                 Bal0, maps:get(step, Bal0), maps:get(fired, Res))),
+                    {Text, _} = maps:get(Word, R1),
+                    {Events, R1#{Word => {Text, {grids, maps:get(bal, Res)}}}, Event};
+                {none, R1} ->
+                    announce(Step, Event, Shown, <<>>),
+                    {[], R1, Event}
+            end;
+        _ ->
+            announce(Step, rest, Shown, <<>>),
+            {[], Rhythms, rest}
+    end.
+
+announce(_Step, Shown, Shown, _State) -> ok;
+announce(Step, Event, _Shown, State) ->
+    Word = case Event of {W, _} -> W; rest -> <<"~">> end,
+    catch tidal_link_anchor:sync_broadcast(
+            <<"balistes-now ", (integer_to_binary(Step))/binary, " ", Word/binary, State/binary>>),
+    ok.
+
+%% A word's beat, read off the stage and parsed again only when its text has
+%% changed since the last step that played it (so a Grids beat's running
+%% engine survives until Balistes saves a different one under that word).
+stage_beat(Word, Rhythms) ->
+    case tidal_stage:get_text(<<"balistes/rhythm/", Word/binary>>) of
+        Text when is_binary(Text) ->
+            case maps:find(Word, Rhythms) of
+                {ok, {Text, Beat}} -> {Beat, Rhythms};
+                _ ->
+                    Beat = parse_beat(Text),
+                    {Beat, Rhythms#{Word => {Text, Beat}}}
+            end;
+        _ -> {none, Rhythms}
+    end.
+
+parse_beat(Text) ->
+    case 'tidal_rhythms@ps':stageGrids(Text) of
+        {just, Bal} -> {grids, Bal};
+        {nothing} ->
+            case 'tidal_rhythms@ps':stageRhythm(Text) of
+                {just, Pat} -> {fixed, Pat};
+                {nothing} -> none
+            end
     end.
 
 %% One rendered event → scheduled MIDI. Mirrors the frontend's emitHit: the signed
