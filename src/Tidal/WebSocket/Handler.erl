@@ -1984,12 +1984,21 @@ machine_hush(Block) ->
 %% transport shows playing, and its next push starts the voices), as it
 %% follows `hush`.
 machine_play(Block) ->
-    case re:run(Block, <<"^\\s*(odonus|vetula|balistes)\\s*\\$\\s*play\\s*$">>,
+    case re:run(Block, <<"^\\s*(odonus|vetula|balistes|selene)\\s*\\$\\s*play\\s*$">>,
                 [{capture, all_but_first, binary}]) of
         {match, [Machine]} -> {play, Machine};
         nomatch -> none
     end.
 
+%% Selene's signals run on the daemons with or without a page: play gives
+%% every daemon back what it had before `selene $ hush` (selene_keeper).
+play_machine(<<"selene">>) ->
+    Reply = case catch selene_keeper:resume() of
+                {ok, N} -> <<"OK: selene playing (", (integer_to_binary(N))/binary, " bank(s) given back)">>;
+                _ -> <<"ERR: selene: the keeper is not running">>
+            end,
+    catch tidal_link_anchor:sync_broadcast(<<"played selene">>),
+    Reply;
 play_machine(<<"vetula">>) ->
     catch vetula_cards:play(),
     catch tidal_link_anchor:sync_broadcast(<<"played vetula">>),
@@ -2039,6 +2048,7 @@ hush_machine(<<"selene">>) ->
     _ = daemon_call(es9_daemon_socket_path(), <<"panic">>),
     catch selene_keeper:hushed(),
     catch tidal_stage:stopped(selene),
+    catch tidal_link_anchor:sync_broadcast(<<"hushed selene">>),
     <<"OK: selene hushed (the ES-9's signals; the FH-2's banks run on the FH-2 and keep going)">>.
 
 %% A block may hold several machine lines (`odonus $ loop` then `odonus $
