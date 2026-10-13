@@ -122,6 +122,10 @@ try_parse_prefixed(<<"balistes-fixed ", Rest/binary>>) ->
     %% (Reef.Balistes.Fixed, wire-flat) to play on the rig. Stateless (a pure
     %% function of the absolute step), so no step tag / phase-hold needed.
     {balistes_fixed, trim_binary(Rest)};
+try_parse_prefixed(<<"balistes-hit ", Rest/binary>>) ->
+    %% balistes-hit <lane> <velocity> — one hit on a drum lane (0..15), sent
+    %% where the drum routing table says: Balistes's audition of a lane.
+    {balistes_hit, trim_binary(Rest)};
 try_parse_prefixed(<<"dirt-play ", Rest/binary>>) ->
     %% dirt-play <json> — audition one sample now: {"s", "n", "begin", "end",
     %% "speed", "gain", "orbit"}, the fields of a Reef.Routing voice. For the
@@ -1145,6 +1149,11 @@ handle_pattern_message(Text, State) ->
                 {error, Reason} ->
                     RB = list_to_binary(io_lib:format("~p", [Reason])),
                     {reply, {text, <<"ERR: balistes-fixed ", RB/binary>>}, State}
+            end;
+        {balistes_hit, Args} ->
+            case balistes_hit(Args) of
+                ok -> {reply, {text, <<"OK: balistes-hit">>}, State};
+                {error, Why} -> {reply, {text, <<"ERR: balistes-hit ", Why/binary>>}, State}
             end;
         {dirt_play, Json} ->
             case dirt_audition(Json) of
@@ -2715,6 +2724,21 @@ websocket_info(Info, State) ->
 %% Play one sample through SuperDirt, 50 ms from now (so the bundle lands
 %% ahead of its timetag). Missing fields take a whole, forward, unit-gain play
 %% on orbit 1, the drums' orbit.
+%% One hit on a drum lane, now, through the drum routing table: the lane's
+%% kit note (Reef.Balistes.Kit.laneNote), which the table reads as the lane,
+%% so every leg it names sounds, the FH-2's gates and SuperDirt's samples too.
+balistes_hit(Args) ->
+    case catch [binary_to_integer(T) || T <- binary:split(Args, <<" ">>, [global, trim_all])] of
+        [Lane, Vel] when is_integer(Lane), is_integer(Vel), Lane >= 0, Lane =< 15 ->
+            {ok, Sock} = gen_udp:open(0, [binary]),
+            reef_balistes_voice:play_hit(Sock, 'reef_balistes_kit@ps':laneNote(Lane),
+                                         max(1, min(127, Vel)), 120, 125,
+                                         erlang:system_time(microsecond) + 30000),
+            gen_udp:close(Sock),
+            ok;
+        _ -> {error, <<"balistes-hit <lane 0..15> <velocity>">>}
+    end.
+
 dirt_audition(Json) ->
     try json:decode(Json) of
         #{<<"s">> := S} = V when is_binary(S) ->
