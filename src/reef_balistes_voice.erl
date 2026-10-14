@@ -21,7 +21,7 @@
 -module(reef_balistes_voice).
 -export([start/0, start/2, start_sim_json/3, start_sim_at_json/4,
          start_fixed_json/3, start_named/1, stop/0, loop/1,
-         set_routing_json/1, routing/0, play_hit/6, set_mutes/1]).
+         set_routing_json/1, routing/0, play_hit/6, set_mutes/1, set_fill/1]).
 
 %% Scheduler poll interval (ms). Timing is absolute (WallUs from the anchor), so
 %% poll jitter only affects lookahead slack.
@@ -42,6 +42,7 @@
 %% of any engine, plays through the table last pushed.
 -define(ROUTING_KEY, {?MODULE, routing}).
 -define(MUTES_KEY, {?MODULE, mutes}).
+-define(FILL_KEY, {?MODULE, fill}).
 
 start() -> start(?DEFAULT_CHANNEL, ?STEP_BEATS).
 
@@ -70,6 +71,15 @@ set_mutes(Mask) when is_integer(Mask), Mask >= 0 ->
     ok.
 
 mutes() -> persistent_term:get(?MUTES_KEY, 0).
+
+%% Balistes's FILL (`balistes-fill 0|1`): while on, a rhythm's FILL hits play
+%% and its NOT FILL hits rest (Reef.Balistes.Fixed.renderFixedFill), in fixed
+%% and named mode alike. Performance state, beside the mutes.
+set_fill(On) when is_boolean(On) ->
+    persistent_term:put(?FILL_KEY, On),
+    ok.
+
+fill() -> persistent_term:get(?FILL_KEY, false).
 
 %% Hardcoded defaultBalSim (the neutral Grids start), for a standalone smoke test.
 start(Channel, StepBeats) ->
@@ -249,7 +259,7 @@ drain(St, Step, Horizon, AnchorUs, BeatAtAnchor, Tempo) ->
                     %% inputs, no seed) — the shared renderFixed decides every hit, so
                     %% both runtimes reading the same Link step agree with no handoff.
                     FEvents = array:to_list(
-                                'reef_balistes_fixed@ps':renderFixed(maps:get(pattern, St), Step)),
+                                'reef_balistes_fixed@ps':renderFixedFill(fill(), maps:get(pattern, St), Step)),
                     lists:foreach(fun(E) -> emit(Sock, E, WallUs, StepMs) end, FEvents),
                     St#{last_step => Step};
                 named ->
@@ -298,7 +308,7 @@ named_step(Step, Sampler, Rhythms, Shown) ->
             case stage_beat(Word, Rhythms) of
                 {{fixed, Pat}, R1} ->
                     announce(Step, Event, Shown, <<>>),
-                    {array:to_list('reef_balistes_fixed@ps':renderFixed(Pat, Step - Start)), R1, Event};
+                    {array:to_list('reef_balistes_fixed@ps':renderFixedFill(fill(), Pat, Step - Start)), R1, Event};
                 {{grids, Bal0}, R1} ->
                     announce(Step, Event, Shown,
                              <<" ", ('reef_balistes_protocol@ps':encodeBalSim(Bal0))/binary>>),

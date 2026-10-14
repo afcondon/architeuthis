@@ -130,6 +130,10 @@ try_parse_prefixed(<<"balistes-mute ", Rest/binary>>) ->
     %% balistes-mute <mask> — the drum lanes Balistes has muted, one bit a
     %% lane (Reef.Balistes.Kit): the rig drops their hits, in every mode.
     {balistes_mute, trim_binary(Rest)};
+try_parse_prefixed(<<"balistes-fill ", Rest/binary>>) ->
+    %% balistes-fill 0|1 — Balistes's FILL off or on: a rhythm's FILL hits
+    %% play, its NOT FILL hits rest.
+    {balistes_fill, trim_binary(Rest)};
 try_parse_prefixed(<<"dirt-play ", Rest/binary>>) ->
     %% dirt-play <json> — audition one sample now: {"s", "n", "begin", "end",
     %% "speed", "gain", "orbit"}, the fields of a Reef.Routing voice. For the
@@ -1167,6 +1171,11 @@ handle_pattern_message(Text, State) ->
                 _ ->
                     {reply, {text, <<"ERR: balistes-mute <mask>">>}, State}
             end;
+        {balistes_fill, Arg} when Arg =:= <<"0">>; Arg =:= <<"1">> ->
+            reef_balistes_voice:set_fill(Arg =:= <<"1">>),
+            {reply, {text, <<"OK: balistes-fill">>}, State};
+        {balistes_fill, _} ->
+            {reply, {text, <<"ERR: balistes-fill 0|1">>}, State};
         {dirt_play, Json} ->
             case dirt_audition(Json) of
                 ok -> {reply, {text, <<"OK: dirt-play">>}, State};
