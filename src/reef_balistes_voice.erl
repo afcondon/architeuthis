@@ -21,7 +21,7 @@
 -module(reef_balistes_voice).
 -export([start/0, start/2, start_sim_json/3, start_sim_at_json/4,
          start_fixed_json/3, start_named/1, stop/0, loop/1,
-         set_routing_json/1, routing/0, play_hit/6]).
+         set_routing_json/1, routing/0, play_hit/6, set_mutes/1]).
 
 %% Scheduler poll interval (ms). Timing is absolute (WallUs from the anchor), so
 %% poll jitter only affects lookahead slack.
@@ -41,6 +41,7 @@
 %% Where the routing table is kept: outside any one voice, so every start,
 %% of any engine, plays through the table last pushed.
 -define(ROUTING_KEY, {?MODULE, routing}).
+-define(MUTES_KEY, {?MODULE, mutes}).
 
 start() -> start(?DEFAULT_CHANNEL, ?STEP_BEATS).
 
@@ -59,6 +60,16 @@ set_routing_json(Json) ->
     end.
 
 routing() -> persistent_term:get(?ROUTING_KEY, none).
+
+%% The lanes Balistes has muted (`balistes-mute <mask>`, one bit a lane;
+%% Reef.Balistes.Kit). Kept beside the routing, so it holds across a voice
+%% restart; every mode's hits pass through it in emit/4, a lane's audition
+%% (play_hit/6) does not.
+set_mutes(Mask) when is_integer(Mask), Mask >= 0 ->
+    persistent_term:put(?MUTES_KEY, Mask),
+    ok.
+
+mutes() -> persistent_term:get(?MUTES_KEY, 0).
 
 %% Hardcoded defaultBalSim (the neutral Grids start), for a standalone smoke test.
 start(Channel, StepBeats) ->
@@ -341,6 +352,12 @@ parse_beat(Text) ->
 %% Dilla push (pushMs) offsets the onset; a ratchet count > 1 subdivides the step
 %% into N retriggers of ~90% gate each. Single channel (drums).
 emit(Sock, E, WallUs, StepMs) ->
+    case 'reef_balistes_kit@ps':audible(mutes(), maps:get(note, E)) of
+        true -> emit_audible(Sock, E, WallUs, StepMs);
+        false -> ok
+    end.
+
+emit_audible(Sock, E, WallUs, StepMs) ->
     Note   = maps:get(note, E),
     Vel    = maps:get(velocity, E),
     PushMs = maps:get(pushMs, E),

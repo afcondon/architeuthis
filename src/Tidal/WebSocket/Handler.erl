@@ -126,6 +126,10 @@ try_parse_prefixed(<<"balistes-hit ", Rest/binary>>) ->
     %% balistes-hit <lane> <velocity> — one hit on a drum lane (0..15), sent
     %% where the drum routing table says: Balistes's audition of a lane.
     {balistes_hit, trim_binary(Rest)};
+try_parse_prefixed(<<"balistes-mute ", Rest/binary>>) ->
+    %% balistes-mute <mask> — the drum lanes Balistes has muted, one bit a
+    %% lane (Reef.Balistes.Kit): the rig drops their hits, in every mode.
+    {balistes_mute, trim_binary(Rest)};
 try_parse_prefixed(<<"dirt-play ", Rest/binary>>) ->
     %% dirt-play <json> — audition one sample now: {"s", "n", "begin", "end",
     %% "speed", "gain", "orbit"}, the fields of a Reef.Routing voice. For the
@@ -1154,6 +1158,14 @@ handle_pattern_message(Text, State) ->
             case balistes_hit(Args) of
                 ok -> {reply, {text, <<"OK: balistes-hit">>}, State};
                 {error, Why} -> {reply, {text, <<"ERR: balistes-hit ", Why/binary>>}, State}
+            end;
+        {balistes_mute, Arg} ->
+            case catch binary_to_integer(Arg) of
+                Mask when is_integer(Mask), Mask >= 0 ->
+                    reef_balistes_voice:set_mutes(Mask),
+                    {reply, {text, <<"OK: balistes-mute">>}, State};
+                _ ->
+                    {reply, {text, <<"ERR: balistes-mute <mask>">>}, State}
             end;
         {dirt_play, Json} ->
             case dirt_audition(Json) of
