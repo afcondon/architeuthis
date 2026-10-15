@@ -362,31 +362,34 @@ drain(St, Step, Horizon, AnchorUs, BeatAtAnchor, Tempo) ->
     end.
 
 %% The patch an `odonus $ "<a b>"` line names for step LeadStep: when the
-%% line's event there is a new one, its word's patch (off the stage) is queued
-%% as a RecallPatch for that step and broadcast tick-tagged, as a move's
-%% gestures are, so a following page recalls it on the same step. A rest, or
-%% a word with no patch saved, leaves the patch playing as it is.
+%% word there changes, or the patch saved under it does, its patch (off the
+%% stage) is queued as a RecallPatch for that step and broadcast tick-tagged,
+%% as a move's gestures are, so a following page recalls it on the same step.
+%% Not at every event: a one-word line has a new event each cycle, and
+%% recalling then undid every hand edit (a head unmuted, VOICES set) at the
+%% next bar (AC, 2026-10-15). A patch saved again is still heard at the next
+%% event, and evaluating the line again recalls it afresh (set_named). A rest,
+%% or a word with no patch saved, leaves the patch playing as it is.
 named_lead(St, LeadStep, Pending) ->
     Shown = maps:get(shown, St, none),
     case maps:get(named, St, none) of
         none -> {Pending, Shown};
         Sampler ->
-            Event = case Sampler(LeadStep) of
-                        {just, #{word := W, start := S}} -> {W, S};
-                        _ -> rest
-                    end,
-            case {Event =:= Shown, Event} of
-                {true, _} -> {Pending, Shown};
-                {false, {Word, _}} ->
+            case Sampler(LeadStep) of
+                {just, #{word := Word}} ->
                     case tidal_stage:get_text(<<"odonus/patch/", Word/binary>>) of
                         Text when is_binary(Text) ->
-                            Input = 'tidal_named@ps':recallPatch(Text),
-                            Json = 'reef_protocol@ps':encodeTagged(#{tick => LeadStep, input => Input}),
-                            tidal_link_anchor:sync_broadcast(<<"reef-input ", Json/binary>>),
-                            {Pending ++ [{LeadStep, Input}], Event};
-                        _ -> {Pending, Event}
+                            case {Word, Text} =:= Shown of
+                                true -> {Pending, Shown};
+                                false ->
+                                    Input = 'tidal_named@ps':recallPatch(Text),
+                                    Json = 'reef_protocol@ps':encodeTagged(#{tick => LeadStep, input => Input}),
+                                    tidal_link_anchor:sync_broadcast(<<"reef-input ", Json/binary>>),
+                                    {Pending ++ [{LeadStep, Input}], {Word, Text}}
+                            end;
+                        _ -> {Pending, Shown}
                     end;
-                {false, rest} -> {Pending, rest}
+                _ -> {Pending, Shown}
             end
     end.
 
