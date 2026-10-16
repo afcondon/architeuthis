@@ -1335,7 +1335,9 @@ handle_pattern_message(Text, State) ->
             end,
             {reply, Reply, State};
         selene_resume ->
-            Reply = case catch selene_keeper:resume() of
+            %% the page's resume brings the reset patterns back too
+            catch selene_retrig:play(),
+    Reply = case catch selene_keeper:resume() of
                 {ok, N} ->
                     <<"OK: selene resumed (", (integer_to_binary(N))/binary, " bank(s))">>;
                 _ -> <<"ERR: selene-resume: the keeper is not running">>
@@ -2023,6 +2025,8 @@ machine_play(Block) ->
 %% Selene's signals run on the daemons with or without a page: play gives
 %% every daemon back what it had before `selene $ hush` (selene_keeper).
 play_machine(<<"selene">>) ->
+    %% the FH-2 banks' reset patterns come back from the rack as it is now
+    catch selene_retrig:play(),
     Reply = case catch selene_keeper:resume() of
                 {ok, N} -> <<"OK: selene playing (", (integer_to_binary(N))/binary, " bank(s) given back)">>;
                 _ -> <<"ERR: selene: the keeper is not running">>
@@ -2077,9 +2081,11 @@ hush_machine(<<"conspicillum">>) ->
 hush_machine(<<"selene">>) ->
     _ = daemon_call(es9_daemon_socket_path(), <<"panic">>),
     catch selene_keeper:hushed(),
+    %% the FH-2 banks' reset patterns stop too (the LFOs themselves run on)
+    catch selene_retrig:hush(),
     catch tidal_stage:stopped(selene),
     catch tidal_link_anchor:sync_broadcast(<<"hushed selene">>),
-    <<"OK: selene hushed (the ES-9's signals; the FH-2's banks run on the FH-2 and keep going)">>.
+    <<"OK: selene hushed (the ES-9's signals and the FH-2's reset patterns; the FH-2's banks run on the FH-2 and keep going)">>.
 
 %% A block may hold several machine lines (`odonus $ loop` then `odonus $
 %% slide "<0 -1>"`, with no blank line between): each line that starts with
@@ -2183,31 +2189,40 @@ selene_line(Rest) ->
                    end,
             case catch 'reef_selene_line@ps':rigLine(Body, Rack) of
                 {left, Why} -> <<"ERR: selene: ", Why/binary>>;
-                {right, #{rack := NewRack, line := Line, socket := Socket, bank := Bank, json := Json, command := Command}} ->
-                    %% to every subscriber, the sender too: a module dropped on
-                    %% the Selene page comes from that page, and it must follow
-                    %% (Limulus does not edit selene/rack, so it ignores it)
-                    _ = tidal_stage:put_text(<<"selene/rack">>, NewRack, nobody),
-                    case Socket of
-                        <<>> -> <<"OK: selene: kept (not a modular bank, nothing sent): ", Line/binary>>;
-                        _ ->
-                            %% the command is the line's whole daemon verb: an
-                            %% apply-polysignal, or a reset-lfos, which is an act
-                            %% rather than a setting, so the keeper has nothing
-                            %% to record (no json) and nothing to replay
-                            case daemon_call(selene_socket_path(Socket), Command) of
-                                {ok, <<"OK", _/binary>>} ->
-                                    _ = Json =/= <<>> andalso (catch selene_keeper:record(Socket, Bank, Json)),
-                                    <<"OK: selene: ", Line/binary>>;
-                                {ok, Said} -> <<"ERR: selene: the ", Socket/binary, " daemon said ", Said/binary>>;
-                                {error, Reason} ->
-                                    iolist_to_binary(io_lib:format("ERR: selene: the ~s daemon is not answering (~p); the rack is changed, the modular is not", [Socket, Reason]))
-                            end
+                {right, R = #{rack := NewRack}} ->
+                    %% a reset pattern that does not parse is refused here,
+                    %% so a line never leaves one silently playing nothing
+                    case catch selene_retrig:check(NewRack) of
+                        {error, Why} -> <<"ERR: selene: ", Why/binary>>;
+                        _ -> selene_kept(R)
                     end;
                 Other ->
                     iolist_to_binary(io_lib:format("ERR: selene: ~p", [Other]))
             end;
         _ -> <<"ERR: selene: a line is selene $ <kind> <bank> # <parameter> <value>, as in selene $ lfo es9main # rate 0.5">>
+    end.
+
+%% Keep a line's rack on the stage and send its bank's daemon its command.
+selene_kept(#{rack := NewRack, line := Line, socket := Socket, bank := Bank, json := Json, command := Command}) ->
+    %% to every subscriber, the sender too: a module dropped on the Selene
+    %% page comes from that page, and it must follow (Limulus does not edit
+    %% selene/rack, so it ignores it); selene_retrig hears it too
+    _ = tidal_stage:put_text(<<"selene/rack">>, NewRack, nobody),
+    case Socket of
+        <<>> -> <<"OK: selene: kept (not a modular bank, nothing sent): ", Line/binary>>;
+        _ ->
+            %% the command is the line's whole daemon verb: an
+            %% apply-polysignal, or a reset-lfos, which is an act rather than
+            %% a setting, so the keeper has nothing to record (no json) and
+            %% nothing to replay
+            case daemon_call(selene_socket_path(Socket), Command) of
+                {ok, <<"OK", _/binary>>} ->
+                    _ = Json =/= <<>> andalso (catch selene_keeper:record(Socket, Bank, Json)),
+                    <<"OK: selene: ", Line/binary>>;
+                {ok, Said} -> <<"ERR: selene: the ", Socket/binary, " daemon said ", Said/binary>>;
+                {error, Reason} ->
+                    iolist_to_binary(io_lib:format("ERR: selene: the ~s daemon is not answering (~p); the rack is changed, the modular is not", [Socket, Reason]))
+            end
     end.
 
 %% `balistes $ "<fox-drum owl-drum>"`: Balistes's saved beats, by word
@@ -4515,6 +4530,8 @@ hush_everything() ->
     catch reef_vetula_voice:stop(),
     %% and Vetula's cards (vetula-cards-play)
     catch vetula_cards:stop(),
+    %% and Selene's reset patterns, kept silent until `selene $ play`
+    catch selene_retrig:hush(),
     %% and the Conspicillum grain cloud (conspicillum-scene) — also a
     %% /dirt/play emitter, and the densest one on the rig, so hush must
     %% reach it too.

@@ -156,6 +156,13 @@ init([]) ->
            shutdown => 5000,
            type => worker,
            modules => [odonus_feeds]},
+         %% Selene's reset patterns, from the rack on the stage: after it too.
+         #{id => selene_retrig,
+           start => {selene_retrig, start_link, []},
+           restart => permanent,
+           shutdown => 5000,
+           type => worker,
+           modules => [selene_retrig]},
          %% The record buffer, its marks and the loops on the rig. After the
          %% stage, whose routing text it follows.
          #{id => rig_loops,

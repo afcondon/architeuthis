@@ -102,6 +102,7 @@ erl-quick:
 	@erlc -disable-feature maybe_expr -o ebin src/window_patterns.erl
 	@erlc -disable-feature maybe_expr -o ebin src/rig_loops.erl
 	@erlc -disable-feature maybe_expr -o ebin src/selene_keeper.erl
+	@erlc -disable-feature maybe_expr -o ebin src/selene_retrig.erl
 	@erlc -disable-feature maybe_expr -o ebin src/virtual_selene_voice_sup.erl
 	@erlc -disable-feature maybe_expr -o ebin src/virtual_selene_voice.erl
 	@erlc -disable-feature maybe_expr -o ebin src/selene_pattern_voice_sup.erl

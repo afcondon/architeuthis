@@ -13,6 +13,12 @@
 %% timed the same way but plays drum hits instead (Tidal.DrumVoice): each
 %% event names a lane of the drum kit, and reef_balistes_voice:play_hit sends
 %% it down the drum routing table, as Balistes' own engines are sent.
+%%
+%% And one per FH-2 LFO bank with a reset pattern, `{retrig, Base}`
+%% (`tidal_retrig_<Base>`, kept in step with the rack by selene_retrig): each
+%% event names slots of the bank, and Tidal.RetrigVoice turns them into the
+%% notes that reset those outputs' LFOs (channel 16, note = FH-2 output),
+%% sent timetagged through Diaphus like any scheduled note.
 -module(tidal_dirt_voice).
 -behaviour(gen_server).
 
@@ -27,12 +33,13 @@ set_pattern(Stream, Pattern) ->
     gen_server:call(registered_name(Stream), {set_pattern, Pattern}).
 
 registered_name(drums) -> tidal_dirt_drums;
+registered_name({retrig, Base}) -> list_to_atom("tidal_retrig_" ++ integer_to_list(Base));
 registered_name(Stream) when is_integer(Stream) ->
     list_to_atom("tidal_dirt_d" ++ integer_to_list(Stream)).
 
 init(Stream) ->
     {ok, Sock} = gen_udp:open(0, [binary]),
-    Id = case Stream of drums -> 0; _ -> Stream end,
+    Id = case Stream of drums -> 0; {retrig, _} -> 0; _ -> Stream end,
     {ok, {Stream, 'tidal_dirtVoice@ps':initialState(Id), Sock}}.
 
 handle_call({set_pattern, Pattern}, _From, {Stream, Ps, Sock}) ->
@@ -45,6 +52,16 @@ handle_cast({compute_until, Window}, {drums, Ps, Sock}) ->
               reef_balistes_voice:play_hit(Sock, Note, Vel, Dur, Span, round(At))
       end, ok, Hits),
     {noreply, {drums, Ps1, Sock}};
+handle_cast({compute_until, Window}, {{retrig, Base} = Stream, Ps, Sock}) ->
+    #{newState := Ps1, resets := Resets} = 'tidal_retrigVoice@ps':computeResets(Base, Window, Ps),
+    Channel = 'tidal_retrigVoice@ps':resetChannel(),
+    array:foldl(
+      fun(_, #{atUnixUs := At, note := Note}, _) ->
+              Send = 'tidal_mIDIBridge@foreign':scheduleNoteAt(
+                       Sock, <<"FH-2">>, Channel, Note, 127, 5, round(At)),
+              Send()
+      end, ok, Resets),
+    {noreply, {Stream, Ps1, Sock}};
 handle_cast({compute_until, Window}, {Stream, Ps, Sock}) ->
     #{newState := Ps1, messages := Messages} =
         'tidal_dirtVoice@ps':computeUntil(Window, Ps),
