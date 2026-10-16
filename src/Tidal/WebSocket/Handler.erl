@@ -2170,7 +2170,9 @@ machine_statement_(Block) ->
 %% follows), and the one bank touched goes to its daemon as one
 %% apply-polysignal: atomic, its eight outputs changing on the same instant.
 %% The keeper records it, as a page's apply, so hush, resume and a daemon's
-%% return treat it alike.
+%% return treat it alike. `selene $ reset <bank> ["slots"]` restarts an FH-2
+%% LFO bank (or some slots) in phase; the rack does not change and the keeper
+%% records nothing.
 selene_line(Rest) ->
     case string:trim(Rest, leading) of
         <<"$", Body0/binary>> ->
@@ -2181,7 +2183,7 @@ selene_line(Rest) ->
                    end,
             case catch 'reef_selene_line@ps':rigLine(Body, Rack) of
                 {left, Why} -> <<"ERR: selene: ", Why/binary>>;
-                {right, #{rack := NewRack, line := Line, socket := Socket, bank := Bank, json := Json}} ->
+                {right, #{rack := NewRack, line := Line, socket := Socket, bank := Bank, json := Json, command := Command}} ->
                     %% to every subscriber, the sender too: a module dropped on
                     %% the Selene page comes from that page, and it must follow
                     %% (Limulus does not edit selene/rack, so it ignores it)
@@ -2189,9 +2191,13 @@ selene_line(Rest) ->
                     case Socket of
                         <<>> -> <<"OK: selene: kept (not a modular bank, nothing sent): ", Line/binary>>;
                         _ ->
-                            case daemon_call(selene_socket_path(Socket), <<"apply-polysignal ", Json/binary>>) of
+                            %% the command is the line's whole daemon verb: an
+                            %% apply-polysignal, or a reset-lfos, which is an act
+                            %% rather than a setting, so the keeper has nothing
+                            %% to record (no json) and nothing to replay
+                            case daemon_call(selene_socket_path(Socket), Command) of
                                 {ok, <<"OK", _/binary>>} ->
-                                    catch selene_keeper:record(Socket, Bank, Json),
+                                    _ = Json =/= <<>> andalso (catch selene_keeper:record(Socket, Bank, Json)),
                                     <<"OK: selene: ", Line/binary>>;
                                 {ok, Said} -> <<"ERR: selene: the ", Socket/binary, " daemon said ", Said/binary>>;
                                 {error, Reason} ->
