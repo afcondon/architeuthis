@@ -2203,7 +2203,9 @@ selene_line(Rest) ->
     end.
 
 %% Keep a line's rack on the stage and send its bank's daemon its command.
-selene_kept(#{rack := NewRack, line := Line, socket := Socket, bank := Bank, json := Json, command := Command}) ->
+selene_kept(#{rack := NewRack, line := Line0, socket := Socket, bank := Bank, json := Json, command := Command, note := Note}) ->
+    %% what the hardware will do differently (an FH-2 rate it cannot reach)
+    Line = case Note of <<>> -> Line0; _ -> <<Line0/binary, " -- ", Note/binary>> end,
     %% to every subscriber, the sender too: a module dropped on the Selene
     %% page comes from that page, and it must follow (Limulus does not edit
     %% selene/rack, so it ignores it); selene_retrig hears it too
