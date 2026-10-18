@@ -14,9 +14,16 @@
 %%
 %% Hush silences, clear forgets: `selene $ hush` and `hush` mark the sockets
 %% hushed, so a returning daemon is not given back what was silenced; the
-%% next apply wakes them. `selene $ off <bank>` releases a bank, and only
-%% that forgets it (forget/2): kept, it would be applied again on the
-%% daemon's return and take back jacks that something else now has.
+%% next apply wakes them.
+%%
+%% The rack decides what is kept: this process follows the stage's
+%% `selene/rack` (as selene_retrig does), and a bank it kept that the rack
+%% no longer has is released in its daemon (`release-claim`, which silences
+%% its jacks) and forgotten, however it left the rack. Kept, it would be
+%% applied again on the daemon's return and take back jacks that something
+%% else now has. A release the daemon does not take (it is down) is tried
+%% again at the next rack and on the daemon's return. Until the stage has
+%% given a rack, nothing is released. `off` also forgets at once (forget/2).
 -module(selene_keeper).
 -behaviour(gen_server).
 
@@ -53,18 +60,25 @@ hushed() -> gen_server:cast(?MODULE, hushed).
 %% banks were sent.
 resume() -> gen_server:call(?MODULE, resume, 15000).
 
+-define(RACK, <<"selene/rack">>).
+
 init([]) ->
     erlang:send_after(?POLL_MS, self(), poll),
-    {ok, #{applied => load(), up => #{}, hushed => #{}}}.
+    Table = tidal_stage:text_subscribe(self()),
+    Rack = case maps:get(?RACK, Table, undefined) of
+               #{text := T} when is_binary(T) -> T;
+               _ -> undefined
+           end,
+    {ok, follow(#{applied => load(), up => #{}, hushed => #{}, rack => Rack})}.
 
 handle_call({reapply, Socket}, _From, St) ->
     {N, St1} = send_all(Socket, St),
     {reply, {ok, N}, St1};
 handle_call(resume, _From, St) ->
     St1 = St#{hushed := #{}},
-    {N1, _} = send_all(<<"es9">>, St1),
-    {N2, _} = send_all(<<"fh2">>, St1),
-    {reply, {ok, N1 + N2}, St1};
+    {N1, St2} = send_all(<<"es9">>, St1),
+    {N2, St3} = send_all(<<"fh2">>, St2),
+    {reply, {ok, N1 + N2}, St3};
 handle_call(applied, _From, St = #{applied := A, hushed := H}) ->
     {reply, [describe(S, B, J, maps:get(S, H, false)) || {{S, B}, J} <- maps:to_list(A)], St};
 handle_call(_, _From, St) -> {reply, {error, unknown}, St}.
@@ -106,6 +120,15 @@ handle_cast(hushed, St = #{applied := A}) ->
     {noreply, St#{hushed := maps:from_list([{S, true} || S <- ?SOCKETS])}};
 handle_cast(_, St) -> {noreply, St}.
 
+handle_info({stage_broadcast, <<"stage-text ", Json/binary>>}, St) ->
+    case catch json:decode(Json) of
+        #{<<"key">> := ?RACK, <<"text">> := T} when is_binary(T) ->
+            {noreply, follow(St#{rack := T})};
+        #{<<"key">> := ?RACK} ->
+            {noreply, follow(St#{rack := <<>>})};
+        _ ->
+            {noreply, St}
+    end;
 %% A daemon that answers after not answering has come back with nothing.
 %% The first answer after the rig starts is taken as it stands.
 handle_info(poll, St = #{up := Up}) ->
@@ -122,7 +145,41 @@ handle_info(poll, St = #{up := Up}) ->
     {noreply, St1};
 handle_info(_, St) -> {noreply, St}.
 
-send_all(Socket, St = #{applied := A, hushed := H}) ->
+%% Release and forget every kept bank the rack does not hold.
+follow(St = #{rack := undefined}) -> St;
+follow(St = #{rack := Rack, applied := A}) ->
+    Held = [{S, B} || #{socket := S, bank := B} <- banks(Rack)],
+    Gone = [K || K <- maps:keys(A), not lists:member(K, Held)],
+    A1 = lists:foldl(fun release/2, A, Gone),
+    _ = A1 =/= A andalso save(A1),
+    St#{applied := A1}.
+
+release(K = {Socket, Bank}, A) ->
+    Owner = owner(maps:get(K, A), Socket, Bank),
+    case call(path(Socket), <<"release-claim polysignal ", Owner/binary>>) of
+        {ok, <<"OK", _/binary>>} ->
+            logger:notice("selene_keeper: ~s ~s left the rack: released ~s", [Socket, Bank, Owner]),
+            maps:remove(K, A);
+        _ -> A
+    end.
+
+%% The claim's name, as the apply gave it (Reef.Selene.Wire.ownerOf).
+owner(Json, Socket, Bank) ->
+    case catch json:decode(Json) of
+        #{<<"alias">> := Alias} when is_binary(Alias), Alias =/= <<>> -> Alias;
+        _ -> <<"selene:", Socket/binary, ":", Bank/binary>>
+    end.
+
+banks(Rack) ->
+    case catch 'reef_selene_line@ps':banksOf(Rack) of
+        L when is_tuple(L) -> array:to_list(L);
+        L when is_list(L) -> L;
+        _ -> []
+    end.
+
+send_all(Socket, St0) ->
+    %% what the rack has lost is released first, not given back
+    St = #{applied := A, hushed := H} = follow(St0),
     case maps:get(Socket, H, false) of
         true -> {0, St};
         false ->
