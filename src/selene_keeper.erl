@@ -24,6 +24,13 @@
 %% else now has. A release the daemon does not take (it is down) is tried
 %% again at the next rack and on the daemon's return. Until the stage has
 %% given a rack, nothing is released. `off` also forgets at once (forget/2).
+%%
+%% The FH-2 voices the routing table plays (Triggerfish `DFh2Voice`) are kept
+%% the same way, from the stage's `routing/fh2-voices`: the pitch jacks in use
+%% (`1 3`). Each is a one-voice `apply-yarns` (pitch on the jack, gate on the
+%% next, MIDI channel 10 + (jack+1)/2), applied when it appears and when the
+%% daemon returns, released when it goes. The stage keeps the object on disk,
+%% so it needs no file here.
 -module(selene_keeper).
 -behaviour(gen_server).
 
@@ -61,15 +68,20 @@ hushed() -> gen_server:cast(?MODULE, hushed).
 resume() -> gen_server:call(?MODULE, resume, 15000).
 
 -define(RACK, <<"selene/rack">>).
+-define(VOICES, <<"routing/fh2-voices">>).
+-define(VOICE_JACKS, [1, 3, 5, 7]).
 
 init([]) ->
     erlang:send_after(?POLL_MS, self(), poll),
     Table = tidal_stage:text_subscribe(self()),
-    Rack = case maps:get(?RACK, Table, undefined) of
-               #{text := T} when is_binary(T) -> T;
-               _ -> undefined
+    Text = fun(Key) -> case maps:get(Key, Table, undefined) of
+                           #{text := T} when is_binary(T) -> T;
+                           _ -> undefined
+                       end
            end,
-    {ok, follow(#{applied => load(), up => #{}, hushed => #{}, rack => Rack})}.
+    St = #{applied => load(), up => #{}, hushed => #{}, rack => Text(?RACK),
+           voices => voice_jacks(Text(?VOICES)), voices_up => []},
+    {ok, voices(follow(St))}.
 
 handle_call({reapply, Socket}, _From, St) ->
     {N, St1} = send_all(Socket, St),
@@ -126,6 +138,8 @@ handle_info({stage_broadcast, <<"stage-text ", Json/binary>>}, St) ->
             {noreply, follow(St#{rack := T})};
         #{<<"key">> := ?RACK} ->
             {noreply, follow(St#{rack := <<>>})};
+        #{<<"key">> := ?VOICES} = M ->
+            {noreply, voices(St#{voices := voice_jacks(maps:get(<<"text">>, M, <<>>))})};
         _ ->
             {noreply, St}
     end;
@@ -138,12 +152,57 @@ handle_info(poll, St = #{up := Up}) ->
                     Now = answers(S),
                     Acc1 = Acc#{up := U#{S => Now}},
                     case {maps:get(S, Up, unknown), Now} of
+                        {false, true} when S =:= <<"fh2">> ->
+                            voices((element(2, send_all(S, Acc1)))#{voices_up := []});
                         {false, true} -> element(2, send_all(S, Acc1));
                         _ -> Acc1
                     end
             end, St, ?SOCKETS),
     {noreply, St1};
 handle_info(_, St) -> {noreply, St}.
+
+%% The pitch jacks named by `routing/fh2-voices`; undefined until the stage
+%% has said (then nothing is applied or released).
+voice_jacks(undefined) -> undefined;
+voice_jacks(Text) ->
+    Js = [catch binary_to_integer(W) || W <- binary:split(Text, <<" ">>, [global, trim_all])],
+    lists:usort([J || J <- Js, lists:member(J, ?VOICE_JACKS)]).
+
+%% Apply the voices the table plays that the FH-2 does not have yet, and
+%% release the others. Before anything is known to be applied (at start, or
+%% after the daemon came back) every jack is settled, so a voice dropped
+%% while the rig was down is released too.
+voices(St = #{voices := undefined}) -> St;
+voices(St = #{voices := Want, voices_up := Have}) ->
+    Settle = case Have of [] -> ?VOICE_JACKS; _ -> lists:usort(Want ++ Have) end,
+    Up = lists:foldl(
+           fun(J, Acc) ->
+                   case {lists:member(J, Want), lists:member(J, Acc)} of
+                       {true, false} -> case voice_call(apply, J) of ok -> [J | Acc]; error -> Acc end;
+                       {false, _} -> _ = voice_call(release, J), lists:delete(J, Acc);
+                       {true, true} -> Acc
+                   end
+           end, Have, Settle),
+    St#{voices_up := lists:usort(Up)}.
+
+voice_call(What, J) ->
+    Name = <<"fh2voice-", (integer_to_binary(J))/binary>>,
+    Cmd = case What of
+              apply ->
+                  Voice = #{<<"name">> => Name, <<"channel">> => 10 + (J + 1) div 2,
+                            <<"pitchBank">> => <<"main">>, <<"pitchSlot">> => J - 1,
+                            <<"gateBank">> => <<"main">>, <<"gateSlot">> => J},
+                  <<"apply-yarns ", (iolist_to_binary(json:encode(#{<<"name">> => Name, <<"voices">> => [Voice]})))/binary>>;
+              release -> <<"release-claim yarns ", Name/binary>>
+          end,
+    case call(path(<<"fh2">>), Cmd) of
+        {ok, <<"OK", _/binary>> = R} ->
+            _ = What =:= apply andalso logger:notice("selene_keeper: FH-2 voice on jack ~p: ~s", [J, R]),
+            ok;
+        Other ->
+            _ = What =:= apply andalso logger:warning("selene_keeper: FH-2 voice on jack ~p not applied: ~p", [J, Other]),
+            error
+    end.
 
 %% Release and forget every kept bank the rack does not hold.
 follow(St = #{rack := undefined}) -> St;
