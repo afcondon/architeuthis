@@ -2220,6 +2220,11 @@ selene_kept(#{rack := NewRack, line := Line0, socket := Socket, bank := Bank, js
             case daemon_call(selene_socket_path(Socket), Command) of
                 {ok, <<"OK", _/binary>>} ->
                     _ = Json =/= <<>> andalso (catch selene_keeper:record(Socket, Bank, Json)),
+                    %% an `off` released the bank: the keeper must not give it back
+                    _ = case Command of
+                            <<"release-claim ", _/binary>> -> catch selene_keeper:forget(Socket, Bank);
+                            _ -> ok
+                        end,
                     <<"OK: selene: ", Line/binary>>;
                 {ok, Said} -> <<"ERR: selene: the ", Socket/binary, " daemon said ", Said/binary>>;
                 {error, Reason} ->

@@ -14,11 +14,13 @@
 %%
 %% Hush silences, clear forgets: `selene $ hush` and `hush` mark the sockets
 %% hushed, so a returning daemon is not given back what was silenced; the
-%% next apply wakes them. Nothing here forgets an apply.
+%% next apply wakes them. `selene $ off <bank>` releases a bank, and only
+%% that forgets it (forget/2): kept, it would be applied again on the
+%% daemon's return and take back jacks that something else now has.
 -module(selene_keeper).
 -behaviour(gen_server).
 
--export([start_link/0, record/3, reapply/1, hushed/0, applied/0, resume/0]).
+-export([start_link/0, record/3, forget/2, reapply/1, hushed/0, applied/0, resume/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -define(POLL_MS, 2000).
@@ -28,6 +30,9 @@ start_link() -> gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
 
 %% A daemon accepted `apply-polysignal Json` for Bank: keep it.
 record(Socket, Bank, Json) -> gen_server:cast(?MODULE, {record, Socket, Bank, Json}).
+
+%% A daemon released Bank (`off`): stop keeping it.
+forget(Socket, Bank) -> gen_server:cast(?MODULE, {forget, Socket, Bank}).
 
 %% Send every kept apply for Socket again. Returns how many were sent.
 reapply(Socket) -> gen_server:call(?MODULE, {reapply, Socket}, 15000).
@@ -91,6 +96,10 @@ handle_cast({record, Socket, Bank, Json}, St = #{applied := A, hushed := H}) ->
     A1 = A#{{Socket, Bank} => Json},
     save(A1),
     {noreply, St#{applied := A1, hushed := maps:remove(Socket, H)}};
+handle_cast({forget, Socket, Bank}, St = #{applied := A}) ->
+    A1 = maps:remove({Socket, Bank}, A),
+    save(A1),
+    {noreply, St#{applied := A1}};
 handle_cast(hushed, St = #{applied := A}) ->
     [call(path(<<"fh2">>), <<"apply-polysignal ", (silent(J))/binary>>)
      || {{<<"fh2">>, _B}, J} <- maps:to_list(A)],
