@@ -2203,7 +2203,7 @@ selene_line(Rest) ->
     end.
 
 %% Keep a line's rack on the stage and send its bank's daemon its command.
-selene_kept(#{rack := NewRack, line := Line0, socket := Socket, bank := Bank, json := Json, command := Command, note := Note}) ->
+selene_kept(R = #{rack := NewRack, line := Line0, socket := Socket, bank := Bank, json := Json, command := Command, note := Note}) ->
     %% what the hardware will do differently (an FH-2 rate it cannot reach)
     Line = case Note of <<>> -> Line0; _ -> <<Line0/binary, " -- ", Note/binary>> end,
     %% to every subscriber, the sender too: a module dropped on the Selene
@@ -2222,6 +2222,9 @@ selene_kept(#{rack := NewRack, line := Line0, socket := Socket, bank := Bank, js
             case selene_commands(selene_socket_path(Socket), binary:split(Command, <<"\n">>, [global, trim_all])) of
                 {ok, <<"OK", _/binary>>} ->
                     _ = Json =/= <<>> andalso (catch selene_keeper:record(Socket, Bank, Json)),
+                    %% a `swap` applies more than one place: keep each
+                    _ = [catch selene_keeper:record(Socket, B, J)
+                         || #{bank := B, json := J} <- also(R)],
                     %% an `off` released the bank: the keeper must not give it
                     %% back (a split also releases, but keeps what it applies)
                     _ = case {Command, Json} of
@@ -2234,6 +2237,11 @@ selene_kept(#{rack := NewRack, line := Line0, socket := Socket, bank := Bank, js
                     iolist_to_binary(io_lib:format("ERR: selene: the ~s daemon is not answering (~p); the rack is changed, the modular is not", [Socket, Reason]))
             end
     end.
+
+%% The other places a line applied (reef's RigLine `also`), as a list.
+also(#{also := A}) when is_tuple(A) -> array:to_list(A);
+also(#{also := A}) when is_list(A) -> A;
+also(_) -> [].
 
 %% A line's daemon commands in turn: the last reply, or the first that is
 %% not OK.
