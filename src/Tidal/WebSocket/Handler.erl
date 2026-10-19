@@ -2216,13 +2216,16 @@ selene_kept(#{rack := NewRack, line := Line0, socket := Socket, bank := Bank, js
             %% the command is the line's whole daemon verb: an
             %% apply-polysignal, or a reset-lfos, which is an act rather than
             %% a setting, so the keeper has nothing to record (no json) and
-            %% nothing to replay
-            case daemon_call(selene_socket_path(Socket), Command) of
+            %% nothing to replay. A `split` or `join` is two, one per line, in
+            %% order (the old claim released, then the new applied), and the
+            %% first that is not OK stops it.
+            case selene_commands(selene_socket_path(Socket), binary:split(Command, <<"\n">>, [global, trim_all])) of
                 {ok, <<"OK", _/binary>>} ->
                     _ = Json =/= <<>> andalso (catch selene_keeper:record(Socket, Bank, Json)),
-                    %% an `off` released the bank: the keeper must not give it back
-                    _ = case Command of
-                            <<"release-claim ", _/binary>> -> catch selene_keeper:forget(Socket, Bank);
+                    %% an `off` released the bank: the keeper must not give it
+                    %% back (a split also releases, but keeps what it applies)
+                    _ = case {Command, Json} of
+                            {<<"release-claim ", _/binary>>, <<>>} -> catch selene_keeper:forget(Socket, Bank);
                             _ -> ok
                         end,
                     <<"OK: selene: ", Line/binary>>;
@@ -2230,6 +2233,16 @@ selene_kept(#{rack := NewRack, line := Line0, socket := Socket, bank := Bank, js
                 {error, Reason} ->
                     iolist_to_binary(io_lib:format("ERR: selene: the ~s daemon is not answering (~p); the rack is changed, the modular is not", [Socket, Reason]))
             end
+    end.
+
+%% A line's daemon commands in turn: the last reply, or the first that is
+%% not OK.
+selene_commands(_Path, []) -> {ok, <<"OK">>};
+selene_commands(Path, [C]) -> daemon_call(Path, C);
+selene_commands(Path, [C | Rest]) ->
+    case daemon_call(Path, C) of
+        {ok, <<"OK", _/binary>>} -> selene_commands(Path, Rest);
+        Other -> Other
     end.
 
 %% `balistes $ "<fox-drum owl-drum>"`: Balistes's saved beats, by word
