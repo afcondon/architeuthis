@@ -391,26 +391,6 @@ try_parse_prefixed(<<"set-nav-mode ", Rest/binary>>) ->
         <<"reverse">>   -> {set_nav_mode, reverse};
         _               -> none
     end;
-try_parse_prefixed(<<"reload-baseline">>) ->
-    %% reload-baseline — code:load_file the typeful-cues baseline module
-    %% (Calypso.Generated.Session). Used by Calypso's /session-source
-    %% endpoint after writing + building a new typeful session. Voice
-    %% gen_servers keep their currently-captured Pattern funs; calls
-    %% inside those funs late-bind to the freshly-loaded Session, so
-    %% currently-playing cues may pick up new bodies automatically. Re-
-    %% arming guarantees a clean swap.
-    {reload_baseline};
-try_parse_prefixed(<<"reload-baseline ", _/binary>>) ->
-    {reload_baseline};
-try_parse_prefixed(<<"get-studio">>) ->
-    %% get-studio — return a snapshot of the current Studio state
-    %% (devices, instruments, drum kits, claim conflicts) as a
-    %% tab-delimited multi-line payload.  Calypso's Studio pane
-    %% consumes this after each successful reload-baseline.  See
-    %% `tidal_session_walker:studio_lines/0` for the wire format.
-    {get_studio};
-try_parse_prefixed(<<"get-studio ", _/binary>>) ->
-    {get_studio};
 try_parse_prefixed(<<"dump-odonus-samples ", Rest/binary>>) ->
     %% dump-odonus-samples <voice-name> — return per-step timing
     %% samples collected by an instrumented odonus_voice gen_server.
@@ -436,24 +416,6 @@ try_parse_prefixed(<<"dump-anchor-log">>) ->
     {dump_anchor_log};
 try_parse_prefixed(<<"clear-anchor-log">>) ->
     {clear_anchor_log};
-try_parse_prefixed(<<"play-piece ", Rest/binary>>) ->
-    %% play-piece <name> — install the named Section value (a top-level
-    %% `Pattern AnyPart` declaration in Calypso.Generated.Session) into
-    %% the conductor.  On each subsequent clock tick the conductor
-    %% queries the section over the look-ahead window and fires arms
-    %% for events that land in that window — same dispatch path as
-    %% `play-armed`, but driven by the section's own time structure.
-    case trim_binary(Rest) of
-        <<>> -> none;
-        Name -> {play_piece, Name}
-    end;
-try_parse_prefixed(<<"stop-piece">>) ->
-    %% stop-piece — clear the conductor's current piece.  Voices keep
-    %% their last-armed pattern (deliberate: stop halts arrangement,
-    %% not the music).  Idempotent.
-    {stop_piece};
-try_parse_prefixed(<<"stop-piece ", _/binary>>) ->
-    {stop_piece};
 %% Per-voice stops for the reef family (Triggerfish ATLANTIS per-tab transport):
 %% stop ONE reef voice, not the global hush.  Restart is the voice's own handoff
 %% verb (reef-sim-at / balistes-sim-at / vetula-cards-play).  Idempotent — stopping
@@ -469,22 +431,6 @@ try_parse_prefixed(<<"vetula-cards-play">>) -> {vetula_cards_play};
 try_parse_prefixed(<<"vetula-cards-stop">>) -> {vetula_cards_stop};
 try_parse_prefixed(<<"vetula-stop">>) -> {vetula_stop};
 try_parse_prefixed(<<"vetula-stop ", _/binary>>) -> {vetula_stop};
-try_parse_prefixed(<<"play-armed ", Rest/binary>>) ->
-    %% play-armed <mvoiceName> <cueName> — install a typeful cue's body
-    %% into the named voice.  Resolves the cue by calling
-    %% calypso_generated_session@ps:<cueName>/0 and extracting the `body`
-    %% field from the newtype-elided Cue record.  The mvoice name must
-    %% already have a binding registered (via the Session walker after
-    %% reload-baseline, or `bind <name> <spec>` directly).
-    %%
-    %% Pre-2026-05-16 form was `play-armed <mvoice> <bridgeModule>` —
-    %% see git tag `interpreted-dsl-final-2026-05-16` for the bridge-
-    %% module-per-arm pipeline that this verb replaced.
-    case binary:split(trim_binary(Rest), <<" ">>) of
-        [MvoiceName, CueName] when MvoiceName =/= <<>>, CueName =/= <<>> ->
-            {play_armed, MvoiceName, CueName};
-        _ -> none
-    end;
 %% --- Calypso composition-grammar verbs (routing-only) ---------------
 %% See calypso/docs/composition-grammar.md for the spec.  Each verb
 %% lowers into one of the existing tuple shapes (midi_device,
@@ -1678,117 +1624,6 @@ handle_pattern_message(Text, State) ->
             {reply, {text, <<"OK: shred-mod ", NBin/binary,
                              " rate=", RateBin/binary,
                              " replaced=", RBin/binary>>}, State};
-        {reload_baseline} ->
-            %% Force-load the typeful-cues baseline from ebin/. The
-            %% Calypso server has just written + built a new
-            %% Calypso.Generated.Session.purs, erlc'd the resulting
-            %% .erl, and dropped the .beam in ebin/ — this reads it.
-            %%
-            %% BEAM keeps at most two versions of a module (current +
-            %% one old). load_file does an implicit soft_purge of the
-            %% old slot; if anything still references it, load fails
-            %% with {error, not_purged}. We attempt soft_purge first
-            %% (no kill) and fall back to a force purge (kills any
-            %% process still running old code). For live-coding, that
-            %% means voices using the old Session may be terminated
-            %% and need re-arming — that's the trade-off for keeping
-            %% fire-typeful idempotent.
-            BaselineAtom = 'calypso_generated_session@ps',
-            %% Also reload Studio (the rig declaration) so newly
-            %% added devices / channels are picked up by the walker
-            %% on the same > run that mentions them.  Without this,
-            %% adding a channel to Studio.purs requires a manual
-            %% purerl-tidal restart even though the .beam is on disk —
-            %% Erlang doesn't auto-reload, so a stale in-memory Studio
-            %% silently masks the new exports.
-            StudioAtom = 'studio@ps',
-            _ = case code:soft_purge(StudioAtom) of
-                    true -> ok;
-                    false -> code:purge(StudioAtom)
-                end,
-            _ = code:load_file(StudioAtom),
-            %% Voice wrappers — calypso_voices_*@ps — are also hot-reloaded
-            %% here.  Without this, editing Calypso/Voices/Qd1.purs to point
-            %% `armed` at a different part (qd1A vs qd1B) requires a full
-            %% deepstar restart even though the .beam is on disk: BEAM keeps
-            %% the old code cached, and subsequent `arm` calls hit the stale
-            %% wrapper.  Note that this only refreshes the *exported* armed/0
-            %% — running voice gen_servers that have already captured a
-            %% Pattern fun still hold it; re-arming the voice is needed for
-            %% them to pick up the new wrapper body.
-            reload_voice_wrappers(),
-            _ = case code:soft_purge(BaselineAtom) of
-                    true -> ok;
-                    false -> code:purge(BaselineAtom)
-                end,
-            case code:load_file(BaselineAtom) of
-                {module, _} ->
-                    %% Walk the freshly-loaded module's 0-arity exports
-                    %% and register every MidiDevice / MidiNote it finds
-                    %% with the dispatcher. After this, `arm` against a
-                    %% typeful tvoice (e.g. `bass1`) resolves the binding
-                    %% without separate Level-2 wire commands.
-                    Summary =
-                        case tidal_session_walker:walk_baseline() of
-                            {ok, Stats} ->
-                                D  = maps:get(devices, Stats, 0),
-                                I  = maps:get(instruments, Stats, 0),
-                                K  = maps:get(drumKits, Stats, 0),
-                                CE = maps:get(claimErrors, Stats, 0),
-                                PS = maps:get(selenes, Stats, 0),
-                                PE = maps:get(seleneErrors, Stats, 0),
-                                GR = maps:get(balistes, Stats, 0),
-                                GRE = maps:get(balistesErrors, Stats, 0),
-                                ConflictPart = case CE of
-                                    0 -> <<>>;
-                                    _ -> iolist_to_binary([
-                                            ", ", integer_to_binary(CE),
-                                            " claim-error(s)"])
-                                end,
-                                PolyPart = case {PS, PE} of
-                                    {0, 0} -> <<>>;
-                                    {_, 0} -> iolist_to_binary([
-                                            ", ", integer_to_binary(PS),
-                                            " selene(s)"]);
-                                    _      -> iolist_to_binary([
-                                            ", ", integer_to_binary(PS),
-                                            " selene(s), ",
-                                            integer_to_binary(PE),
-                                            " polysignal-error(s)"])
-                                end,
-                                BalistesPart = case {GR, GRE} of
-                                    {0, 0} -> <<>>;
-                                    {_, 0} -> iolist_to_binary([
-                                            ", ", integer_to_binary(GR),
-                                            " balistes voice(s)"]);
-                                    _      -> iolist_to_binary([
-                                            ", ", integer_to_binary(GR),
-                                            " balistes voice(s), ",
-                                            integer_to_binary(GRE),
-                                            " balistes-error(s)"])
-                                end,
-                                iolist_to_binary([
-                                    " (",
-                                    integer_to_binary(D), " device(s), ",
-                                    integer_to_binary(I), " instrument(s), ",
-                                    integer_to_binary(K), " drum kit(s)",
-                                    PolyPart,
-                                    BalistesPart,
-                                    ConflictPart,
-                                    ")"]);
-                            {error, _} ->
-                                <<>>
-                        end,
-                    Reply = {text,
-                             <<"OK: reload-baseline", Summary/binary>>},
-                    {reply, Reply, State};
-                {error, LoadErr} ->
-                    ErrBin = list_to_binary(
-                        io_lib:format("~p", [LoadErr])),
-                    Reply = {text,
-                             <<"ERR reload-baseline: ", ErrBin/binary>>},
-                    {reply, Reply, State}
-            end;
         {dump_odonus_samples, VoiceName} ->
             %% Pull the timing-sample buffer out of an instrumented
             %% odonus_voice gen_server and format as CSV.  See
@@ -1852,118 +1687,6 @@ handle_pattern_message(Text, State) ->
         {clear_anchor_log} ->
             tidal_anchor_log:clear(),
             {reply, {text, <<"OK: clear-anchor-log">>}, State};
-        {play_piece, Name} ->
-            %% Hand the named Pattern AnyPart value to the conductor.
-            %% The conductor resolves it via
-            %%   calypso_generated_session@ps:<Name>/0
-            %% and on each subsequent clock tick fires arms for the
-            %% events whose `whole.start` lands in the new window.
-            case tidal_conductor:play_piece(Name) of
-                {ok, _} ->
-                    {reply,
-                     {text, <<"OK: play-piece ", Name/binary>>},
-                     State};
-                {error, ErrBin} ->
-                    {reply,
-                     {text, <<"ERR play-piece: ", ErrBin/binary>>},
-                     State}
-            end;
-        {stop_piece} ->
-            ok = tidal_conductor:stop_piece(),
-            {reply, {text, <<"OK: stop-piece">>}, State};
-        {get_studio} ->
-            %% Return the Studio snapshot captured by the most recent
-            %% walk_baseline.  Calypso's Studio pane parses the
-            %% tab-delimited payload — see studio_lines/0 in
-            %% tidal_session_walker for the wire format.
-            Lines = tidal_session_walker:studio_lines(),
-            Body = case Lines of
-                       [] -> <<>>;
-                       _  -> iolist_to_binary([<<"\n">>,
-                                lists:join(<<"\n">>, Lines)])
-                   end,
-            {reply,
-             {text, iolist_to_binary([<<"OK: get-studio">>, Body])},
-             State};
-        {play_armed, MvoiceName, CueName} ->
-            %% Install a typeful cue's body into the named mvoice's
-            %% voice gen_server.  Pre-condition: the user has fired
-            %% the composition pane at least once (reload-baseline
-            %% loaded Calypso.Generated.Session and the walker
-            %% registered devices + bindings for the named mvoices).
-            %%
-            %% Two routing paths:
-            %%   - discrete binding (lookup_binding succeeds):
-            %%       hand the Pattern String to set_voice_pat.
-            %%   - continuous binding (lookup_continuous_binding):
-            %%       fmap-parse Pattern String → Pattern Number via
-            %%       Tidal.Pattern.Core.patternStringToNumber, then
-            %%       hand to set_voice_cont_pat.  Tokens that don't
-            %%       parse as a number become 0.0 (silence-equivalent
-            %%       for CC / CV).
-            %%
-            %% Phase preserved across replacement (see Tidal.Voice).
-            case resolve_cue_body(CueName) of
-                {ok, Pat} ->
-                    case tidal_dispatcher:lookup_binding(MvoiceName) of
-                        {just, Binding} ->
-                            case tidal_voice_sup:set_voice_pat(
-                                   MvoiceName, Binding, Pat) of
-                                ok ->
-                                    Reply = {text,
-                                             <<"OK: play-armed ",
-                                               MvoiceName/binary, " ",
-                                               CueName/binary>>},
-                                    {reply, Reply, State};
-                                {error, InstallErr} ->
-                                    InstallBin = list_to_binary(
-                                        io_lib:format("~p", [InstallErr])),
-                                    Reply = {text,
-                                             <<"ERR play-armed: install: ",
-                                               InstallBin/binary>>},
-                                    {reply, Reply, State}
-                            end;
-                        {nothing} ->
-                            case tidal_dispatcher:lookup_continuous_binding(
-                                   MvoiceName) of
-                                {just, Dest} ->
-                                    %% Typed cue body is Pattern Pitch;
-                                    %% continuous voice wants Pattern
-                                    %% Number.  Coerce per-event using
-                                    %% Tidal.Pitch.patternPitchToNumber.
-                                    NumPat = ('tidal_pitch@ps':
-                                                patternPitchToNumber())(Pat),
-                                    case tidal_voice_sup:set_voice_cont_pat(
-                                           MvoiceName, Dest, NumPat) of
-                                        ok ->
-                                            Reply = {text,
-                                                     <<"OK: play-armed ",
-                                                       MvoiceName/binary, " ",
-                                                       CueName/binary>>},
-                                            {reply, Reply, State};
-                                        {error, InstallErr} ->
-                                            InstallBin = list_to_binary(
-                                                io_lib:format("~p", [InstallErr])),
-                                            Reply = {text,
-                                                     <<"ERR play-armed: install: ",
-                                                       InstallBin/binary>>},
-                                            {reply, Reply, State}
-                                    end;
-                                {nothing} ->
-                                    Reply = {text,
-                                             <<"ERR play-armed: no binding for '",
-                                               MvoiceName/binary,
-                                               "'.  Fire the composition first "
-                                               "(> run) so the Session walker "
-                                               "can register channels.">>},
-                                    {reply, Reply, State}
-                            end
-                    end;
-                {error, ErrBin} ->
-                    Reply = {text,
-                             <<"ERR play-armed: ", ErrBin/binary>>},
-                    {reply, Reply, State}
-            end;
         {alias_recorded, Verb, Alias, Detail} ->
             %% Composition-grammar device verbs that don't back a
             %% legacy MIDI device (es9 / es5 / esx-* / fhx-* / osc).
@@ -1977,16 +1700,10 @@ handle_pattern_message(Text, State) ->
             Reply = {text, <<"ERR: ", Verb/binary, ": ", Reason/binary>>},
             {reply, Reply, State};
         none ->
-            %% Not a built-in verb. Per the architectural-bet doc, the
-            %% bare-binding-name wire-protocol dispatch (path 4) and the
-            %% `:<expr>` host-language operator (path 2) are gone.
-            %% Music cells flow through `cue <body>` + `play-armed
-            %% <tvoice> <module>` instead — Calypso wraps non-verb cells
-            %% at fire time. Unknown input here reaches the user as a
+            %% Not a built-in verb. Unknown input reaches the user as a
             %% concrete error rather than a silent swallow.
-            Reply = {text, <<"ERROR: not a verb -- wrap the cell in `cue` "
-                             "and dispatch via `play-armed`. (Bare-binding "
-                             "and `:expr` dispatch were retired.)">>},
+            Reply = {text, <<"ERROR: not a verb -- a Tidal block goes as "
+                             "`tidal <block>`">>},
             {reply, Reply, State}
     end.
 
@@ -4381,61 +4098,6 @@ selene_socket_path(<<"es9">>) -> es9_daemon_socket_path();
 selene_socket_path(<<"fh2">>) -> fh2_daemon_socket_path();
 selene_socket_path(_) -> es9_daemon_socket_path().
 
-%% Resolve a typeful cue's body Pattern from the loaded Session module.
-%% Returns {ok, Pat} or {error, ErrBin}. The Calypso server's
-%% /session-source path arranges for calypso_generated_session@ps to be
-%% loaded with the user's parts exported as 0-arity functions returning
-%% #{mvoice => ..., destination => ..., body => Pat}
-%% (newtype PitchedPart elision).
-resolve_cue_body(CueName) ->
-    SessionAtom = 'calypso_generated_session@ps',
-    CueAtom = binary_to_atom(CueName, utf8),
-    case erlang:function_exported(SessionAtom, CueAtom, 0) of
-        false ->
-            case code:is_loaded(SessionAtom) of
-                false ->
-                    {error,
-                     <<"Session module not loaded.  Fire the composition "
-                       "first (> run) to build + load Calypso.Generated."
-                       "Session.">>};
-                _ ->
-                    {error,
-                     <<"cue '", CueName/binary,
-                       "' not found in current Session.  ",
-                       "Add it to the composition pane and fire again.">>}
-            end;
-        true ->
-            try erlang:apply(SessionAtom, CueAtom, []) of
-                #{destination := Dest, body := Pat} ->
-                    {ok, coerce_body_for_dispatch(Dest, Pat)};
-                #{body := Pat} -> {ok, Pat};
-                Other ->
-                    OtherBin = list_to_binary(io_lib:format("~p", [Other])),
-                    {error,
-                     <<"cue '", CueName/binary,
-                       "' returned unexpected shape (no body field): ",
-                       OtherBin/binary>>}
-            catch
-                Class:What ->
-                    ClassBin = atom_to_binary(Class, utf8),
-                    WhatBin = list_to_binary(io_lib:format("~p", [What])),
-                    {error,
-                     <<"cue '", CueName/binary, "' raised ",
-                       ClassBin/binary, ": ", WhatBin/binary>>}
-            end
-    end.
-
-%% Body pass-through.  Since the typed-`Sound` realignment, BOTH
-%% pitched and drum part bodies are already `Pattern Sound` (the lift
-%% from the `PitchedNote12` pitch carrier happens at the `on` boundary
-%% in `Calypso.Prelude`, and drum/`#`-control verbs are `Sound`-typed
-%% directly).  So no per-destination coercion is needed any more — the
-%% body flows straight to the voice's `setPattern`.  Kept as a named
-%% function (rather than inlining) so the dispatch call site stays
-%% readable and a future destination-specific shim has a home.
-coerce_body_for_dispatch(_Dest, Pat) ->
-    Pat.
-
 fh2_daemon_call(Command) ->
     daemon_call(fh2_daemon_socket_path(), Command).
 
@@ -4470,42 +4132,14 @@ daemon_call(SockPath, Command) ->
             {error, ConnReason}
     end.
 
-%% Enumerate `calypso_voices_*@ps.beam` files in the loaded code path and
-%% force-reload each one.  Used by reload-baseline so that edits to
-%% Calypso/Voices/<X>.purs (which the per-voice arming daemon writes when
-%% the user re-arms with a different part) actually take effect in the
-%% running VM.  Without this, BEAM keeps the previously-loaded wrapper
-%% cached and subsequent `arm` calls hit the stale `armed/0`.
-reload_voice_wrappers() ->
-    Pattern = "calypso_voices_*@ps.beam",
-    Dirs = code:get_path(),
-    Files = lists:flatmap(fun(Dir) -> filelib:wildcard(Pattern, Dir) end, Dirs),
-    %% Files are basenames like "calypso_voices_qd1@ps.beam"; dedup and
-    %% strip the .beam extension to derive the module atom.
-    Mods = lists:usort([
-        list_to_atom(filename:rootname(F)) || F <- Files
-    ]),
-    Results = lists:map(fun(M) ->
-        _ = case code:soft_purge(M) of
-                true  -> ok;
-                false -> code:purge(M)
-            end,
-        case code:load_file(M) of
-            {module, _}  -> {M, loaded};
-            {error, Why} -> {M, {error, Why}}
-        end
-    end, Mods),
-    tidal_log:info("reload_voice_wrappers: ~p~n", [Results]),
-    ok.
-
 %% =========================================================================
 %% Per-machine voice trees
 %% =========================================================================
 %%
-%% The six voice supervisors started by purerl_tidal_sup fall into two
+%% The four voice supervisors started by purerl_tidal_sup fall into two
 %% groups. `tidal_voice_sup` (patterns, cleared by hush_all) and
 %% `odonus_voice_sup` (engines that keep advancing behind a hush flag) each
-%% have their own semantics and are handled inline. The remaining four share
+%% have their own semantics and are handled inline. The remaining two share
 %% one interface — start_voice/2, stop_voice/1, which_voices/0,
 %% lookup_voice/1 — and one lifecycle, so they sweep uniformly.
 %%
@@ -4515,13 +4149,11 @@ reload_voice_wrappers() ->
 %% triggerfish/docs/RIG-ISSUES-2026-08-07.md #1.
 voice_trees() ->
     [balistes_voice_sup,
-     repetitor_voice_sup,
-     virtual_selene_voice_sup,
-     selene_pattern_voice_sup].
+     repetitor_voice_sup].
 
 %% Terminate every voice under one tree.
 %%
-%% which_voices/0 returns Pids, and all four supervisors are
+%% which_voices/0 returns Pids, and both supervisors are
 %% simple_one_for_one, for which terminate_child/2 takes a Pid (not a child
 %% id) — the same call stop_voice/1 makes internally after its name lookup.
 %% Their children are `restart => temporary`, so a terminated voice stays

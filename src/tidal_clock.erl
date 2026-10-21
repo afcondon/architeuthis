@@ -112,7 +112,6 @@ running(state_timeout, tick, State) ->
                controlVersion => ControlVersion,
                activeScale => ActiveScale},
     broadcast_compute_window(Window),
-    broadcast_conductor(Window),
     Tick = maps:get(tickIntervalMs, Info),
     {keep_state_and_data, [{state_timeout, Tick, tick}]};
 running({call, From}, pause, State) ->
@@ -181,10 +180,6 @@ broadcast_compute_window(Window) ->
     broadcast_to(balistes_voice_sup, fun balistes_voice_sup:which_voices/0, Window),
     broadcast_to(repetitor_voice_sup, fun repetitor_voice_sup:which_voices/0, Window),
     broadcast_to(odonus_voice_sup, fun odonus_voice_sup:which_voices/0, Window),
-    broadcast_to(virtual_selene_voice_sup,
-                 fun virtual_selene_voice_sup:which_voices/0, Window),
-    broadcast_to(selene_pattern_voice_sup,
-                 fun selene_pattern_voice_sup:which_voices/0, Window),
     broadcast_to(tidal_dirt_voice_sup,
                  fun tidal_dirt_voice_sup:which_voices/0, Window),
     ok.
@@ -197,11 +192,3 @@ broadcast_to(SupName, WhichFn, Window) ->
             ok
     end.
 
-%% Forward the tick window to the conductor (MVP-2 section-firing).
-%% Tight no-op when no piece is active so the broadcast is cheap
-%% even when sections are unused.
-broadcast_conductor(Window) ->
-    case whereis(tidal_conductor) of
-        undefined -> ok;
-        _ -> tidal_conductor:compute_until(Window)
-    end.

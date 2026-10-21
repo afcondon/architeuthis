@@ -14,7 +14,6 @@ import Test.FugueSpec (runFugueTests)
 import Test.GranularSpec (runGranularTests)
 import Test.MiniNumberSpec (runMiniNumberTests)
 import Test.LawSpec (runLawTests)
-import Test.MidiClaimSpec (runMidiClaimTests)
 import Test.PortClaimSpec (runPortClaimTests)
 import Test.PatternSpec (runPatternTests)
 import Test.PredictiveSpec (runPredictiveTests)
@@ -190,9 +189,6 @@ main = do
 
   -- Run DejaVu / LiveControl / Random tests
   runDejaVuTests
-
-  -- Run Tidal.MidiClaim (frontend reservations Phase 1) tests
-  runMidiClaimTests
 
   -- Run Tidal.PortClaim (frontend reservations Phase 2 — unified) tests
   runPortClaimTests

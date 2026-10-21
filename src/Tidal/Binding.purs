@@ -121,10 +121,9 @@ data PrimAction
   --   unambiguously — all transformations apply to the unified
   --   pattern; the per-hit dispatch happens at the emit boundary.
   --
-  --   *Server-only*: not constructable via the user-facing `bind`
-  --   text verb at the WS layer (the spec is reserved for
-  --   `tidal_session_walker`'s `registerMidiDrumKit` event, which
-  --   builds it from the typed `DrumKit` declaration in Studio).
+  --   Built from an encoded hits spec (`parseMidiDrumKit`); its
+  --   original builder, the Calypso session walker, was removed
+  --   with Calypso (2026-10).
   | MidiRample
       { device :: String
       , channel :: Int
@@ -172,9 +171,9 @@ data PrimAction
   --   (singleton OSCClient); PR 2c.2 will hook it up to multi-router
   --   dispatch.
   --
-  --   *Server-only*: built by `tidal_session_walker`'s
-  --   `registerGateDrumKit` event from the typed `GateDrumKit`
-  --   declaration in Studio.
+  --   Built from an encoded hits spec (`parseGateDrumKit`); its
+  --   original builder, the Calypso session walker, was removed
+  --   with Calypso (2026-10).
   | Dirt { alias :: String, orbit :: Int }
   -- ^ SuperDirt audio output (workstream C — PR 2c.2). Emits a full
   --   Dirt-protocol `/dirt/play` message to the OSC client registered

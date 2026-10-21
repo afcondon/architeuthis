@@ -1,14 +1,14 @@
 %% @doc Top-level supervisor for purerl_tidal.
 %%
 %% Strategy is `rest_for_one`: the child order encodes a dependency
-%% chain, voices first then dispatcher/clock/state-pub/conductor.  A
+%% chain, voices first then dispatcher/clock/state-pub.  A
 %% crash restarts the crasher AND everything started after it, but
 %% earlier children are untouched.  In practice this means:
 %%
-%%   - clock crashes      → clock + state_pub + conductor restart;
+%%   - clock crashes      → clock + state_pub restart;
 %%                          voices keep playing (silently, until the
 %%                          next tick broadcasts resume ~50ms later).
-%%   - dispatcher crashes → dispatcher + clock + state_pub + conductor
+%%   - dispatcher crashes → dispatcher + clock + state_pub
 %%                          restart; voices keep playing but emit-side
 %%                          fan-out pauses briefly.
 %%   - any voice_sup crash → cascade, same as one_for_all — the
@@ -97,18 +97,6 @@ init([]) ->
            shutdown => infinity,
            type => supervisor,
            modules => [odonus_voice_sup]},
-         #{id => virtual_selene_voice_sup,
-           start => {virtual_selene_voice_sup, start_link, []},
-           restart => permanent,
-           shutdown => infinity,
-           type => supervisor,
-           modules => [virtual_selene_voice_sup]},
-         #{id => selene_pattern_voice_sup,
-           start => {selene_pattern_voice_sup, start_link, []},
-           restart => permanent,
-           shutdown => infinity,
-           type => supervisor,
-           modules => [selene_pattern_voice_sup]},
          %% Tidal's streams d1..d16 (Limulus), straight to SuperDirt.
          #{id => tidal_dirt_voice_sup,
            start => {tidal_dirt_voice_sup, start_link, []},
@@ -134,12 +122,6 @@ init([]) ->
            shutdown => 5000,
            type => worker,
            modules => [tidal_state_pub]},
-         #{id => tidal_conductor,
-           start => {tidal_conductor, start_link, []},
-           restart => permanent,
-           shutdown => 5000,
-           type => worker,
-           modules => [tidal_conductor]},
          %% Near the end, so under rest_for_one its restart touches only odonus_feeds.
          %% It holds only what pages pushed, so a restart loses the record
          %% of what is loaded, never the sound.

@@ -1,5 +1,10 @@
 # Polyvoice macro-cell cookbook
 
+> **Historical.** Calypso, the front-end these cells were written in, was
+> retired 2026-10-01 and its typed-session machinery removed from
+> Architeuthis 2026-10-21. The verbs below still parse on the rig WS
+> (:3012), but nothing in the live stack sends them.
+
 Worked examples for the five macro verbs (`drumkit`, `kit`, `chord`,
 `yarns`, and the deferred `mutes`/`veils`). The grammar spec is on
 Marginalia #189 note #224; the implementation log is across recent

@@ -77,8 +77,6 @@ erl-quick:
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_control_bus.erl
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_scale_bus.erl
 	@erlc -disable-feature maybe_expr -o ebin src/tidal_yarns_state.erl
-	@erlc -disable-feature maybe_expr -o ebin src/tidal_session_walker.erl
-	@erlc -disable-feature maybe_expr -o ebin src/tidal_conductor.erl
 	@erlc -disable-feature maybe_expr -o ebin src/balistes_voice_sup.erl
 	@erlc -disable-feature maybe_expr -o ebin src/balistes_voice.erl
 	@erlc -disable-feature maybe_expr -o ebin src/repetitor_library_zr_african.erl
@@ -103,10 +101,6 @@ erl-quick:
 	@erlc -disable-feature maybe_expr -o ebin src/rig_loops.erl
 	@erlc -disable-feature maybe_expr -o ebin src/selene_keeper.erl
 	@erlc -disable-feature maybe_expr -o ebin src/selene_retrig.erl
-	@erlc -disable-feature maybe_expr -o ebin src/virtual_selene_voice_sup.erl
-	@erlc -disable-feature maybe_expr -o ebin src/virtual_selene_voice.erl
-	@erlc -disable-feature maybe_expr -o ebin src/selene_pattern_voice_sup.erl
-	@erlc -disable-feature maybe_expr -o ebin src/selene_pattern_voice.erl
 
 # Run tests
 test: erl
