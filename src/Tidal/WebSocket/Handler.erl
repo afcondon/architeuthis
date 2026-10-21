@@ -2194,7 +2194,7 @@ selene_line(Rest) ->
                     %% so a line never leaves one silently playing nothing
                     case catch selene_retrig:check(NewRack) of
                         {error, Why} -> <<"ERR: selene: ", Why/binary>>;
-                        _ -> selene_kept(R)
+                        _ -> selene_kept(R, Rack, catch selene_keeper:snapshot())
                     end;
                 Other ->
                     iolist_to_binary(io_lib:format("ERR: selene: ~p", [Other]))
@@ -2203,7 +2203,7 @@ selene_line(Rest) ->
     end.
 
 %% Keep a line's rack on the stage and send its bank's daemon its command.
-selene_kept(R = #{rack := NewRack, line := Line0, socket := Socket, bank := Bank, json := Json, command := Command, note := Note}) ->
+selene_kept(R = #{rack := NewRack, line := Line0, socket := Socket, bank := Bank, json := Json, command := Command, note := Note}, OldRack, Kept) ->
     %% what the hardware will do differently (an FH-2 rate it cannot reach)
     Line = case Note of <<>> -> Line0; _ -> <<Line0/binary, " -- ", Note/binary>> end,
     %% to every subscriber, the sender too: a module dropped on the Selene
@@ -2232,7 +2232,14 @@ selene_kept(R = #{rack := NewRack, line := Line0, socket := Socket, bank := Bank
                             _ -> ok
                         end,
                     <<"OK: selene: ", Line/binary>>;
-                {ok, Said} -> <<"ERR: selene: the ", Socket/binary, " daemon said ", Said/binary>>;
+                {ok, Said} ->
+                    %% refused, perhaps after a split's or swap's release went
+                    %% through: put the rack back as it was and have the keeper,
+                    %% which recorded nothing of this line, give that daemon
+                    %% back what it holds, so page, keeper and modular agree
+                    _ = tidal_stage:put_text(<<"selene/rack">>, OldRack, nobody),
+                    _ = is_map(Kept) andalso (catch selene_keeper:restore(Socket, Kept, OldRack)),
+                    <<"ERR: selene: the ", Socket/binary, " daemon said ", Said/binary, " (the rack is as it was)">>;
                 {error, Reason} ->
                     iolist_to_binary(io_lib:format("ERR: selene: the ~s daemon is not answering (~p); the rack is changed, the modular is not", [Socket, Reason]))
             end

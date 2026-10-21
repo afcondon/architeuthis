@@ -34,7 +34,7 @@
 -module(selene_keeper).
 -behaviour(gen_server).
 
--export([start_link/0, record/3, forget/2, reapply/1, hushed/0, applied/0, resume/0]).
+-export([start_link/0, record/3, forget/2, reapply/1, hushed/0, applied/0, resume/0, snapshot/0, restore/3]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -define(POLL_MS, 2000).
@@ -47,6 +47,15 @@ record(Socket, Bank, Json) -> gen_server:cast(?MODULE, {record, Socket, Bank, Js
 
 %% A daemon released Bank (`off`): stop keeping it.
 forget(Socket, Bank) -> gen_server:cast(?MODULE, {forget, Socket, Bank}).
+
+%% What is kept, before a `selene $` line changes the rack: a line the daemon
+%% refuses part-way (a split or swap whose release went through) is undone by
+%% `restore`, which puts this back with the rack it went with and gives
+%% Socket's daemon its banks again. The keeper follows the new rack as soon
+%% as it is on the stage, before the line's commands run, so the old record
+%% has to be taken first; it cannot be recovered afterwards.
+snapshot() -> gen_server:call(?MODULE, snapshot, 5000).
+restore(Socket, Snapshot, Rack) -> gen_server:call(?MODULE, {restore, Socket, Snapshot, Rack}, 15000).
 
 %% Send every kept apply for Socket again. Returns how many were sent.
 reapply(Socket) -> gen_server:call(?MODULE, {reapply, Socket}, 15000).
@@ -81,6 +90,12 @@ init([]) ->
     _ = release_old_voices(),
     {ok, follow(St)}.
 
+handle_call(snapshot, _From, St = #{applied := A}) ->
+    {reply, A, St};
+handle_call({restore, Socket, A, Rack}, _From, St) when is_map(A) ->
+    _ = save(A),
+    {N, St1} = send_all(Socket, St#{applied := A, rack := Rack}),
+    {reply, {ok, N}, St1};
 handle_call({reapply, Socket}, _From, St) ->
     {N, St1} = send_all(Socket, St),
     {reply, {ok, N}, St1};
@@ -167,11 +182,17 @@ release_old_voices() ->
 %% Release and forget every kept bank the rack does not hold.
 follow(St = #{rack := undefined}) -> St;
 follow(St = #{rack := Rack, applied := A}) ->
-    Held = [{S, B} || #{socket := S, bank := B} <- banks(Rack)],
-    Gone = [K || K <- maps:keys(A), not lists:member(K, Held)],
-    A1 = lists:foldl(fun release/2, A, Gone),
-    _ = A1 =/= A andalso save(A1),
-    St#{applied := A1}.
+    case banks(Rack) of
+        %% a rack that cannot be read says nothing about what has left it:
+        %% releasing every kept bank on both daemons would be the wrong answer
+        unreadable -> St;
+        Banks ->
+            Held = [{S, B} || #{socket := S, bank := B} <- Banks],
+            Gone = [K || K <- maps:keys(A), not lists:member(K, Held)],
+            A1 = lists:foldl(fun release/2, A, Gone),
+            _ = A1 =/= A andalso save(A1),
+            St#{applied := A1}
+    end.
 
 release(K = {Socket, Bank}, A) ->
     Owner = owner(maps:get(K, A), Socket, Bank),
@@ -193,7 +214,9 @@ banks(Rack) ->
     case catch 'reef_selene_line@ps':banksOf(Rack) of
         L when is_tuple(L) -> array:to_list(L);
         L when is_list(L) -> L;
-        _ -> []
+        Other ->
+            logger:warning("selene_keeper: could not read the rack's banks (~p); keeping what is applied", [Other]),
+            unreadable
     end.
 
 send_all(Socket, St0) ->

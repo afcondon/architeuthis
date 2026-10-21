@@ -42,3 +42,4 @@ src/Tidal/Generated/M[0-9a-f]*.purs
 __pycache__/
 *.pyc
 .direnv/
+.psc-ide-port
