@@ -17,6 +17,7 @@
 -- | word and a step.
 module Tidal.Named
   ( wordSampler
+  , fillSampler
   , wordsIn
   , stageRhythm
   , stageGrids
@@ -27,7 +28,8 @@ import Prelude
 
 import Data.Array (head, mapMaybe, nub, range)
 import Data.Either (Either(..), hush)
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe(..), maybe)
+import Data.Array as Array
 import Data.String as Str
 import Haskell.Integer as Integer
 import Haskell.Rational (fromInt, ratio)
@@ -62,6 +64,22 @@ wordSampler src = map sampleAt (parseWords src)
     Digital { whole: Arc w, value } | w.start <= t && t < w.stop ->
       Just { word: value, start: Integer.toInt (Rational.ceiling (w.start * fromInt 16)) }
     _ -> Nothing
+
+-- | `balistes $ fill "<f!7 t>"`: Balistes's FILL as a Tidal pattern of
+-- | booleans, read as Tidal reads a `Pattern Bool` (`t`/`f`, or `1`/`0`; a
+-- | rest is false), asked at each sixteenth as `wordSampler` is (a cycle a
+-- | bar, from Link beat 0). So `"<f!7 t>"` fills every eighth bar and
+-- | `"<f f f [f t]>"` the back half of every fourth. Any other word is
+-- | refused when the line is read, so a typo never plays as silence.
+fillSampler :: String -> Either String (Int -> Boolean)
+fillSampler src = do
+  at <- wordSampler src
+  case Array.filter (not <<< flag) (wordsIn src) of
+    [] -> Right (\q -> maybe false (truthy <<< _.word) (at q))
+    bad -> Left ("fill is a pattern of t and f (or 1 and 0), not " <> Str.joinWith ", " bad)
+  where
+  flag w = Array.elem w [ "t", "f", "true", "false", "1", "0" ]
+  truthy w = Array.elem w [ "t", "true", "1" ]
 
 -- | The words the pattern plays in its first eight cycles, each once: what
 -- | the rig checks against the stage when the line is evaluated, to say which

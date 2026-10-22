@@ -1982,19 +1982,45 @@ selene_commands(Path, [C | Rest]) ->
 %% beat from the top when its event begins, a cycle a bar, so "<a@2 b>" gives
 %% `a` two bars.
 balistes_line(Rest) ->
-    Usage = <<"ERR: balistes: a line is balistes $ \"<beat names>\", as in balistes $ \"<lo-house-110 disco-120>\" (the names are Balistes's saved beats; drag one in to get its word)">>,
+    Usage = <<"ERR: balistes: a line is balistes $ \"<beat names>\", as in balistes $ \"<lo-house-110 disco-120>\" (the names are Balistes's saved beats; drag one in to get its word), or balistes $ fill \"<f!7 t>\"">>,
     case string:trim(Rest, leading) of
         <<"$", Body0/binary>> ->
-            case unquote(string:trim(Body0)) of
-                {ok, Src} ->
-                    named_line(#{machine => <<"balistes">>, prefix => <<"balistes/rhythm/">>,
-                                 thing => <<"beat">>, page => <<"Balistes">>,
-                                 start => fun reef_balistes_voice:start_named/1,
-                                 routed => reef_balistes_voice:routing() =/= none,
-                                 unrouted => <<"no drum routing has reached the rig">>}, Src);
-                error -> Usage
+            case string:trim(Body0) of
+                <<"fill", FillRest/binary>> -> balistes_fill_line(string:trim(FillRest));
+                _ -> balistes_beats_line(Body0, Usage)
             end;
         _ -> Usage
+    end.
+
+%% `balistes $ fill "<f!7 t>"`: Balistes's FILL as a Tidal pattern of t and
+%% f, sampled every sixteenth by the voice (Tidal.Named fillSampler); `fill
+%% off` hands FILL back to the page's F alone. The pattern sits beside F, so
+%% a held F still fills while it runs.
+balistes_fill_line(<<"off">>) ->
+    reef_balistes_voice:set_fill_pattern(none),
+    <<"OK: balistes: fill off (FILL is Balistes's F again)">>;
+balistes_fill_line(Quoted) ->
+    case unquote(Quoted) of
+        {ok, Src} ->
+            case 'tidal_named@ps':fillSampler(Src) of
+                {right, Sampler} ->
+                    reef_balistes_voice:set_fill_pattern(Sampler),
+                    <<"OK: balistes: fill follows \"", Src/binary, "\" (and Balistes's F)">>;
+                {left, Why} -> <<"ERR: balistes: ", Why/binary>>
+            end;
+        error ->
+            <<"ERR: balistes: a fill line is balistes $ fill \"<f!7 t>\" (t fills, f does not, a cycle a bar), or balistes $ fill off">>
+    end.
+
+balistes_beats_line(Body0, Usage) ->
+    case unquote(string:trim(Body0)) of
+        {ok, Src} ->
+            named_line(#{machine => <<"balistes">>, prefix => <<"balistes/rhythm/">>,
+                         thing => <<"beat">>, page => <<"Balistes">>,
+                         start => fun reef_balistes_voice:start_named/1,
+                         routed => reef_balistes_voice:routing() =/= none,
+                         unrouted => <<"no drum routing has reached the rig">>}, Src);
+        error -> Usage
     end.
 
 %% `odonus $ "<verse chorus>"`: Odonus's saved patches, by word (Tidal.Named),

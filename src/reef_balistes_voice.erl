@@ -21,7 +21,7 @@
 -module(reef_balistes_voice).
 -export([start/0, start/2, start_sim_json/3, start_sim_at_json/4,
          start_fixed_json/3, start_named/1, stop/0, loop/1,
-         set_routing_json/1, routing/0, play_hit/6, set_mutes/1, set_fill/1]).
+         set_routing_json/1, routing/0, play_hit/6, set_mutes/1, set_fill/1, set_fill_pattern/1]).
 
 %% Scheduler poll interval (ms). Timing is absolute (WallUs from the anchor), so
 %% poll jitter only affects lookahead slack.
@@ -43,6 +43,7 @@
 -define(ROUTING_KEY, {?MODULE, routing}).
 -define(MUTES_KEY, {?MODULE, mutes}).
 -define(FILL_KEY, {?MODULE, fill}).
+-define(FILL_PAT_KEY, {?MODULE, fill_pattern}).
 
 start() -> start(?DEFAULT_CHANNEL, ?STEP_BEATS).
 
@@ -80,6 +81,41 @@ set_fill(On) when is_boolean(On) ->
     ok.
 
 fill() -> persistent_term:get(?FILL_KEY, false).
+
+%% FILL as a Tidal pattern (`balistes $ fill "<f!7 t>"`, Tidal.Named
+%% fillSampler): a sampler from the sixteenth to on/off, or none. Beside the
+%% FILL switch, not instead of it: a step fills when either says so, so
+%% Balistes's F still fills by hand while a pattern runs.
+set_fill_pattern(Sampler) when Sampler =:= none; is_function(Sampler, 1) ->
+    persistent_term:put(?FILL_PAT_KEY, Sampler),
+    ok.
+
+fill_pattern() -> persistent_term:get(?FILL_PAT_KEY, none).
+
+%% Whether sixteenth Step plays its rhythm's FILL.
+fill_at(Step) ->
+    fill() orelse case fill_pattern() of
+                      none -> false;
+                      Sampler -> Sampler(Step) =:= true
+                  end.
+
+%% Tell open Balistes pages what the pattern makes of FILL, as it changes,
+%% ahead of the step (the drain's lookahead), so the page's FILL follows the
+%% sound: `balistes-fill-at <step> 1|0`, or `- ` when the pattern is taken
+%% off and FILL is the page's own again (Triggerfish.Balistes.Follow).
+fill_shown(Step, St) ->
+    Now = case fill_pattern() of
+              none -> none;
+              Sampler -> Sampler(Step) =:= true
+          end,
+    case maps:get(fill_shown, St, none) of
+        Now -> St;
+        _ ->
+            Word = case Now of true -> <<"1">>; false -> <<"0">>; none -> <<"-">> end,
+            catch tidal_link_anchor:sync_broadcast(
+                    <<"balistes-fill-at ", (integer_to_binary(Step))/binary, " ", Word/binary>>),
+            St#{fill_shown => Now}
+    end.
 
 %% Hardcoded defaultBalSim (the neutral Grids start), for a standalone smoke test.
 start(Channel, StepBeats) ->
@@ -259,14 +295,14 @@ drain(St, Step, Horizon, AnchorUs, BeatAtAnchor, Tempo) ->
                     %% inputs, no seed) — the shared renderFixed decides every hit, so
                     %% both runtimes reading the same Link step agree with no handoff.
                     FEvents = array:to_list(
-                                'reef_balistes_fixed@ps':renderFixedFill(fill(), maps:get(pattern, St), Step)),
+                                'reef_balistes_fixed@ps':renderFixedFill(fill_at(Step), maps:get(pattern, St), Step)),
                     lists:foreach(fun(E) -> emit(Sock, E, WallUs, StepMs) end, FEvents),
-                    St#{last_step => Step};
+                    (fill_shown(Step, St))#{last_step => Step};
                 named ->
                     {NEvents, Rhythms, Shown} = named_step(Step, maps:get(sampler, St),
                                                            maps:get(rhythms, St), maps:get(shown, St, none)),
                     lists:foreach(fun(E) -> emit(Sock, E, WallUs, StepMs) end, NEvents),
-                    St#{rhythms => Rhythms, shown => Shown, last_step => Step};
+                    (fill_shown(Step, St))#{rhythms => Rhythms, shown => Shown, last_step => Step};
                 _ ->
                     %% Grids: apply any tick-tagged inputs whose step has arrived BEFORE
                     %% stepping — the same order the frontend applies them, so a deferred
@@ -308,7 +344,7 @@ named_step(Step, Sampler, Rhythms, Shown) ->
             case stage_beat(Word, Rhythms) of
                 {{fixed, Pat}, R1} ->
                     announce(Step, Event, Shown, <<>>),
-                    {array:to_list('reef_balistes_fixed@ps':renderFixedFill(fill(), Pat, Step - Start)), R1, Event};
+                    {array:to_list('reef_balistes_fixed@ps':renderFixedFill(fill_at(Step), Pat, Step - Start)), R1, Event};
                 {{grids, Bal0}, R1} ->
                     announce(Step, Event, Shown,
                              <<" ", ('reef_balistes_protocol@ps':encodeBalSim(Bal0))/binary>>),
