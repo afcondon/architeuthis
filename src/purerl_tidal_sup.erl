@@ -145,6 +145,14 @@ init([]) ->
            shutdown => 5000,
            type => worker,
            modules => [selene_retrig]},
+         %% Selene's MIDI rows, their LFOs sent as CCs, from the rack on the
+         %% stage: after it, as selene_retrig is.
+         #{id => selene_midi,
+           start => {selene_midi, start_link, []},
+           restart => permanent,
+           shutdown => 5000,
+           type => worker,
+           modules => [selene_midi]},
          %% The record buffer, its marks and the loops on the rig. After the
          %% stage, whose routing text it follows.
          #{id => rig_loops,

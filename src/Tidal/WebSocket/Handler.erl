@@ -1283,6 +1283,7 @@ handle_pattern_message(Text, State) ->
         selene_resume ->
             %% the page's resume brings the reset patterns back too
             catch selene_retrig:play(),
+            catch selene_midi:play(),
     Reply = case catch selene_keeper:resume() of
                 {ok, N} ->
                     <<"OK: selene resumed (", (integer_to_binary(N))/binary, " bank(s))">>;
@@ -1744,6 +1745,7 @@ machine_play(Block) ->
 play_machine(<<"selene">>) ->
     %% the FH-2 banks' reset patterns come back from the rack as it is now
     catch selene_retrig:play(),
+    catch selene_midi:play(),
     Reply = case catch selene_keeper:resume() of
                 {ok, N} -> <<"OK: selene playing (", (integer_to_binary(N))/binary, " bank(s) given back)">>;
                 _ -> <<"ERR: selene: the keeper is not running">>
@@ -1800,6 +1802,7 @@ hush_machine(<<"selene">>) ->
     catch selene_keeper:hushed(),
     %% the FH-2 banks' reset patterns stop too (the LFOs themselves run on)
     catch selene_retrig:hush(),
+    catch selene_midi:hush(),
     catch tidal_stage:stopped(selene),
     catch tidal_link_anchor:sync_broadcast(<<"hushed selene">>),
     <<"OK: selene hushed (the ES-9's signals and the FH-2's reset patterns; the FH-2's banks run on the FH-2 and keep going)">>.
@@ -1928,7 +1931,14 @@ selene_kept(R = #{rack := NewRack, line := Line0, socket := Socket, bank := Bank
     %% selene/rack, so it ignores it); selene_retrig hears it too
     _ = tidal_stage:put_text(<<"selene/rack">>, NewRack, nobody),
     case Socket of
-        <<>> -> <<"OK: selene: kept (not a modular bank, nothing sent): ", Line/binary>>;
+        <<>> ->
+            %% no daemon: a MIDI row is sent by the rig itself (selene_midi,
+            %% following the rack just put on the stage); a virtual bus is kept
+            case {binary:match(Line0, <<" midi">>), Line0} of
+                {nomatch, _} -> <<"OK: selene: kept (not a modular bank, nothing sent): ", Line/binary>>;
+                {_, <<"off ", _/binary>>} -> <<"OK: selene: ", Line/binary, " (the MIDI row stops sending)">>;
+                _ -> <<"OK: selene: ", Line/binary, " (sent as MIDI CCs on ", ('reef_selene_model@ps':midiPort())/binary, ")">>
+            end;
         _ ->
             %% the command is the line's whole daemon verb: an
             %% apply-polysignal, or a reset-lfos, which is an act rather than
@@ -4225,6 +4235,7 @@ hush_everything() ->
     catch vetula_cards:stop(),
     %% and Selene's reset patterns, kept silent until `selene $ play`
     catch selene_retrig:hush(),
+    catch selene_midi:hush(),
     %% and the Conspicillum grain cloud (conspicillum-scene) — also a
     %% /dirt/play emitter, and the densest one on the rig, so hush must
     %% reach it too.

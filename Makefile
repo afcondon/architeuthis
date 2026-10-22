@@ -101,6 +101,7 @@ erl-quick:
 	@erlc -disable-feature maybe_expr -o ebin src/rig_loops.erl
 	@erlc -disable-feature maybe_expr -o ebin src/selene_keeper.erl
 	@erlc -disable-feature maybe_expr -o ebin src/selene_retrig.erl
+	@erlc -disable-feature maybe_expr -o ebin src/selene_midi.erl
 
 # Run tests
 test: erl
