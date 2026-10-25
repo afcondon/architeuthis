@@ -502,6 +502,11 @@ try_parse_prefixed(<<"selene-resume", _/binary>>) ->
 %% selene`, as a stop or a play is told to every page.
 try_parse_prefixed(<<"selene-running", _/binary>>) ->
     selene_running;
+%% selene-learning: the signal learned, for a page opened during a learn;
+%% answered as a learn is told to every page, `learning selene midi1 3` or
+%% `unlearned selene`.
+try_parse_prefixed(<<"selene-learning", _/binary>>) ->
+    selene_learning;
 try_parse_prefixed(<<"selene-applied", _/binary>>) ->
     %% what the modular has been given (selene_keeper), for the Dashboard
     selene_applied;
@@ -1299,6 +1304,12 @@ handle_pattern_message(Text, State) ->
                         false -> <<"hushed selene">>
                     end,
             {reply, {text, Reply}, State};
+        selene_learning ->
+            Reply = case catch selene_midi:learning() of
+                        {Row, Slot} -> <<"learning selene midi", (integer_to_binary(Row))/binary, " ", (integer_to_binary(Slot))/binary>>;
+                        _ -> <<"unlearned selene">>
+                    end,
+            {reply, {text, Reply}, State};
         selene_applied ->
             Reply = case catch selene_keeper:applied() of
                 L when is_list(L) -> <<"selene-applied ", (iolist_to_binary(json:encode(L)))/binary>>;
@@ -1871,7 +1882,36 @@ machine_statement(Block) ->
         none ->
             case machine_play(Block) of
                 {play, Machine} -> play_machine(Machine);
-                none -> machine_statement_(Block)
+                none ->
+                    case selene_learn_line(Block) of
+                        none -> machine_statement_(Block);
+                        Reply -> Reply
+                    end
+            end
+    end.
+
+%% `selene $ learn midi1 3`: MIDI row 1's signal 3 is all the MIDI the rig
+%% sends, so an instrument's MIDI map hears it alone; `selene $ unlearn`
+%% ends it (selene_midi, which keeps it; docs/kb/plans/selene-midi-signals.md).
+selene_learn_line(Block) ->
+    case re:run(Block, <<"^\\s*selene\\s*\\$\\s*(?:learn\\s+midi(\\d+)\\s+(\\d+)|(unlearn))\\s*$">>,
+                [{capture, all_but_first, binary}]) of
+        {match, [<<>>, <<>>, <<"unlearn">>]} ->
+            case catch selene_midi:unlearn() of
+                ok -> <<"OK: selene: learn ended; all the rig's MIDI is sent again">>;
+                none -> <<"OK: selene: nothing was learned">>;
+                _ -> <<"ERR: selene: the MIDI signals are not running">>
+            end;
+        {match, [Row, Slot | _]} ->
+            case catch selene_midi:learn(binary_to_integer(Row), binary_to_integer(Slot)) of
+                {ok, Said} -> <<"OK: selene: ", Said/binary>>;
+                {error, Why} -> <<"ERR: selene: ", Why/binary>>;
+                _ -> <<"ERR: selene: the MIDI signals are not running">>
+            end;
+        nomatch ->
+            case re:run(Block, <<"^\\s*selene\\s*\\$\\s*(un)?learn\\b">>) of
+                {match, _} -> <<"ERR: selene: learn is selene $ learn midi<row> <signal>, as in selene $ learn midi1 3, and selene $ unlearn ends it">>;
+                nomatch -> none
             end
     end.
 

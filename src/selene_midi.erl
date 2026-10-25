@@ -14,10 +14,18 @@
 %% tempo moves; a free one (`lfo`, Hz) runs on the wall clock. A muted row or
 %% signal sends nothing, and while Selene is stopped (`selene $ hush` or
 %% `hush`, held by selene_keeper, which tells this process) they all are.
+%%
+%% Learn (`selene $ learn midi1 3`): one signal is learned, and while it is
+%% the rig sends no other MIDI at all (the gate in Tidal.MIDIBridge), so an
+%% instrument's MIDI map hears that controller alone. This process holds
+%% which signal it is and keeps the gate on its channel and CC as the rack
+%% changes. `selene $ unlearn` ends it, as a stop of Selene does (a learn
+%% left on would silence the whole rig's MIDI), and a restart forgets it.
+%% Every page is told: `learning selene midi1 3`, `unlearned selene`.
 -module(selene_midi).
 -behaviour(gen_server).
 
--export([start_link/0, hush/0, play/0, signals/0]).
+-export([start_link/0, hush/0, play/0, signals/0, learn/2, unlearn/0, learning/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -define(RACK, <<"selene/rack">>).
@@ -37,6 +45,15 @@ play() -> cast(play).
 %% What is being sent, for inspection from a shell.
 signals() -> gen_server:call(?MODULE, signals).
 
+%% Learn MIDI row `Row`'s signal `Slot` (from 1): {ok, Reply} or {error, Why}.
+learn(Row, Slot) -> gen_server:call(?MODULE, {learn, Row, Slot}).
+
+%% End learn: `ok`, or `none` when nothing was learned.
+unlearn() -> gen_server:call(?MODULE, unlearn).
+
+%% What is learned: `none` or {Row, Slot}.
+learning() -> gen_server:call(?MODULE, learning).
+
 cast(Msg) ->
     case whereis(?MODULE) of
         undefined -> ok;
@@ -50,18 +67,46 @@ init([]) ->
                _ -> <<>>
            end,
     {ok, Sock} = gen_udp:open(0, [binary]),
+    %% a learn does not outlive the process that kept it
+    'tidal_mIDIBridge@foreign':learn_gate(off),
     erlang:send_after(?TICK_MS, self(), tick),
     %% stopped with the rest of Selene, if it is (selene_keeper holds that)
-    {ok, #{rack => Rack, signals => signals_of(Rack), sent => #{}, hushed => not selene_keeper:running(), socket => Sock,
+    {ok, #{rack => Rack, signals => signals_of(Rack), sent => #{}, hushed => not selene_keeper:running(), socket => Sock, learn => none,
            port => 'reef_selene_model@ps':midiPort()}}.
 
 handle_call(signals, _From, St = #{signals := S}) ->
     {reply, S, St};
+handle_call({learn, _Row, _Slot}, _From, St = #{hushed := true}) ->
+    {reply, {error, <<"Selene is stopped, and a stopped signal can't be learned: selene $ play first">>}, St};
+handle_call({learn, Row, Slot}, _From, St = #{rack := Rack}) ->
+    case 'reef_selene_model@ps':midiLearn(Row, Slot, parsed(Rack)) of
+        {left, Why} -> {reply, {error, Why}, St};
+        {right, #{channel := Ch, cc := CC, sending := Sending}} ->
+            St1 = gate(St#{learn := {Row, Slot}, sent := #{}}),
+            catch tidal_link_anchor:sync_broadcast(learning_text(Row, Slot)),
+            Muted = case Sending of
+                        true -> <<>>;
+                        false -> <<"; it is muted, so nothing is sent until it is unmuted">>
+                    end,
+            {reply, {ok, iolist_to_binary(
+                           [<<"learning MIDI ">>, integer_to_binary(Row), <<" signal ">>, integer_to_binary(Slot),
+                            <<": channel ">>, integer_to_binary(Ch), <<" CC ">>, integer_to_binary(CC),
+                            <<" is all the MIDI the rig sends until selene $ unlearn">>, Muted])}, St1}
+    end;
+handle_call(unlearn, _From, St = #{learn := none}) ->
+    {reply, none, St};
+handle_call(unlearn, _From, St) ->
+    {reply, ok, unlearned(St)};
+handle_call(learning, _From, St = #{learn := L}) ->
+    {reply, L, St};
 handle_call(_Request, _From, St) ->
     {reply, {error, unknown_call}, St}.
 
-handle_cast(hush, St) ->
+handle_cast(hush, St = #{learn := none}) ->
     {noreply, St#{hushed := true}};
+handle_cast(hush, St) ->
+    %% a stop ends a learn: left on, it would hold back all the rig's MIDI
+    {noreply, (unlearned(St))#{hushed := true}};
 handle_cast(play, St) ->
     %% from silence, every value is said again
     {noreply, St#{hushed := false, sent := #{}}};
@@ -84,12 +129,40 @@ handle_info(_Info, St) ->
     {noreply, St}.
 
 terminate(_Reason, #{socket := Sock}) ->
+    catch 'tidal_mIDIBridge@foreign':learn_gate(off),
     catch gen_udp:close(Sock),
     ok.
 
 %% A new rack: its MIDI signals, read once here rather than every tick.
 follow(Rack, St = #{rack := Rack}) -> St;
-follow(Rack, St) -> St#{rack := Rack, signals := signals_of(Rack)}.
+follow(Rack, St) -> gate(St#{rack := Rack, signals := signals_of(Rack)}).
+
+%% The gate on the learned signal's channel and CC as the rack has them now:
+%% shut, passing nothing, while it has none or is gone from the rack (the
+%% learn stays, and picks the signal up again when it comes back).
+gate(St = #{learn := none}) -> St;
+gate(St = #{learn := {Row, Slot}, rack := Rack, port := Port}) ->
+    Gate = case 'reef_selene_model@ps':midiLearn(Row, Slot, parsed(Rack)) of
+               {right, #{channel := Ch, cc := CC}} -> {to_binary(Port), Ch, CC};
+               _ -> shut
+           end,
+    'tidal_mIDIBridge@foreign':learn_gate(Gate),
+    St.
+
+%% Learn ended: the gate opens, and every value is said again, since those
+%% held back are not what the instruments last heard.
+unlearned(St) ->
+    'tidal_mIDIBridge@foreign':learn_gate(off),
+    catch tidal_link_anchor:sync_broadcast(<<"unlearned selene">>),
+    St#{learn := none, sent := #{}}.
+
+learning_text(Row, Slot) ->
+    <<"learning selene midi", (integer_to_binary(Row))/binary, " ", (integer_to_binary(Slot))/binary>>.
+
+parsed(Rack) -> 'reef_selene_rack@ps':parseRack(Rack).
+
+to_binary(B) when is_binary(B) -> B;
+to_binary(L) when is_list(L) -> list_to_binary(L).
 
 %% Each signal the rack's MIDI rows send, as reef says (midiSends): those
 %% with a CC, their row and themselves not muted, the first on a channel

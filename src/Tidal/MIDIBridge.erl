@@ -4,6 +4,7 @@
 
 -module(tidal_mIDIBridge@foreign).
 -export([startClient/0, scheduleNoteAt/7, scheduleNoteOnAt/6, scheduleNoteOffAt/5, scheduleCCAt/6, setLinkTempo/2]).
+-export([learn_gate/1]).
 
 -define(LINK_SPIKE_HOST, "127.0.0.1").
 -define(LINK_SPIKE_PORT, 57122).
@@ -17,33 +18,60 @@ startClient() ->
         Socket
     end.
 
+%% Learn (selene_midi, docs/kb/plans/selene-midi-signals.md): while one
+%% Selene signal is learned, this is the one gate every MIDI message the rig
+%% sends passes, and it lets through that signal's controller alone, so the
+%% instrument learning hears nothing else. The gate is `off` (all pass),
+%% `{Port, Channel, CC}` (that alone), or `shut` (learning a signal that has
+%% no CC just now: none pass). A note-off always passes, so a note held when
+%% learn begins still ends. Held in a persistent_term: read on every send,
+%% written only when learn begins, ends or its signal moves.
+-define(LEARN, {?MODULE, learn}).
+
+learn_gate(Gate) ->
+    case persistent_term:get(?LEARN, off) of
+        Gate -> ok;
+        _ when Gate =:= off -> persistent_term:erase(?LEARN), ok;
+        _ -> persistent_term:put(?LEARN, Gate)
+    end.
+
+learning() -> persistent_term:get(?LEARN, off) =/= off.
+
+cc_passes(PortName, Channel, CC) ->
+    case persistent_term:get(?LEARN, off) of
+        off -> true;
+        {Port, Ch, C} -> Ch == Channel andalso C == CC andalso Port =:= ensure_binary(PortName);
+        _ -> false
+    end.
+
 %% Send /midi/note/at.
 scheduleNoteAt(Socket, PortName, Channel, Note, Velocity, DurationMs, UnixUsAt) ->
     fun() ->
-        Packet = encode_note_at(PortName, Channel, Note, Velocity, DurationMs, UnixUsAt),
-        %% gen_udp:send result is checked even though we don't propagate
-        %% it — a `closed` error tells us the socket has died (e.g. owning
-        %% process exited) and would otherwise be silent. tidal_log:err
-        %% always prints regardless of log level so this surfaces fast.
-        case gen_udp:send(Socket, ?LINK_SPIKE_HOST, ?LINK_SPIKE_PORT, Packet) of
-            ok -> ok;
-            {error, Reason} ->
-                tidal_log:err("MIDIBridge.scheduleNoteAt: gen_udp:send failed: ~p~n",
-                              [Reason])
-        end,
-        unit
+        case learning() of
+            true -> unit;
+            false -> send_or_log(Socket, "scheduleNoteAt",
+                                 encode_note_at(PortName, Channel, Note, Velocity, DurationMs, UnixUsAt))
+        end
     end.
 
 %% Send /midi/on/at and /midi/off/at: a note held until its note-off, for
 %% legato, where a held note's end is not known when it starts.
 scheduleNoteOnAt(Socket, PortName, Channel, Note, Velocity, UnixUsAt) ->
-    fun() -> send_or_log(Socket, "scheduleNoteOnAt",
-                         encode_on_at(PortName, Channel, Note, Velocity, UnixUsAt)) end.
+    fun() ->
+        case learning() of
+            true -> unit;
+            false -> send_or_log(Socket, "scheduleNoteOnAt",
+                                 encode_on_at(PortName, Channel, Note, Velocity, UnixUsAt))
+        end
+    end.
 
 scheduleNoteOffAt(Socket, PortName, Channel, Note, UnixUsAt) ->
     fun() -> send_or_log(Socket, "scheduleNoteOffAt",
                          encode_off_at(PortName, Channel, Note, UnixUsAt)) end.
 
+%% gen_udp:send's result is checked though not propagated: a `closed`
+%% error says the socket has died (its owning process exited), which would
+%% otherwise be silent, and tidal_log:err always prints.
 send_or_log(Socket, What, Packet) ->
     case gen_udp:send(Socket, ?LINK_SPIKE_HOST, ?LINK_SPIKE_PORT, Packet) of
         ok -> ok;
@@ -55,14 +83,11 @@ send_or_log(Socket, What, Packet) ->
 %% Send /midi/cc/at.
 scheduleCCAt(Socket, PortName, Channel, CC, Value, UnixUsAt) ->
     fun() ->
-        Packet = encode_cc_at(PortName, Channel, CC, Value, UnixUsAt),
-        case gen_udp:send(Socket, ?LINK_SPIKE_HOST, ?LINK_SPIKE_PORT, Packet) of
-            ok -> ok;
-            {error, Reason} ->
-                tidal_log:err("MIDIBridge.scheduleCCAt: gen_udp:send failed: ~p~n",
-                              [Reason])
-        end,
-        unit
+        case cc_passes(PortName, Channel, CC) of
+            true -> send_or_log(Socket, "scheduleCCAt",
+                                encode_cc_at(PortName, Channel, CC, Value, UnixUsAt));
+            false -> unit
+        end
     end.
 
 %% Send /link/set-tempo. link-spike's handler captures its AblLink
