@@ -22,10 +22,17 @@
 %% changes. `selene $ unlearn` ends it, as a stop of Selene does (a learn
 %% left on would silence the whole rig's MIDI), and a restart forgets it.
 %% Every page is told: `learning selene midi1 3`, `unlearned selene`.
+%%
+%% A throw (`throw midi4`) rests at the bottom of its span until fired
+%% (`selene $ fire midi4 2`, or the page's fire button), then plays its
+%% attack, hold and decay once (reef's throwAt). The fire begins at once or
+%% on the next beat or bar, as the throw says, so a riser in bars lands on a
+%% downbeat. A fire while one plays starts it again. Every page is told,
+%% `fired selene midi4 2`.
 -module(selene_midi).
 -behaviour(gen_server).
 
--export([start_link/0, hush/0, play/0, signals/0, learn/2, unlearn/0, learning/0]).
+-export([start_link/0, hush/0, play/0, signals/0, learn/2, unlearn/0, learning/0, fire/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -define(RACK, <<"selene/rack">>).
@@ -54,6 +61,9 @@ unlearn() -> gen_server:call(?MODULE, unlearn).
 %% What is learned: `none` or {Row, Slot}.
 learning() -> gen_server:call(?MODULE, learning).
 
+%% Fire MIDI row `Row`'s throw `Slot` (from 1): {ok, Reply} or {error, Why}.
+fire(Row, Slot) -> gen_server:call(?MODULE, {fire, Row, Slot}).
+
 cast(Msg) ->
     case whereis(?MODULE) of
         undefined -> ok;
@@ -71,7 +81,7 @@ init([]) ->
     'tidal_mIDIBridge@foreign':learn_gate(off),
     erlang:send_after(?TICK_MS, self(), tick),
     %% stopped with the rest of Selene, if it is (selene_keeper holds that)
-    {ok, #{rack => Rack, signals => signals_of(Rack), sent => #{}, hushed => not selene_keeper:running(), socket => Sock, learn => none,
+    {ok, #{rack => Rack, signals => signals_of(Rack), sent => #{}, hushed => not selene_keeper:running(), socket => Sock, learn => none, fired => #{},
            port => 'reef_selene_model@ps':midiPort()}}.
 
 handle_call(signals, _From, St = #{signals := S}) ->
@@ -99,6 +109,31 @@ handle_call(unlearn, _From, St) ->
     {reply, ok, unlearned(St)};
 handle_call(learning, _From, St = #{learn := L}) ->
     {reply, L, St};
+handle_call({fire, _Row, _Slot}, _From, St = #{hushed := true}) ->
+    {reply, {error, <<"Selene is stopped, so a throw can't be fired: selene $ play first">>}, St};
+handle_call({fire, Row, Slot}, _From, St = #{signals := Signals, rack := Rack, fired := Fired}) ->
+    Name = [<<"MIDI ">>, integer_to_binary(Row), <<" signal ">>, integer_to_binary(Slot)],
+    case [S || S = #{row := R, slot := K} <- Signals, R == Row, K == Slot] of
+        [#{signal := {throwSignal, Throw}}] ->
+            Now = beat_at(erlang:system_time(microsecond)),
+            Start = 'reef_selene_model@ps':throwStartAt(maps:get(start, Throw), Now),
+            catch tidal_link_anchor:sync_broadcast(
+                    <<"fired selene midi", (integer_to_binary(Row))/binary, " ", (integer_to_binary(Slot))/binary>>),
+            When = case Start - Now of
+                       Wait when Wait > 0.001 -> io_lib:format(" (it begins in ~.2f beats)", [Wait]);
+                       _ -> <<>>
+                   end,
+            {reply, {ok, iolist_to_binary([<<"fired ">>, Name, When])}, St#{fired := Fired#{{Row, Slot} => Start}}};
+        [_] ->
+            {reply, {error, iolist_to_binary([Name, <<" is an LFO: only a throw is fired">>])}, St};
+        [] ->
+            %% not sending: why, as learn says it (no row, no signal, no CC), else muted
+            Why = case 'reef_selene_model@ps':midiLearn(Row, Slot, parsed(Rack)) of
+                      {left, W} -> W;
+                      {right, _} -> iolist_to_binary([Name, <<" is muted">>])
+                  end,
+            {reply, {error, Why}, St}
+    end;
 handle_call(_Request, _From, St) ->
     {reply, {error, unknown_call}, St}.
 
@@ -108,8 +143,8 @@ handle_cast(hush, St) ->
     %% a stop ends a learn: left on, it would hold back all the rig's MIDI
     {noreply, (unlearned(St))#{hushed := true}};
 handle_cast(play, St) ->
-    %% from silence, every value is said again
-    {noreply, St#{hushed := false, sent := #{}}};
+    %% from silence, every value is said again, and no throw is mid-flight
+    {noreply, St#{hushed := false, sent := #{}, fired := #{}}};
 handle_cast(_Message, St) ->
     {noreply, St}.
 
@@ -179,20 +214,19 @@ signals_of(Rack) ->
 %% changed since the last one sent on that channel and controller.
 send_due(St = #{hushed := true}) -> St;
 send_due(St = #{signals := []}) -> St;
-send_due(St = #{signals := Signals, sent := Sent, socket := Sock, port := Port}) ->
+send_due(St = #{signals := Signals, sent := Sent, socket := Sock, port := Port, fired := Fired}) ->
     AtUs = erlang:system_time(microsecond) + ?AHEAD_US,
-    Beat = beat_at(AtUs),
-    Seconds = AtUs / 1000000.0,
-    Tick = AtUs div (?TICK_MS * 1000),
+    Moment = #{beat => beat_at(AtUs), seconds => AtUs / 1000000.0, tick => AtUs div (?TICK_MS * 1000),
+               bpm => bpm(), fired => {nothing}},
     Sent2 = lists:foldl(
-              fun(Send = #{tempo := Tempo, lfo := Slot, channel := Ch, cc := CC}, Acc) ->
-                      Rate = maps:get(rate, Slot),
-                      Cycles = case Tempo of
-                                   true -> Beat * Rate;
-                                   false -> Seconds * Rate
-                               end,
-                      %% within the signal's span (lo..hi, turned over when lo > hi)
-                      V = 'reef_selene_model@ps':ccIn(Send, 'reef_selene_model@ps':lfoAt(Slot, Cycles, Tick)),
+              fun(Send = #{row := Row, slot := Slot, channel := Ch, cc := CC}, Acc) ->
+                      At = case maps:get({Row, Slot}, Fired, none) of
+                               none -> Moment;
+                               Start -> Moment#{fired := {just, Start}}
+                           end,
+                      %% an LFO's swing or a throw's rise and fall, within the
+                      %% signal's span (lo..hi, turned over when lo > hi)
+                      V = 'reef_selene_model@ps':midiValueAt(Send, At),
                       Key = {Ch, CC},
                       case maps:get(Key, Acc, undefined) of
                           V -> Acc;
@@ -203,6 +237,13 @@ send_due(St = #{signals := Signals, sent := Sent, socket := Sock, port := Port})
                       end
               end, Sent, Signals),
     St#{sent := Sent2}.
+
+%% The tempo: Link's, else ?DEFAULT_BPM, as beat_at assumes.
+bpm() ->
+    case catch tidal_link_anchor:tempo() of
+        {ok, Bpm} -> float(Bpm);
+        _ -> ?DEFAULT_BPM
+    end.
 
 %% The beat at a moment: Link's when there is an anchor, else the wall clock
 %% at ?DEFAULT_BPM, so a tempo LFO still moves with no Link.

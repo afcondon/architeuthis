@@ -1911,6 +1911,23 @@ selene_learn_line(Block) ->
         nomatch ->
             case re:run(Block, <<"^\\s*selene\\s*\\$\\s*(un)?learn\\b">>) of
                 {match, _} -> <<"ERR: selene: learn is selene $ learn midi<row> <signal>, as in selene $ learn midi1 3, and selene $ unlearn ends it">>;
+                nomatch -> selene_fire_line(Block)
+            end
+    end.
+
+%% `selene $ fire midi4 2`: MIDI row 4's throw 2 plays once (selene_midi).
+selene_fire_line(Block) ->
+    case re:run(Block, <<"^\\s*selene\\s*\\$\\s*fire\\s+midi(\\d+)\\s+(\\d+)\\s*$">>,
+                [{capture, all_but_first, binary}]) of
+        {match, [Row, Slot]} ->
+            case catch selene_midi:fire(binary_to_integer(Row), binary_to_integer(Slot)) of
+                {ok, Said} -> <<"OK: selene: ", Said/binary>>;
+                {error, Why} -> <<"ERR: selene: ", Why/binary>>;
+                _ -> <<"ERR: selene: the MIDI signals are not running">>
+            end;
+        nomatch ->
+            case re:run(Block, <<"^\\s*selene\\s*\\$\\s*fire\\b">>) of
+                {match, _} -> <<"ERR: selene: fire is selene $ fire midi<row> <signal>, as in selene $ fire midi4 2">>;
                 nomatch -> none
             end
     end.
