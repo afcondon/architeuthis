@@ -497,6 +497,11 @@ try_parse_prefixed(<<"selene ", Rest/binary>>) ->
 try_parse_prefixed(<<"selene-resume", _/binary>>) ->
     %% undo `selene $ hush`: every daemon given back what it had
     selene_resume;
+%% selene-running: whether Selene runs or is stopped (selene_keeper), for a
+%% page opened after a hush (CR-11); answered `hushed selene` or `played
+%% selene`, as a stop or a play is told to every page.
+try_parse_prefixed(<<"selene-running", _/binary>>) ->
+    selene_running;
 try_parse_prefixed(<<"selene-applied", _/binary>>) ->
     %% what the modular has been given (selene_keeper), for the Dashboard
     selene_applied;
@@ -1281,14 +1286,18 @@ handle_pattern_message(Text, State) ->
             end,
             {reply, Reply, State};
         selene_resume ->
-            %% the page's resume brings the reset patterns back too
-            catch selene_retrig:play(),
-            catch selene_midi:play(),
-    Reply = case catch selene_keeper:resume() of
+            %% the Dashboard's play: all of Selene, as `selene $ play`
+            Reply = case catch selene_keeper:play() of
                 {ok, N} ->
                     <<"OK: selene resumed (", (integer_to_binary(N))/binary, " bank(s))">>;
                 _ -> <<"ERR: selene-resume: the keeper is not running">>
             end,
+            {reply, {text, Reply}, State};
+        selene_running ->
+            Reply = case selene_keeper:running() of
+                        true -> <<"played selene">>;
+                        false -> <<"hushed selene">>
+                    end,
             {reply, {text, Reply}, State};
         selene_applied ->
             Reply = case catch selene_keeper:applied() of
@@ -1311,19 +1320,26 @@ handle_pattern_message(Text, State) ->
             %% ERR against the exact destination row. Purely a config
             %% relay — no scheduled voice, so no conformance surface.
             SockPath = selene_socket_path(Socket),
-            Reply = case daemon_call(SockPath, <<"apply-polysignal ", Json/binary>>) of
-                {ok, ReplyBin} ->
-                    %% the rig remembers what the modular was given, to give
-                    %% it again when a daemon comes back (selene_keeper)
-                    case ReplyBin of
-                        <<"OK", _/binary>> -> catch selene_keeper:record(Socket, Bank, Json);
-                        _ -> ok
-                    end,
-                    {text, <<"selene-reply ", Socket/binary, " ", Bank/binary, " ", ReplyBin/binary>>};
-                {error, Reason} ->
-                    ReasonBin = list_to_binary(io_lib:format("~p", [Reason])),
-                    {text, <<"selene-reply ", Socket/binary, " ", Bank/binary,
-                             " ERR daemon-unreachable: ", ReasonBin/binary>>}
+            Reply = case selene_keeper:running() of
+                false ->
+                    %% Selene is stopped: kept, and sent on play (CR-11)
+                    catch selene_keeper:record(Socket, Bank, Json),
+                    {text, <<"selene-reply ", Socket/binary, " ", Bank/binary, " OK kept: Selene is stopped, play sends it">>};
+                true ->
+                    case daemon_call(SockPath, <<"apply-polysignal ", Json/binary>>) of
+                        {ok, ReplyBin} ->
+                            %% the rig remembers what the modular was given, to give
+                            %% it again when a daemon comes back (selene_keeper)
+                            case ReplyBin of
+                                <<"OK", _/binary>> -> catch selene_keeper:record(Socket, Bank, Json);
+                                _ -> ok
+                            end,
+                            {text, <<"selene-reply ", Socket/binary, " ", Bank/binary, " ", ReplyBin/binary>>};
+                        {error, Reason} ->
+                            ReasonBin = list_to_binary(io_lib:format("~p", [Reason])),
+                            {text, <<"selene-reply ", Socket/binary, " ", Bank/binary,
+                                     " ERR daemon-unreachable: ", ReasonBin/binary>>}
+                    end
             end,
             {reply, Reply, State};
         {balistes, Json} ->
@@ -1741,17 +1757,13 @@ machine_play(Block) ->
     end.
 
 %% Selene's signals run on the daemons with or without a page: play gives
-%% every daemon back what it had before `selene $ hush` (selene_keeper).
+%% every part back what the rack holds (selene_keeper, which also tells the
+%% pages).
 play_machine(<<"selene">>) ->
-    %% the FH-2 banks' reset patterns come back from the rack as it is now
-    catch selene_retrig:play(),
-    catch selene_midi:play(),
-    Reply = case catch selene_keeper:resume() of
-                {ok, N} -> <<"OK: selene playing (", (integer_to_binary(N))/binary, " bank(s) given back)">>;
-                _ -> <<"ERR: selene: the keeper is not running">>
-            end,
-    catch tidal_link_anchor:sync_broadcast(<<"played selene">>),
-    Reply;
+    case catch selene_keeper:play() of
+        {ok, N} -> <<"OK: selene playing (", (integer_to_binary(N))/binary, " bank(s) given back, and the MIDI rows)">>;
+        _ -> <<"ERR: selene: the keeper is not running">>
+    end;
 play_machine(<<"vetula">>) ->
     catch vetula_cards:play(),
     catch tidal_link_anchor:sync_broadcast(<<"played vetula">>),
@@ -1793,19 +1805,19 @@ hush_machine(<<"conspicillum">>) ->
     catch reef_conspicillum_voice:stop(),
     catch tidal_stage:stopped(conspicillum),
     <<"OK: conspicillum hushed">>;
-%% Selene's polysignals are not voices: once applied they run in es9-daemon's
-%% audio callback, so its `panic` is the stop, as in `hush`. The FH-2's banks
-%% run on the FH-2 and have no stop yet (RIG-ISSUES-2026-08-07 #3-#5), so
-%% the reply says they keep going.
+%% Selene's polysignals are not voices: once applied they run in the daemons
+%% (and the FH-2), so Selene is stopped as a whole by selene_keeper, which
+%% silences every part and tells the pages (CR-11).
 hush_machine(<<"selene">>) ->
-    _ = daemon_call(es9_daemon_socket_path(), <<"panic">>),
-    catch selene_keeper:hushed(),
-    %% the FH-2 banks' reset patterns stop too (the LFOs themselves run on)
-    catch selene_retrig:hush(),
-    catch selene_midi:hush(),
-    catch tidal_stage:stopped(selene),
-    catch tidal_link_anchor:sync_broadcast(<<"hushed selene">>),
-    <<"OK: selene hushed (the ES-9's signals and the FH-2's reset patterns; the FH-2's banks run on the FH-2 and keep going)">>.
+    stop_selene(),
+    <<"OK: selene stopped (the ES-9, the FH-2 at depth 0, the MIDI rows and the reset patterns; edits wait for selene $ play)">>.
+
+%% Stop all of Selene. With no keeper to do it, the ES-9 is still silenced.
+stop_selene() ->
+    case catch selene_keeper:stop() of
+        ok -> ok;
+        _ -> _ = daemon_call(es9_daemon_socket_path(), <<"panic">>), ok
+    end.
 
 %% A block may hold several machine lines (`odonus $ loop` then `odonus $
 %% slide "<0 -1>"`, with no blank line between): each line that starts with
@@ -1930,6 +1942,13 @@ selene_kept(R = #{rack := NewRack, line := Line0, socket := Socket, bank := Bank
     %% page comes from that page, and it must follow (Limulus does not edit
     %% selene/rack, so it ignores it); selene_retrig hears it too
     _ = tidal_stage:put_text(<<"selene/rack">>, NewRack, nobody),
+    %% while Selene is stopped an edit is kept, not sent (CR-11): only a
+    %% release goes to the daemon, which frees jacks and sounds nothing
+    Running = selene_keeper:running(),
+    Waits = case Running of
+                true -> <<>>;
+                false -> <<" (kept: Selene is stopped, selene $ play sends it)">>
+            end,
     case Socket of
         <<>> ->
             %% no daemon: a MIDI row is sent by the rig itself (selene_midi,
@@ -1937,6 +1956,7 @@ selene_kept(R = #{rack := NewRack, line := Line0, socket := Socket, bank := Bank
             case {binary:match(Line0, <<" midi">>), Line0} of
                 {nomatch, _} -> <<"OK: selene: kept (not a modular bank, nothing sent): ", Line/binary>>;
                 {_, <<"off ", _/binary>>} -> <<"OK: selene: ", Line/binary, " (the MIDI row stops sending)">>;
+                _ when not Running -> <<"OK: selene: ", Line/binary, Waits/binary>>;
                 _ -> <<"OK: selene: ", Line/binary, " (sent as MIDI CCs on ", ('reef_selene_model@ps':midiPort())/binary, ")">>
             end;
         _ ->
@@ -1946,7 +1966,9 @@ selene_kept(R = #{rack := NewRack, line := Line0, socket := Socket, bank := Bank
             %% nothing to replay. A `split` or `join` is two, one per line, in
             %% order (the old claim released, then the new applied), and the
             %% first that is not OK stops it.
-            case selene_commands(selene_socket_path(Socket), binary:split(Command, <<"\n">>, [global, trim_all])) of
+            Commands = [C || C <- binary:split(Command, <<"\n">>, [global, trim_all]),
+                             Running orelse is_release(C)],
+            case selene_commands(selene_socket_path(Socket), Commands) of
                 {ok, <<"OK", _/binary>>} ->
                     _ = Json =/= <<>> andalso (catch selene_keeper:record(Socket, Bank, Json)),
                     %% a `swap` applies more than one place: keep each
@@ -1958,7 +1980,7 @@ selene_kept(R = #{rack := NewRack, line := Line0, socket := Socket, bank := Bank
                             {<<"release-claim ", _/binary>>, <<>>} -> catch selene_keeper:forget(Socket, Bank);
                             _ -> ok
                         end,
-                    <<"OK: selene: ", Line/binary>>;
+                    <<"OK: selene: ", Line/binary, Waits/binary>>;
                 {ok, Said} ->
                     %% refused, perhaps after a split's or swap's release went
                     %% through: put the rack back as it was and have the keeper,
@@ -1979,6 +2001,9 @@ also(_) -> [].
 
 %% A line's daemon commands in turn: the last reply, or the first that is
 %% not OK.
+is_release(<<"release-claim ", _/binary>>) -> true;
+is_release(_) -> false.
+
 selene_commands(_Path, []) -> {ok, <<"OK">>};
 selene_commands(Path, [C]) -> daemon_call(Path, C);
 selene_commands(Path, [C | Rest]) ->
@@ -4233,9 +4258,6 @@ hush_everything() ->
     catch reef_vetula_voice:stop(),
     %% and Vetula's cards (vetula-cards-play)
     catch vetula_cards:stop(),
-    %% and Selene's reset patterns, kept silent until `selene $ play`
-    catch selene_retrig:hush(),
-    catch selene_midi:hush(),
     %% and the Conspicillum grain cloud (conspicillum-scene) — also a
     %% /dirt/play emitter, and the densest one on the rig, so hush must
     %% reach it too.
@@ -4261,17 +4283,12 @@ hush_everything() ->
     %% and the Tidal streams d1..d16 (Limulus), silenced as Tidal's
     %% own hush does, so they resume on the next pattern sent.
     catch tidal_dirt_voice_sup:hush_all(),
-    %% and the ES-9's autonomous generators. Selene polysignals are NOT
-    %% voices — once applied they run inside es9-daemon's audio callback
-    %% with nothing driving them, so stopping every BEAM voice above
-    %% leaves the modular still playing. `panic` is the daemon's
-    %% sweep-everything verb (added 2026-08-07 for exactly this).
-    %%
-    %% Best-effort and non-fatal: if the daemon is down there is nothing
-    %% to silence there anyway, and a hush that stopped every voice must
-    %% still report OK. The FH-2 has no equivalent yet — its
-    %% release-claim is bookkeeping-only and --silent leaves the LFOs
-    %% running (RIG-ISSUES-2026-08-07 #3/#4/#5).
-    _ = daemon_call(es9_daemon_socket_path(), <<"panic">>),
-    %% and a daemon that comes back is not given back what was silenced
-    catch selene_keeper:hushed().
+    %% and Selene, as a whole, as `selene $ hush` does (CR-11). Selene
+    %% polysignals are NOT voices — once applied they run inside the
+    %% daemons with nothing driving them, so stopping every BEAM voice
+    %% above leaves the modular still playing. The keeper panics the ES-9,
+    %% sends the FH-2's banks at depth 0, and stops the MIDI rows and the
+    %% reset patterns; they stay stopped, edits included, until
+    %% `selene $ play`. Best-effort and non-fatal: a hush that stopped every
+    %% voice must still report OK.
+    stop_selene().

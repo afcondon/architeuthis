@@ -12,9 +12,16 @@
 %%  * on `selene-reapply <socket>`, which the Dashboard sends after it has
 %%    asked Bosun to restart a daemon (a restart quicker than the poll).
 %%
-%% Hush silences, clear forgets: `selene $ hush` and `hush` mark the sockets
-%% hushed, so a returning daemon is not given back what was silenced; the
-%% next apply wakes them.
+%% **Selene runs or is stopped, as a whole** (CR-11, AC 2026-10-25: "every
+%% signal should be running if Selene is running but some may be muted").
+%% This process holds that one state, kept on disk with what was applied, so
+%% it outlives a rig restart. stop/0 (`selene $ hush`, and `hush`) silences
+%% every part: the ES-9 (es9-daemon's panic), the FH-2 (each bank sent again
+%% at depth 0), the MIDI rows (selene_midi) and the reset patterns
+%% (selene_retrig). play/0 gives them all back. While stopped, an edit is
+%% kept here and in the rack but not sent (`running/0` tells the caller), so
+%% play brings back exactly what the page shows; a returning daemon is not
+%% given anything either.
 %%
 %% The rack decides what is kept: this process follows the stage's
 %% `selene/rack` (as selene_retrig does), and a bank it kept that the rack
@@ -34,7 +41,7 @@
 -module(selene_keeper).
 -behaviour(gen_server).
 
--export([start_link/0, record/3, forget/2, reapply/1, hushed/0, applied/0, resume/0, snapshot/0, restore/3]).
+-export([start_link/0, record/3, forget/2, reapply/1, stop/0, play/0, running/0, applied/0, snapshot/0, restore/3]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2]).
 
 -define(POLL_MS, 2000).
@@ -61,20 +68,31 @@ restore(Socket, Snapshot, Rack) -> gen_server:call(?MODULE, {restore, Socket, Sn
 reapply(Socket) -> gen_server:call(?MODULE, {reapply, Socket}, 15000).
 
 %% What the modular has been given, for the Dashboard's chart: one map per
-%% socket and bank, with its family, its slot count, and whether a hush has
-%% silenced it since.
+%% socket and bank, with its family, its slot count, and whether Selene is
+%% stopped (`hushed`).
 applied() -> gen_server:call(?MODULE, applied, 5000).
 
-%% Everything was silenced: do not give it back on a daemon's return. The
-%% ES-9's banks are stopped by es9-daemon's panic (the caller's); the FH-2
-%% runs its banks on the module, where nothing stops them, so each is sent
-%% again with every slot at depth 0 (AC, 2026-10-04, a stopgap: a `silence`
-%% verb in the FH-2's daemon is the real fix). What was applied is kept.
-hushed() -> gen_server:cast(?MODULE, hushed).
+%% Stop Selene: every part silenced, what was applied kept. The ES-9's banks
+%% are stopped by es9-daemon's panic; the FH-2 runs its banks on the module,
+%% where nothing stops them, so each is sent again with every slot at depth 0
+%% (AC, 2026-10-04, a stopgap: a `silence` verb in the FH-2's daemon is the
+%% real fix). Every page is told (`hushed selene`).
+stop() -> gen_server:call(?MODULE, stop, 15000).
 
-%% Undo a hush: give every daemon back what it was given. Returns how many
-%% banks were sent.
-resume() -> gen_server:call(?MODULE, resume, 15000).
+%% Play Selene: give every part back what the rack holds. Returns how many
+%% banks were sent to the daemons. Every page is told (`played selene`).
+play() -> gen_server:call(?MODULE, play, 15000).
+
+%% Whether Selene is running. True when this process is not (yet) running:
+%% selene_midi and selene_retrig start before it, and it tells them at start.
+running() ->
+    case whereis(?MODULE) of
+        undefined -> true;
+        _ -> case catch gen_server:call(?MODULE, running, 5000) of
+                 R when is_boolean(R) -> R;
+                 _ -> true
+             end
+    end.
 
 -define(RACK, <<"selene/rack">>).
 
@@ -86,8 +104,11 @@ init([]) ->
                            _ -> undefined
                        end
            end,
-    St = #{applied => load(), up => #{}, hushed => #{}, rack => Text(?RACK)},
+    Running = load_running(),
+    St = #{applied => load(), up => #{}, running => Running, rack => Text(?RACK)},
     _ = release_old_voices(),
+    %% the MIDI rows and reset patterns started before this, running
+    _ = Running orelse quiet_parts(),
     {ok, follow(St)}.
 
 handle_call(snapshot, _From, St = #{applied := A}) ->
@@ -99,13 +120,28 @@ handle_call({restore, Socket, A, Rack}, _From, St) when is_map(A) ->
 handle_call({reapply, Socket}, _From, St) ->
     {N, St1} = send_all(Socket, St),
     {reply, {ok, N}, St1};
-handle_call(resume, _From, St) ->
-    St1 = St#{hushed := #{}},
+handle_call(play, _From, St) ->
+    St1 = St#{running := true},
+    save_running(true),
     {N1, St2} = send_all(<<"es9">>, St1),
     {N2, St3} = send_all(<<"fh2">>, St2),
+    catch selene_retrig:play(),
+    catch selene_midi:play(),
+    catch tidal_link_anchor:sync_broadcast(<<"played selene">>),
     {reply, {ok, N1 + N2}, St3};
-handle_call(applied, _From, St = #{applied := A, hushed := H}) ->
-    {reply, [describe(S, B, J, maps:get(S, H, false)) || {{S, B}, J} <- maps:to_list(A)], St};
+handle_call(stop, _From, St = #{applied := A}) ->
+    save_running(false),
+    _ = call(path(<<"es9">>), <<"panic">>),
+    [call(path(<<"fh2">>), <<"apply-polysignal ", (silent(J))/binary>>)
+     || {{<<"fh2">>, _B}, J} <- maps:to_list(A)],
+    quiet_parts(),
+    catch tidal_stage:stopped(selene),
+    catch tidal_link_anchor:sync_broadcast(<<"hushed selene">>),
+    {reply, ok, St#{running := false}};
+handle_call(running, _From, St = #{running := R}) ->
+    {reply, R, St};
+handle_call(applied, _From, St = #{applied := A, running := R}) ->
+    {reply, [describe(S, B, J, not R) || {{S, B}, J} <- maps:to_list(A)], St};
 handle_call(_, _From, St) -> {reply, {error, unknown}, St}.
 
 %% A bank with every slot's depth at 0: the same claim, no output.
@@ -131,18 +167,14 @@ describe(Socket, Bank, Json, Hushed) ->
     #{socket => Socket, bank => Bank, family => maps:get(<<"family">>, D, <<>>),
       slots => Slots, hushed => Hushed}.
 
-handle_cast({record, Socket, Bank, Json}, St = #{applied := A, hushed := H}) ->
+handle_cast({record, Socket, Bank, Json}, St = #{applied := A}) ->
     A1 = A#{{Socket, Bank} => Json},
     save(A1),
-    {noreply, St#{applied := A1, hushed := maps:remove(Socket, H)}};
+    {noreply, St#{applied := A1}};
 handle_cast({forget, Socket, Bank}, St = #{applied := A}) ->
     A1 = maps:remove({Socket, Bank}, A),
     save(A1),
     {noreply, St#{applied := A1}};
-handle_cast(hushed, St = #{applied := A}) ->
-    [call(path(<<"fh2">>), <<"apply-polysignal ", (silent(J))/binary>>)
-     || {{<<"fh2">>, _B}, J} <- maps:to_list(A)],
-    {noreply, St#{hushed := maps:from_list([{S, true} || S <- ?SOCKETS])}};
 handle_cast(_, St) -> {noreply, St}.
 
 handle_info({stage_broadcast, <<"stage-text ", Json/binary>>}, St) ->
@@ -221,10 +253,10 @@ banks(Rack) ->
 
 send_all(Socket, St0) ->
     %% what the rack has lost is released first, not given back
-    St = #{applied := A, hushed := H} = follow(St0),
-    case maps:get(Socket, H, false) of
-        true -> {0, St};
-        false ->
+    St = #{applied := A, running := Running} = follow(St0),
+    case Running of
+        false -> {0, St};
+        true ->
             Mine = [J || {{S, _B}, J} <- maps:to_list(A), S =:= Socket],
             [call(path(Socket), <<"apply-polysignal ", J/binary>>) || J <- Mine],
             case Mine of
@@ -263,8 +295,27 @@ call(SockPath, Command) ->
         E -> E
     end.
 
+%% The parts this process does not send itself, silenced.
+quiet_parts() ->
+    catch selene_retrig:hush(),
+    catch selene_midi:hush(),
+    ok.
+
 %% On disk, so the rig remembers across its own restarts too.
 file() -> home(".architeuthis/selene-applied.term", "/tmp/selene-applied.term").
+running_file() -> home(".architeuthis/selene-running.term", "/tmp/selene-running.term").
+
+load_running() ->
+    case file:read_file(running_file()) of
+        {ok, <<"stopped">>} -> false;
+        _ -> true
+    end.
+
+save_running(R) ->
+    F = running_file(),
+    _ = filelib:ensure_dir(F),
+    _ = file:write_file(F, case R of true -> <<"running">>; false -> <<"stopped">> end),
+    ok.
 
 load() ->
     case file:read_file(file()) of

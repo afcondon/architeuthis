@@ -12,8 +12,8 @@
 %%
 %% A tempo LFO (`lfot`) runs on the beat, so it lands on the bar however the
 %% tempo moves; a free one (`lfo`, Hz) runs on the wall clock. A muted row or
-%% signal sends nothing, and `selene $ hush` silences them all until
-%% `selene $ play`, as it does the reset patterns.
+%% signal sends nothing, and while Selene is stopped (`selene $ hush` or
+%% `hush`, held by selene_keeper, which tells this process) they all are.
 -module(selene_midi).
 -behaviour(gen_server).
 
@@ -51,7 +51,8 @@ init([]) ->
            end,
     {ok, Sock} = gen_udp:open(0, [binary]),
     erlang:send_after(?TICK_MS, self(), tick),
-    {ok, #{rack => Rack, signals => signals_of(Rack), sent => #{}, hushed => false, socket => Sock,
+    %% stopped with the rest of Selene, if it is (selene_keeper holds that)
+    {ok, #{rack => Rack, signals => signals_of(Rack), sent => #{}, hushed => not selene_keeper:running(), socket => Sock,
            port => 'reef_selene_model@ps':midiPort()}}.
 
 handle_call(signals, _From, St = #{signals := S}) ->
@@ -90,32 +91,16 @@ terminate(_Reason, #{socket := Sock}) ->
 follow(Rack, St = #{rack := Rack}) -> St;
 follow(Rack, St) -> St#{rack := Rack, signals := signals_of(Rack)}.
 
-%% Each signal the rack's MIDI rows send: its kind, its LFO slot and where it
-%% goes. Muted rows and muted signals are left out, so they fall silent.
+%% Each signal the rack's MIDI rows send, as reef says (midiSends): those
+%% with a CC, their row and themselves not muted, the first on a channel
+%% and CC only, so a controller is never fought over. Read once a rack.
 signals_of(<<>>) -> [];
 signals_of(Rack) ->
-    case catch 'reef_selene_rack@ps':parseRack(Rack) of
-        #{destinations := Ds} ->
-            lists:append([row(D) || D <- array:to_list(Ds)]);
-        _ ->
-            []
-    end.
-
-row(D = #{target := {midi, _}, muted := false, bank := Bank, mutedSlots := MutedA}) ->
-    case Bank of
-        {gLfo, Slots} -> row(lfo, D, Slots, MutedA);
-        {gLfoT, Slots} -> row(lfot, D, Slots, MutedA);
+    case catch 'reef_selene_model@ps':midiSends('reef_selene_rack@ps':parseRack(Rack)) of
+        Sends when is_tuple(Sends) -> array:to_list(Sends);
+        Sends when is_list(Sends) -> Sends;
         _ -> []
-    end;
-row(_) -> [].
-
-row(Kind, D, SlotsA, MutedA) ->
-    Outs = array:to_list('reef_selene_model@ps':midiOutsOf(D)),
-    Muted = array:to_list(MutedA),
-    Slots = array:to_list(SlotsA),
-    [#{kind => Kind, slot => Slot, channel => maps:get(channel, Out), cc => maps:get(cc, Out)}
-     || {K, Slot, Out} <- lists:zip3(lists:seq(0, length(Slots) - 1), Slots, Outs),
-        not lists:member(K, Muted)].
+    end.
 
 %% Every signal's value ?AHEAD_US from now, scheduled for then when it has
 %% changed since the last one sent on that channel and controller.
@@ -127,19 +112,20 @@ send_due(St = #{signals := Signals, sent := Sent, socket := Sock, port := Port})
     Seconds = AtUs / 1000000.0,
     Tick = AtUs div (?TICK_MS * 1000),
     Sent2 = lists:foldl(
-              fun(#{kind := Kind, slot := Slot, channel := Ch, cc := CC}, Acc) ->
+              fun(Send = #{tempo := Tempo, lfo := Slot, channel := Ch, cc := CC}, Acc) ->
                       Rate = maps:get(rate, Slot),
-                      Cycles = case Kind of
-                                   lfot -> Beat * Rate;
-                                   lfo -> Seconds * Rate
+                      Cycles = case Tempo of
+                                   true -> Beat * Rate;
+                                   false -> Seconds * Rate
                                end,
-                      V = 'reef_selene_model@ps':ccOfValue('reef_selene_model@ps':lfoAt(Slot, Cycles, Tick)),
+                      %% within the signal's span (lo..hi, turned over when lo > hi)
+                      V = 'reef_selene_model@ps':ccIn(Send, 'reef_selene_model@ps':lfoAt(Slot, Cycles, Tick)),
                       Key = {Ch, CC},
                       case maps:get(Key, Acc, undefined) of
                           V -> Acc;
                           _ ->
-                              Send = 'tidal_mIDIBridge@foreign':scheduleCCAt(Sock, Port, Ch, CC, V, AtUs),
-                              Send(),
+                              Schedule = 'tidal_mIDIBridge@foreign':scheduleCCAt(Sock, Port, Ch, CC, V, AtUs),
+                              Schedule(),
                               Acc#{Key => V}
                       end
               end, Sent, Signals),

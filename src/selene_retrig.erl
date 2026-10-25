@@ -49,7 +49,8 @@ init([]) ->
                #{text := T} when is_binary(T) -> T;
                _ -> <<>>
            end,
-    {ok, reconcile(#{rack => Rack, running => #{}, hushed => false})}.
+    %% stopped with the rest of Selene, if it is (selene_keeper holds that)
+    {ok, reconcile(#{rack => Rack, running => #{}, hushed => not selene_keeper:running()})}.
 
 handle_call(running, _From, St = #{running := R}) ->
     {reply, R, St};
