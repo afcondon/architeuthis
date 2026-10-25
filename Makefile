@@ -14,7 +14,7 @@
 #   make clean        - clean PureScript output
 #   make distclean    - clean everything including deps
 
-.PHONY: all deps ps erl erl-quick test run start clean distclean help
+.PHONY: all deps ps erl erl-quick test run start clean distclean help ableton
 
 # Default target
 all: erl
@@ -30,6 +30,18 @@ help:
 	@echo "  make start     - start the server (incremental rebuild + run)"
 	@echo "  make clean     - clean PureScript output"
 	@echo "  make distclean - clean everything"
+	@echo "  make ableton   - install the Selene control surface into Live's User Library"
+
+# The Selene control surface for Ableton Live (ableton/Selene): binds
+# Selene's MIDI signals to Live's parameters by name, told by selene_ableton
+# (docs/kb/plans/selene-ableton-destinations.md). Live reads the folder at
+# start; choose Selene in Preferences > Link/Tempo/MIDI, input IAC Driver
+# (Tidal), output None.
+ABLETON_SCRIPTS ?= $(HOME)/Music/Ableton/User Library/Remote Scripts
+ableton:
+	@mkdir -p "$(ABLETON_SCRIPTS)/Selene"
+	@cp ableton/Selene/__init__.py "$(ABLETON_SCRIPTS)/Selene/__init__.py"
+	@echo "==> Selene installed in $(ABLETON_SCRIPTS)/Selene (restart Live to load a new copy)"
 
 # Erlang dependencies (cowboy, ranch)
 deps:
@@ -102,6 +114,7 @@ erl-quick:
 	@erlc -disable-feature maybe_expr -o ebin src/selene_keeper.erl
 	@erlc -disable-feature maybe_expr -o ebin src/selene_retrig.erl
 	@erlc -disable-feature maybe_expr -o ebin src/selene_midi.erl
+	@erlc -disable-feature maybe_expr -o ebin src/selene_ableton.erl
 
 # Run tests
 test: erl

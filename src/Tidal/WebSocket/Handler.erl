@@ -507,6 +507,10 @@ try_parse_prefixed(<<"selene-running", _/binary>>) ->
 %% `unlearned selene`.
 try_parse_prefixed(<<"selene-learning", _/binary>>) ->
     selene_learning;
+%% selene-destinations: what each signal mapped in Live is doing, for a page
+%% just opened; answered as every page is told, `destinations selene <json>`.
+try_parse_prefixed(<<"selene-destinations", _/binary>>) ->
+    selene_destinations;
 try_parse_prefixed(<<"selene-applied", _/binary>>) ->
     %% what the modular has been given (selene_keeper), for the Dashboard
     selene_applied;
@@ -1310,6 +1314,12 @@ handle_pattern_message(Text, State) ->
                         _ -> <<"unlearned selene">>
                     end,
             {reply, {text, Reply}, State};
+        selene_destinations ->
+            Reply = case catch selene_ableton:destinations() of
+                        T when is_binary(T) -> T;
+                        _ -> <<"ERR: selene-destinations: the Ableton bindings are not running">>
+                    end,
+            {reply, {text, Reply}, State};
         selene_applied ->
             Reply = case catch selene_keeper:applied() of
                 L when is_list(L) -> <<"selene-applied ", (iolist_to_binary(json:encode(L)))/binary>>;
@@ -1928,6 +1938,29 @@ selene_fire_line(Block) ->
         nomatch ->
             case re:run(Block, <<"^\\s*selene\\s*\\$\\s*fire\\b">>) of
                 {match, _} -> <<"ERR: selene: fire is selene $ fire midi<row> <signal>, as in selene $ fire midi4 2">>;
+                nomatch -> selene_map_line(Block)
+            end
+    end.
+
+%% `selene $ map midi1 1`: MIDI row 1's signal 1 moves the parameter last
+%% clicked in Live, and `selene $ unmap midi1 1` lets it go (selene_ableton;
+%% docs/kb/plans/selene-ableton-destinations.md).
+selene_map_line(Block) ->
+    case re:run(Block, <<"^\\s*selene\\s*\\$\\s*(map|unmap)\\s+midi(\\d+)\\s+(\\d+)\\s*$">>,
+                [{capture, all_but_first, binary}]) of
+        {match, [Verb, Row, Slot]} ->
+            Call = case Verb of
+                       <<"map">> -> map;
+                       <<"unmap">> -> unmap
+                   end,
+            case catch selene_ableton:Call(binary_to_integer(Row), binary_to_integer(Slot)) of
+                {ok, Said} -> <<"OK: selene: ", Said/binary>>;
+                {error, Why} -> <<"ERR: selene: ", Why/binary>>;
+                _ -> <<"ERR: selene: the Ableton bindings are not running">>
+            end;
+        nomatch ->
+            case re:run(Block, <<"^\\s*selene\\s*\\$\\s*(un)?map\\b">>) of
+                {match, _} -> <<"ERR: selene: map is selene $ map midi<row> <signal>, as in selene $ map midi1 1, with the parameter clicked in Live; selene $ unmap midi1 1 lets it go">>;
                 nomatch -> none
             end
     end.

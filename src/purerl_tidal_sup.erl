@@ -153,6 +153,15 @@ init([]) ->
            shutdown => 5000,
            type => worker,
            modules => [selene_midi]},
+         %% Selene's MIDI signals bound to parameters in Ableton Live, by
+         %% name, through the Selene control surface: after selene_midi,
+         %% whose CC changes it reads to tell a shadowed binding.
+         #{id => selene_ableton,
+           start => {selene_ableton, start_link, []},
+           restart => permanent,
+           shutdown => 5000,
+           type => worker,
+           modules => [selene_ableton]},
          %% The record buffer, its marks and the loops on the rig. After the
          %% stage, whose routing text it follows.
          #{id => rig_loops,

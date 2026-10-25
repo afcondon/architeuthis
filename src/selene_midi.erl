@@ -32,7 +32,7 @@
 -module(selene_midi).
 -behaviour(gen_server).
 
--export([start_link/0, hush/0, play/0, signals/0, learn/2, unlearn/0, learning/0, fire/2]).
+-export([start_link/0, hush/0, play/0, signals/0, learn/2, unlearn/0, learning/0, fire/2, changes/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -define(RACK, <<"selene/rack">>).
@@ -64,6 +64,11 @@ learning() -> gen_server:call(?MODULE, learning).
 %% Fire MIDI row `Row`'s throw `Slot` (from 1): {ok, Reply} or {error, Why}.
 fire(Row, Slot) -> gen_server:call(?MODULE, {fire, Row, Slot}).
 
+%% When each channel and CC last changed, #{{Ch, CC} => Us} (the moment it
+%% was scheduled for): selene_ableton reads it to tell a parameter that does
+%% not follow its CC from one whose CC is still.
+changes() -> gen_server:call(?MODULE, changes).
+
 cast(Msg) ->
     case whereis(?MODULE) of
         undefined -> ok;
@@ -81,11 +86,13 @@ init([]) ->
     'tidal_mIDIBridge@foreign':learn_gate(off),
     erlang:send_after(?TICK_MS, self(), tick),
     %% stopped with the rest of Selene, if it is (selene_keeper holds that)
-    {ok, #{rack => Rack, signals => signals_of(Rack), sent => #{}, hushed => not selene_keeper:running(), socket => Sock, learn => none, fired => #{},
+    {ok, #{rack => Rack, signals => signals_of(Rack), sent => #{}, hushed => not selene_keeper:running(), socket => Sock, learn => none, fired => #{}, changed => #{},
            port => 'reef_selene_model@ps':midiPort()}}.
 
 handle_call(signals, _From, St = #{signals := S}) ->
     {reply, S, St};
+handle_call(changes, _From, St = #{changed := C}) ->
+    {reply, C, St};
 handle_call({learn, _Row, _Slot}, _From, St = #{hushed := true}) ->
     {reply, {error, <<"Selene is stopped, and a stopped signal can't be learned: selene $ play first">>}, St};
 handle_call({learn, Row, Slot}, _From, St = #{rack := Rack}) ->
@@ -214,12 +221,12 @@ signals_of(Rack) ->
 %% changed since the last one sent on that channel and controller.
 send_due(St = #{hushed := true}) -> St;
 send_due(St = #{signals := []}) -> St;
-send_due(St = #{signals := Signals, sent := Sent, socket := Sock, port := Port, fired := Fired}) ->
+send_due(St = #{signals := Signals, sent := Sent, socket := Sock, port := Port, fired := Fired, changed := Changed}) ->
     AtUs = erlang:system_time(microsecond) + ?AHEAD_US,
     Moment = #{beat => beat_at(AtUs), seconds => AtUs / 1000000.0, tick => AtUs div (?TICK_MS * 1000),
                bpm => bpm(), fired => {nothing}},
-    Sent2 = lists:foldl(
-              fun(Send = #{row := Row, slot := Slot, channel := Ch, cc := CC}, Acc) ->
+    {Sent2, Changed2} = lists:foldl(
+              fun(Send = #{row := Row, slot := Slot, channel := Ch, cc := CC}, {Acc, Ch0}) ->
                       At = case maps:get({Row, Slot}, Fired, none) of
                                none -> Moment;
                                Start -> Moment#{fired := {just, Start}}
@@ -229,14 +236,14 @@ send_due(St = #{signals := Signals, sent := Sent, socket := Sock, port := Port, 
                       V = 'reef_selene_model@ps':midiValueAt(Send, At),
                       Key = {Ch, CC},
                       case maps:get(Key, Acc, undefined) of
-                          V -> Acc;
+                          V -> {Acc, Ch0};
                           _ ->
                               Schedule = 'tidal_mIDIBridge@foreign':scheduleCCAt(Sock, Port, Ch, CC, V, AtUs),
                               Schedule(),
-                              Acc#{Key => V}
+                              {Acc#{Key => V}, Ch0#{Key => AtUs}}
                       end
-              end, Sent, Signals),
-    St#{sent := Sent2}.
+              end, {Sent, Changed}, Signals),
+    St#{sent := Sent2, changed := Changed2}.
 
 %% The tempo: Link's, else ?DEFAULT_BPM, as beat_at assumes.
 bpm() ->
