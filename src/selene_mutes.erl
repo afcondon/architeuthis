@@ -28,13 +28,22 @@
 %% the page draws the pattern's mutes as they are heard; `selene-mutes` asks
 %% for it (a page just opened).
 %%
+%% Patterns of voltages are kept the same way (AC, 2026-10-26: to step
+%% Obsidian's MODEL from Selene). A POLYVOLT output may follow
+%% `# volts 3 "<0 1.2 2.5>"`; each bank with any gets one `{volts, Socket,
+%% Bank}` stream (Tidal.VoltVoice) holding them all, which has this process
+%% told the voltages at each step, and every send of the bank carries both
+%% its mutes and its voltages (reef's Reef.Selene.Line.heldApply). The page
+%% is told the voltages too, in the same message, as
+%% `"volts":[{"socket","bank","slot","pattern","volts"}]`.
+%%
 %% `selene $ hush` silences the patterns and play brings them back, as for
 %% selene_retrig. A pattern that does not parse plays nothing and is logged;
 %% a `selene $` line is checked before it is kept (check/1).
 -module(selene_mutes).
 -behaviour(gen_server).
 
--export([start_link/0, hush/0, play/0, check/1, running/0, change/3, state/0, command_for/4]).
+-export([start_link/0, hush/0, play/0, check/1, running/0, change/3, volts_change/3, state/0, command_for/4]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -define(RACK, <<"selene/rack">>).
@@ -79,12 +88,19 @@ state() ->
 %% now on that bank.
 change(Socket, Bank, Muted) -> cast({change, Socket, Bank, Muted}).
 
-%% Whether a rack's mute patterns all parse: ok, or {error, Why}.
+%% From a volt stream: Volts (a PureScript array of {slot, volts}) are held
+%% from now on that bank.
+volts_change(Socket, Bank, Volts) -> cast({volts_change, Socket, Bank, Volts}).
+
+%% Whether a rack's mute patterns and patterns of voltages all parse: ok, or
+%% {error, Why}.
 check(Rack) ->
-    Bad = [P || #{pattern := P} <- mutes(Rack), parse(P) =:= error],
-    case Bad of
-        [] -> ok;
-        [P | _] -> {error, <<"mute: not a pattern: ", P/binary>>}
+    BadMute = [P || #{pattern := P} <- mutes(Rack), parse(P) =:= error],
+    BadVolts = [P || #{pattern := P} <- volt_patterns(Rack), parse_volts(P) =:= error],
+    case {BadMute, BadVolts} of
+        {[P | _], _} -> {error, <<"mute: not a pattern: ", P/binary>>};
+        {[], [P | _]} -> {error, <<"volts: not a pattern of voltages: ", P/binary>>};
+        _ -> ok
     end.
 
 cast(Msg) ->
@@ -100,6 +116,7 @@ init([]) ->
                _ -> <<>>
            end,
     {ok, reconcile(#{rack => Rack, running => #{}, muted => #{},
+                     vrunning => #{}, volts => #{},
                      hushed => not selene_keeper:running()})}.
 
 handle_call(running, _From, St = #{running := R}) ->
@@ -108,21 +125,39 @@ handle_call(state, _From, St) ->
     {reply, told(St), St};
 handle_call({command_for, _, _, _}, _From, St = #{hushed := true}) ->
     {reply, none, St};
-handle_call({command_for, Rack, Socket, Bank}, _From, St = #{running := R, muted := M}) ->
+handle_call({command_for, Rack, Socket, Bank}, _From, St = #{running := R, muted := M, vrunning := VR, volts := V}) ->
     Key = {Socket, Bank},
-    case [P || #{socket := S, bank := B, pattern := P} <- mutes(Rack), {S, B} =:= Key] of
-        [P | _] ->
-            Muted = case maps:get(Key, R, undefined) of
-                        P -> maps:get(Key, M, array:new());
-                        _ -> now_muted(Key, P, maps:get(Key, M, array:new()))
-                    end,
-            case catch 'reef_selene_line@ps':mutedApply(Rack, Socket, Bank, Muted) of
-                {just, #{command := C}} ->
-                    St1 = St#{running := R#{Key => P}, muted := M#{Key => Muted}},
-                    {reply, C, tell(St1)};
+    MuteP = [P || #{socket := S, bank := B, pattern := P} <- mutes(Rack), {S, B} =:= Key],
+    VoltP = volts_wanted(Rack, Key),
+    case {MuteP, VoltP} of
+        {[], []} -> {reply, none, St};
+        _ ->
+            {R1, M1} = case MuteP of
+                           [P | _] ->
+                               %% asked of the stream, not taken from what this
+                                               %% process last heard: a change can fall while
+                                               %% a new stream waits for its clock
+                               Muted = case maps:get(Key, R, undefined) of
+                                           P -> ask_muted(Key, P, maps:get(Key, M, array:new()));
+                                           _ -> now_muted(Key, P, maps:get(Key, M, array:new()))
+                                       end,
+                               {R#{Key => P}, M#{Key => Muted}};
+                           [] -> {R, M}
+                       end,
+            {VR1, V1} = case VoltP of
+                            [] -> {VR, V};
+                            _ ->
+                                Held = case maps:get(Key, VR, undefined) of
+                                           VoltP -> ask_volts(Key, VoltP, maps:get(Key, V, array:new()));
+                                           _ -> now_volts(Key, VoltP, maps:get(Key, V, array:new()))
+                                       end,
+                                {VR#{Key => VoltP}, V#{Key => Held}}
+                        end,
+            St1 = St#{running := R1, muted := M1, vrunning := VR1, volts := V1},
+            case held_apply(St1#{rack := Rack}, Key) of
+                {just, #{command := C}} -> {reply, C, tell(St1)};
                 _ -> {reply, none, St}
-            end;
-        [] -> {reply, none, St}
+            end
     end;
 handle_call(_Request, _From, St) ->
     {reply, {error, unknown_call}, St}.
@@ -141,8 +176,20 @@ handle_cast({change, Socket, Bank, Muted}, St = #{running := R, muted := M, hush
         %% already in force (the line that set the pattern sent it): nothing
         {true, Muted} -> {noreply, St};
         {true, _} ->
-            send(St, Key, Muted),
-            {noreply, tell(St#{muted := M#{Key => Muted}})};
+            St1 = St#{muted := M#{Key => Muted}},
+            send(St1, Key),
+            {noreply, tell(St1)};
+        _ ->
+            {noreply, St}
+    end;
+handle_cast({volts_change, Socket, Bank, Volts}, St = #{vrunning := VR, volts := V, hushed := false}) ->
+    Key = {Socket, Bank},
+    case {maps:is_key(Key, VR), maps:get(Key, V, undefined)} of
+        {true, Volts} -> {noreply, St};
+        {true, _} ->
+            St1 = St#{volts := V#{Key => Volts}},
+            send(St1, Key),
+            {noreply, tell(St1)};
         _ ->
             {noreply, St}
     end;
@@ -160,8 +207,9 @@ handle_info({stage_broadcast, <<"stage-text ", Json/binary>>}, St) ->
             {noreply, St}
     end;
 %% the rack's own apply of a bank undoes a pattern's mutes: put them back
-handle_info(resend, St = #{muted := M, hushed := false}) ->
-    [send(St, Key, Muted) || {Key, Muted} <- maps:to_list(M), array:size(Muted) > 0],
+handle_info(resend, St = #{muted := M, volts := V, hushed := false}) ->
+    Keys = lists:usort([K || {K, Muted} <- maps:to_list(M), array:size(Muted) > 0] ++ maps:keys(V)),
+    [send(St, Key) || Key <- Keys],
     {noreply, St};
 handle_info(_Info, St) ->
     {noreply, St}.
@@ -170,14 +218,17 @@ terminate(_Reason, _St) -> ok.
 
 %% Make the running streams what the rack asks for (none while hushed). A
 %% bank whose pattern goes is sent as the rack has it.
-reconcile(St = #{rack := Rack, running := Running, muted := M, hushed := Hushed}) ->
+reconcile(St0) ->
+    reconcile_volts(reconcile_mutes(St0)).
+
+reconcile_mutes(St = #{rack := Rack, running := Running, muted := M, hushed := Hushed}) ->
     Wanted = case Hushed of
                  true -> #{};
                  false -> maps:from_list([{{S, B}, P} || #{socket := S, bank := B, pattern := P} <- mutes(Rack)])
              end,
     Gone = [K || K <- maps:keys(Running), not maps:is_key(K, Wanted)],
     [set(K, 'tidal_pattern_types@ps':silence()) || K <- Gone],
-    [send(St, K, array:new()) || K <- Gone, not Hushed, array:size(maps:get(K, M, array:new())) > 0],
+    [send(St#{muted := maps:remove(K, M)}, K) || K <- Gone, not Hushed, array:size(maps:get(K, M, array:new())) > 0],
     %% a pattern new or changed is worked out now, so what it mutes is known
     %% before the line that wrote it sends its bank (command_for)
     {Now, M2} = maps:fold(
@@ -201,23 +252,78 @@ reconcile(St = #{rack := Rack, running := Running, muted := M, hushed := Hushed}
         _ -> tell(St1)
     end.
 
+%% The same for patterns of voltages: a stream a bank, holding every
+%% patterned output's pattern. A bank whose patterns all go is sent with the
+%% voltages the rack has.
+reconcile_volts(St = #{rack := Rack, vrunning := Running, volts := V, hushed := Hushed}) ->
+    Wanted = case Hushed of
+                 true -> #{};
+                 false -> maps:from_list([{K, volts_wanted(Rack, K)} || K <- lists:usort([{S, B} || #{socket := S, bank := B} <- volt_patterns(Rack)])])
+             end,
+    Gone = [K || K <- maps:keys(Running), not maps:is_key(K, Wanted)],
+    [set_volts(K, array:new()) || K <- Gone],
+    [send(St#{volts := maps:remove(K, V)}, K) || K <- Gone, not Hushed],
+    {Now, V2} = maps:fold(
+            fun(K, Ps, {Acc, VAcc}) ->
+                    case maps:get(K, Running, undefined) of
+                        Ps -> {Acc#{K => Ps}, VAcc};
+                        _ ->
+                            case [P || {_, P} <- Ps, parse_volts(P) =:= error] of
+                                [] ->
+                                    {Acc#{K => Ps}, VAcc#{K => now_volts(K, Ps, maps:get(K, VAcc, array:new()))}};
+                                [Bad | _] ->
+                                    tidal_log:err("selene_mutes: not a pattern of voltages on ~p: ~ts~n", [K, Bad]),
+                                    set_volts(K, array:new()),
+                                    {Acc, VAcc}
+                            end
+                    end
+            end, {#{}, V}, Wanted),
+    St1 = St#{vrunning := Now, volts := maps:with(maps:keys(Now), V2)},
+    case St1 of
+        #{vrunning := Running, volts := V} -> St1;
+        _ -> tell(St1)
+    end.
+
+%% A bank's patterned outputs on a rack, [{Slot, Pattern}] by slot.
+volts_wanted(Rack, Key) ->
+    lists:sort([{Slot, P} || #{socket := S, bank := B, slot := Slot, pattern := P} <- volt_patterns(Rack), {S, B} =:= Key]).
+
 %% Every page told what the patterns are muting.
 tell(St) ->
     catch tidal_link_anchor:sync_broadcast(told(St)),
     St.
 
-told(#{running := R, muted := M}) ->
+told(St = #{running := R, muted := M}) ->
     Banks = [#{socket => S, bank => B, pattern => P,
                muted => array:to_list(maps:get({S, B}, M, array:new()))}
              || {{S, B}, P} <- lists:sort(maps:to_list(R))],
-    iolist_to_binary([<<"muting selene ">>, json:encode(#{banks => Banks})]).
+    VR = maps:get(vrunning, St, #{}),
+    V = maps:get(volts, St, #{}),
+    Volts = [#{socket => S, bank => B, slot => Slot, pattern => P,
+               volts => held_volts(Slot, maps:get({S, B}, V, array:new()))}
+             || {{S, B}, Ps} <- lists:sort(maps:to_list(VR)), {Slot, P} <- Ps],
+    iolist_to_binary([<<"muting selene ">>, json:encode(#{banks => Banks, volts => Volts})]).
+
+held_volts(Slot, Held) ->
+    case [Vs || #{slot := K, volts := Vs} <- array:to_list(Held), K =:= Slot] of
+        [Vs | _] -> Vs;
+        [] -> null
+    end.
 
 %% What a pattern new to the rack mutes now: started on its stream, and asked
 %% on the stream's clock; what was muted before while the stream has no clock.
-now_muted(Key = {Socket, Bank}, P, Before) ->
+now_muted(Key, P, Before) ->
     case parse(P) of
         {ok, Pattern} ->
             set(Key, Pattern),
+            ask_muted(Key, P, Before);
+        error -> Before
+    end.
+
+%% What a running mute pattern mutes now, asked on its stream's clock.
+ask_muted({Socket, Bank}, P, Before) ->
+    case parse(P) of
+        {ok, Pattern} ->
             case catch tidal_dirt_voice:muted_now({mutes, Socket, Bank}, Pattern) of
                 A when is_tuple(A) -> A;
                 _ -> Before
@@ -225,18 +331,57 @@ now_muted(Key = {Socket, Bank}, P, Before) ->
         error -> Before
     end.
 
+%% What a bank's patterns of voltages hold now: started on its stream, and
+%% asked on the stream's clock; what was held before while it has no clock.
+now_volts(Key, Ps, Before) ->
+    set_volts(Key, volt_array(Ps)),
+    ask_volts(Key, Ps, Before).
+
+%% What running patterns of voltages hold now, asked on their stream's clock.
+ask_volts({Socket, Bank}, Ps, Before) ->
+    case catch tidal_dirt_voice:volts_now({volts, Socket, Bank}, volt_array(Ps)) of
+        A when is_tuple(A) -> A;
+        _ -> Before
+    end.
+
+volt_array(Ps) ->
+    array:from_list([#{slot => Slot, pattern => Pat} || {Slot, P} <- Ps, {ok, Pat} <- [parse_volts(P)]]).
+
 set({Socket, Bank}, Pattern) ->
     catch tidal_dirt_voice_sup:set({mutes, Socket, Bank}, Pattern).
 
-%% The bank to its daemon with Muted silent as well as the rack's own mutes.
-send(#{rack := Rack}, {Socket, Bank}, Muted) ->
-    case catch 'reef_selene_line@ps':mutedApply(Rack, Socket, Bank, Muted) of
+set_volts({Socket, Bank}, Patterns) ->
+    catch tidal_dirt_voice_sup:set({volts, Socket, Bank}, Patterns).
+
+%% The apply for a bank with the mutes and voltages its patterns hold now.
+held_apply(#{rack := Rack, muted := M, volts := V}, Key = {Socket, Bank}) ->
+    catch 'reef_selene_line@ps':heldApply(Rack, Socket, Bank, maps:get(Key, M, array:new()), maps:get(Key, V, array:new())).
+
+%% The bank to its daemon with its patterns' mutes and voltages on top of the
+%% rack's own.
+send(St, Key = {Socket, Bank}) ->
+    case held_apply(St, Key) of
         {just, #{command := Command}} ->
             case call(path(Socket), Command) of
                 {ok, <<"OK", _/binary>>} -> ok;
                 Other -> tidal_log:err("selene_mutes: ~ts ~ts: ~p~n", [Socket, Bank, Other])
             end;
         _ -> ok
+    end.
+
+volt_patterns(Rack) ->
+    case catch 'reef_selene_line@ps':voltPatternsOf(Rack) of
+        L when is_tuple(L) -> array:to_list(L);
+        L when is_list(L) -> L;
+        _ -> []
+    end.
+
+%% A pattern of voltages, read as `n`: a trailing V on a value is taken off.
+parse_volts(P) ->
+    Plain = binary:replace(P, [<<"V">>, <<"v">>], <<>>, [global]),
+    case catch 'tidal_line@ps':parseLine(<<"d1 $ n \"", Plain/binary, "\"">>) of
+        {right, {play, _, Pattern}} -> {ok, Pattern};
+        _ -> error
     end.
 
 mutes(Rack) ->
