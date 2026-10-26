@@ -145,6 +145,14 @@ init([]) ->
            shutdown => 5000,
            type => worker,
            modules => [selene_retrig]},
+         %% Selene's mute patterns, from the rack on the stage: after it, as
+         %% selene_retrig is.
+         #{id => selene_mutes,
+           start => {selene_mutes, start_link, []},
+           restart => permanent,
+           shutdown => 5000,
+           type => worker,
+           modules => [selene_mutes]},
          %% Selene's MIDI rows, their LFOs sent as CCs, from the rack on the
          %% stage: after it, as selene_retrig is.
          #{id => selene_midi,

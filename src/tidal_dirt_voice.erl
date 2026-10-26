@@ -19,6 +19,11 @@
 %% event names slots of the bank, and Tidal.RetrigVoice turns them into the
 %% notes that reset those outputs' LFOs (channel 16, note = FH-2 output),
 %% sent timetagged through Diaphus like any scheduled note.
+%%
+%% And one per Selene bank with a mute pattern, `{mutes, Socket, Bank}`
+%% (kept in step with the rack by selene_mutes): Tidal.MuteVoice works out
+%% each moment the set of muted slots changes, and selene_mutes is told at
+%% that moment, to send the bank to its daemon with them silent.
 -module(tidal_dirt_voice).
 -behaviour(gen_server).
 
@@ -34,14 +39,20 @@ set_pattern(Stream, Pattern) ->
 
 registered_name(drums) -> tidal_dirt_drums;
 registered_name({retrig, Base}) -> list_to_atom("tidal_retrig_" ++ integer_to_list(Base));
+registered_name({mutes, Socket, Bank}) -> binary_to_atom(<<"tidal_mutes_", Socket/binary, "_", Bank/binary>>);
 registered_name(Stream) when is_integer(Stream) ->
     list_to_atom("tidal_dirt_d" ++ integer_to_list(Stream)).
 
+init(Stream = {mutes, _, _}) ->
+    {ok, Sock} = gen_udp:open(0, [binary]),
+    {ok, {Stream, 'tidal_muteVoice@ps':initialState(), Sock}};
 init(Stream) ->
     {ok, Sock} = gen_udp:open(0, [binary]),
     Id = case Stream of drums -> 0; {retrig, _} -> 0; _ -> Stream end,
     {ok, {Stream, 'tidal_dirtVoice@ps':initialState(Id), Sock}}.
 
+handle_call({set_pattern, Pattern}, _From, {Stream = {mutes, _, _}, Ps, Sock}) ->
+    {reply, ok, {Stream, 'tidal_muteVoice@ps':setPattern(Pattern, Ps), Sock}};
 handle_call({set_pattern, Pattern}, _From, {Stream, Ps, Sock}) ->
     {reply, ok, {Stream, 'tidal_dirtVoice@ps':setPattern(Pattern, Ps), Sock}}.
 
@@ -61,6 +72,15 @@ handle_cast({compute_until, Window}, {{retrig, Base} = Stream, Ps, Sock}) ->
                        Sock, <<"FH-2">>, Channel, Note, 127, 5, round(At)),
               Send()
       end, ok, Resets),
+    {noreply, {Stream, Ps1, Sock}};
+handle_cast({compute_until, Window}, {{mutes, Socket, Bank} = Stream, Ps, Sock}) ->
+    #{newState := Ps1, changes := Changes} = 'tidal_muteVoice@ps':computeMutes(Window, Ps),
+    NowUs = erlang:system_time(microsecond),
+    array:foldl(
+      fun(_, #{atUnixUs := At, muted := Muted}, _) ->
+              Delay = max(0, round((At - NowUs) / 1000)),
+              timer:apply_after(Delay, selene_mutes, change, [Socket, Bank, Muted])
+      end, ok, Changes),
     {noreply, {Stream, Ps1, Sock}};
 handle_cast({compute_until, Window}, {Stream, Ps, Sock}) ->
     #{newState := Ps1, messages := Messages} =

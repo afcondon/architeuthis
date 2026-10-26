@@ -126,6 +126,7 @@ handle_call(play, _From, St) ->
     {N1, St2} = send_all(<<"es9">>, St1),
     {N2, St3} = send_all(<<"fh2">>, St2),
     catch selene_retrig:play(),
+    catch selene_mutes:play(),
     catch selene_midi:play(),
     catch tidal_link_anchor:sync_broadcast(<<"played selene">>),
     {reply, {ok, N1 + N2}, St3};
@@ -298,6 +299,7 @@ call(SockPath, Command) ->
 %% The parts this process does not send itself, silenced.
 quiet_parts() ->
     catch selene_retrig:hush(),
+    catch selene_mutes:hush(),
     catch selene_midi:hush(),
     ok.
 

@@ -2014,8 +2014,9 @@ selene_line(Rest) ->
                 {right, R = #{rack := NewRack}} ->
                     %% a reset pattern that does not parse is refused here,
                     %% so a line never leaves one silently playing nothing
-                    case catch selene_retrig:check(NewRack) of
-                        {error, Why} -> <<"ERR: selene: ", Why/binary>>;
+                    case {catch selene_retrig:check(NewRack), catch selene_mutes:check(NewRack)} of
+                        {{error, Why}, _} -> <<"ERR: selene: ", Why/binary>>;
+                        {_, {error, Why}} -> <<"ERR: selene: ", Why/binary>>;
                         _ -> selene_kept(R, Rack, catch selene_keeper:snapshot())
                     end;
                 Other ->
