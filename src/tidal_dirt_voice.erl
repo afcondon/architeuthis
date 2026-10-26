@@ -30,6 +30,9 @@
 -export([start_link/1, set_pattern/2, registered_name/1, muted_now/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
+%% how long a mute stream's first answer waits for a window (ticks are 50 ms)
+-define(FIRST_WINDOW_MS, 250).
+
 start_link(Stream) ->
     gen_server:start_link({local, registered_name(Stream)}, ?MODULE, Stream, []).
 
@@ -38,7 +41,10 @@ set_pattern(Stream, Pattern) ->
     gen_server:call(registered_name(Stream), {set_pattern, Pattern}).
 
 %% What Pattern mutes at this moment on a mute stream's clock, as a
-%% PureScript array of slots; `none` before the stream has seen a window.
+%% PureScript array of slots. A stream just started has no clock until its
+%% first window, a tick away, so the answer waits for it (AC, 2026-10-26: a
+%% bank's first pattern, as when a bank is unmuted, went out unmuted); `none`
+%% if no window comes (the clock paused).
 muted_now(Stream = {mutes, _, _}, Pattern) ->
     gen_server:call(registered_name(Stream), {muted_now, Pattern}).
 
@@ -59,12 +65,12 @@ init(Stream) ->
 
 handle_call({set_pattern, Pattern}, _From, {Stream = {mutes, _, _}, {Ps, W}, Sock}) ->
     {reply, ok, {Stream, {'tidal_muteVoice@ps':setPattern(Pattern, Ps), W}, Sock}};
-handle_call({muted_now, _}, _From, State = {{mutes, _, _}, {_, none}, _}) ->
-    {reply, none, State};
+handle_call({muted_now, Pattern}, From, {Stream = {mutes, _, _}, {Ps, W}, Sock}) when not is_map(W) ->
+    Waiting = case W of {waiting, Ws} -> Ws; none -> [] end,
+    erlang:send_after(?FIRST_WINDOW_MS, self(), {no_window, From}),
+    {noreply, {Stream, {Ps, {waiting, [{From, Pattern} | Waiting]}}, Sock}};
 handle_call({muted_now, Pattern}, _From, State = {{mutes, _, _}, {_, W}, _}) ->
-    #{currentCycle := C, nowUnixUs := At, cycleDurationMs := Dur} = W,
-    Now = C + (erlang:system_time(microsecond) - At) / 1000 / Dur,
-    {reply, 'tidal_muteVoice@ps':mutedAt(Pattern, Now), State};
+    {reply, muted_at(Pattern, W), State};
 handle_call({set_pattern, Pattern}, _From, {Stream, Ps, Sock}) ->
     {reply, ok, {Stream, 'tidal_dirtVoice@ps':setPattern(Pattern, Ps), Sock}}.
 
@@ -85,7 +91,11 @@ handle_cast({compute_until, Window}, {{retrig, Base} = Stream, Ps, Sock}) ->
               Send()
       end, ok, Resets),
     {noreply, {Stream, Ps1, Sock}};
-handle_cast({compute_until, Window}, {{mutes, Socket, Bank} = Stream, {Ps, _}, Sock}) ->
+handle_cast({compute_until, Window}, {{mutes, Socket, Bank} = Stream, {Ps, W}, Sock}) ->
+    case W of
+        {waiting, Ws} -> [gen_server:reply(F, muted_at(P, Window)) || {F, P} <- Ws];
+        _ -> ok
+    end,
     #{newState := Ps1, changes := Changes} = 'tidal_muteVoice@ps':computeMutes(Window, Ps),
     NowUs = erlang:system_time(microsecond),
     array:foldl(
@@ -107,8 +117,20 @@ handle_cast({compute_until, Window}, {Stream, Ps, Sock}) ->
 handle_cast(_, State) ->
     {noreply, State}.
 
+handle_info({no_window, From}, {Stream, {Ps, {waiting, Ws}}, Sock}) ->
+    case lists:keymember(From, 1, Ws) of
+        true -> gen_server:reply(From, none);
+        false -> ok
+    end,
+    Ws1 = lists:keydelete(From, 1, Ws),
+    {noreply, {Stream, {Ps, case Ws1 of [] -> none; _ -> {waiting, Ws1} end}, Sock}};
 handle_info(_, State) ->
     {noreply, State}.
+
+%% What Pattern mutes now, on Window's clock.
+muted_at(Pattern, #{currentCycle := C, nowUnixUs := At, cycleDurationMs := Dur}) ->
+    Now = C + (erlang:system_time(microsecond) - At) / 1000 / Dur,
+    'tidal_muteVoice@ps':mutedAt(Pattern, Now).
 
 terminate(_Reason, {_, _, Sock}) ->
     gen_udp:close(Sock),

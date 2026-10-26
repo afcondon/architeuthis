@@ -131,7 +131,8 @@ handle_cast(hush, St) ->
     {noreply, reconcile(St#{hushed := true})};
 handle_cast(play, St) ->
     St1 = reconcile(St#{hushed := false}),
-    %% selene_keeper has just sent every bank as the rack has it
+    %% selene_keeper sends every bank next, through command_for; this resend
+    %% is a backstop
     erlang:send_after(?AFTER_RACK_MS, self(), resend),
     {noreply, St1};
 handle_cast({change, Socket, Bank, Muted}, St = #{running := R, muted := M, hushed := false}) ->

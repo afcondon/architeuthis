@@ -123,10 +123,11 @@ handle_call({reapply, Socket}, _From, St) ->
 handle_call(play, _From, St) ->
     St1 = St#{running := true},
     save_running(true),
+    %% the mute patterns first, so each bank goes with its mutes in force
+    catch selene_mutes:play(),
     {N1, St2} = send_all(<<"es9">>, St1),
     {N2, St3} = send_all(<<"fh2">>, St2),
     catch selene_retrig:play(),
-    catch selene_mutes:play(),
     catch selene_midi:play(),
     catch tidal_link_anchor:sync_broadcast(<<"played selene">>),
     {reply, {ok, N1 + N2}, St3};
@@ -258,8 +259,11 @@ send_all(Socket, St0) ->
     case Running of
         false -> {0, St};
         true ->
-            Mine = [J || {{S, _B}, J} <- maps:to_list(A), S =:= Socket],
-            [call(path(Socket), <<"apply-polysignal ", J/binary>>) || J <- Mine],
+            Mine = [{B, J} || {{S, B}, J} <- maps:to_list(A), S =:= Socket],
+            %% a bank with a mute pattern goes with its mutes in force
+            Rack = case St of #{rack := R} when is_binary(R) -> R; _ -> <<>> end,
+            [call(path(Socket), selene_mutes:command_for(Rack, Socket, B, <<"apply-polysignal ", J/binary>>))
+             || {B, J} <- Mine],
             case Mine of
                 [] -> ok;
                 _ -> logger:notice("selene_keeper: re-applied ~p bank(s) to ~s", [length(Mine), Socket])
