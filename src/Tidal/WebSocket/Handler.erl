@@ -1357,7 +1357,12 @@ handle_pattern_message(Text, State) ->
                     catch selene_keeper:record(Socket, Bank, Json),
                     {text, <<"selene-reply ", Socket/binary, " ", Bank/binary, " OK kept: Selene is stopped, play sends it">>};
                 true ->
-                    case daemon_call(SockPath, <<"apply-polysignal ", Json/binary>>) of
+                    %% a bank with a mute pattern goes with its mutes in force
+                    Rack = case catch tidal_stage:get_text(<<"selene/rack">>) of
+                               T when is_binary(T) -> T;
+                               _ -> <<>>
+                           end,
+                    case daemon_call(SockPath, selene_mutes:command_for(Rack, Socket, Bank, <<"apply-polysignal ", Json/binary>>)) of
                         {ok, ReplyBin} ->
                             %% the rig remembers what the modular was given, to give
                             %% it again when a daemon comes back (selene_keeper)
@@ -2067,7 +2072,10 @@ selene_kept(R = #{rack := NewRack, line := Line0, socket := Socket, bank := Bank
             %% nothing to replay. A `split` or `join` is two, one per line, in
             %% order (the old claim released, then the new applied), and the
             %% first that is not OK stops it.
-            Commands = [C || C <- binary:split(Command, <<"\n">>, [global, trim_all]),
+            %% a bank with a mute pattern goes with the pattern's mutes in
+            %% force, never unmuted, even for a moment (selene_mutes)
+            Command1 = selene_mutes:command_for(NewRack, Socket, Bank, Command),
+            Commands = [C || C <- binary:split(Command1, <<"\n">>, [global, trim_all]),
                              Running orelse is_release(C)],
             case selene_commands(selene_socket_path(Socket), Commands) of
                 {ok, <<"OK", _/binary>>} ->

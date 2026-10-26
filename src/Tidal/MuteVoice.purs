@@ -19,6 +19,7 @@ module Tidal.MuteVoice
   , initialState
   , setPattern
   , computeMutes
+  , mutedAt
   ) where
 
 import Prelude
@@ -31,7 +32,7 @@ import Data.Maybe (Maybe(..))
 import Haskell.Rational (Rational, fromInt, toNumber)
 import Tidal.DirtVoice (Window)
 import Tidal.Pattern.Core (queryArc)
-import Tidal.Pattern.Types (Arc(..), ControlPattern, Event(..), Value(..), silence)
+import Tidal.Pattern.Types (Arc(..), ControlPattern, Event(..), Value(..), ValueMap, silence)
 
 type State =
   { pattern :: ControlPattern
@@ -73,14 +74,28 @@ computeMutes w st =
     }
   where
   at t = w.nowUnixUs + (toNumber t - w.currentCycle) * w.cycleDurationMs * 1000.0
-  -- an event's part (what of it falls in the window) and the slots it names
-  held = case _ of
-    Digital e ->
-      let Arc part = e.part
-      in case slotsOf (Map.lookup "s" e.value) of
-           [] -> Nothing
-           slots -> Just { start: part.start, stop: part.stop, slots }
-    _ -> Nothing
+
+-- | The slots a pattern mutes at a cycle: what a line's new pattern mutes
+-- | the moment it is evaluated, so the bank it sends is never unmuted
+-- | (AC, 2026-10-26: voices leaked for a beat at every evaluation).
+mutedAt :: ControlPattern -> Number -> Array Int
+mutedAt pattern c =
+  let
+    t = toCycle c
+    events = mapMaybe held (queryArc pattern t (t + fromInt 1 / fromInt 1000000))
+  in
+    sort (nub (concatMap _.slots (filter (\e -> e.start <= t && t < e.stop) events)))
+
+-- | An event's part (what of it falls in the arc asked) and the slots it names.
+held :: Event ValueMap -> Maybe { start :: Rational, stop :: Rational, slots :: Array Int }
+held = case _ of
+  Digital e ->
+    let Arc part = e.part
+    in case slotsOf (Map.lookup "s" e.value) of
+         [] -> Nothing
+         slots -> Just { start: part.start, stop: part.stop, slots }
+  _ -> Nothing
+  where
   slotsOf = case _ of
     Just (VString "all") -> range 1 8
     Just (VString s) -> oneSlot (Int.fromString s)

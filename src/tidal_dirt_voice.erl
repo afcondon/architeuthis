@@ -27,7 +27,7 @@
 -module(tidal_dirt_voice).
 -behaviour(gen_server).
 
--export([start_link/1, set_pattern/2, registered_name/1]).
+-export([start_link/1, set_pattern/2, registered_name/1, muted_now/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 start_link(Stream) ->
@@ -37,6 +37,11 @@ start_link(Stream) ->
 set_pattern(Stream, Pattern) ->
     gen_server:call(registered_name(Stream), {set_pattern, Pattern}).
 
+%% What Pattern mutes at this moment on a mute stream's clock, as a
+%% PureScript array of slots; `none` before the stream has seen a window.
+muted_now(Stream = {mutes, _, _}, Pattern) ->
+    gen_server:call(registered_name(Stream), {muted_now, Pattern}).
+
 registered_name(drums) -> tidal_dirt_drums;
 registered_name({retrig, Base}) -> list_to_atom("tidal_retrig_" ++ integer_to_list(Base));
 registered_name({mutes, Socket, Bank}) -> binary_to_atom(<<"tidal_mutes_", Socket/binary, "_", Bank/binary>>);
@@ -45,14 +50,21 @@ registered_name(Stream) when is_integer(Stream) ->
 
 init(Stream = {mutes, _, _}) ->
     {ok, Sock} = gen_udp:open(0, [binary]),
-    {ok, {Stream, 'tidal_muteVoice@ps':initialState(), Sock}};
+    %% the stream's state, and the last window it saw (for muted_now)
+    {ok, {Stream, {'tidal_muteVoice@ps':initialState(), none}, Sock}};
 init(Stream) ->
     {ok, Sock} = gen_udp:open(0, [binary]),
     Id = case Stream of drums -> 0; {retrig, _} -> 0; _ -> Stream end,
     {ok, {Stream, 'tidal_dirtVoice@ps':initialState(Id), Sock}}.
 
-handle_call({set_pattern, Pattern}, _From, {Stream = {mutes, _, _}, Ps, Sock}) ->
-    {reply, ok, {Stream, 'tidal_muteVoice@ps':setPattern(Pattern, Ps), Sock}};
+handle_call({set_pattern, Pattern}, _From, {Stream = {mutes, _, _}, {Ps, W}, Sock}) ->
+    {reply, ok, {Stream, {'tidal_muteVoice@ps':setPattern(Pattern, Ps), W}, Sock}};
+handle_call({muted_now, _}, _From, State = {{mutes, _, _}, {_, none}, _}) ->
+    {reply, none, State};
+handle_call({muted_now, Pattern}, _From, State = {{mutes, _, _}, {_, W}, _}) ->
+    #{currentCycle := C, nowUnixUs := At, cycleDurationMs := Dur} = W,
+    Now = C + (erlang:system_time(microsecond) - At) / 1000 / Dur,
+    {reply, 'tidal_muteVoice@ps':mutedAt(Pattern, Now), State};
 handle_call({set_pattern, Pattern}, _From, {Stream, Ps, Sock}) ->
     {reply, ok, {Stream, 'tidal_dirtVoice@ps':setPattern(Pattern, Ps), Sock}}.
 
@@ -73,7 +85,7 @@ handle_cast({compute_until, Window}, {{retrig, Base} = Stream, Ps, Sock}) ->
               Send()
       end, ok, Resets),
     {noreply, {Stream, Ps1, Sock}};
-handle_cast({compute_until, Window}, {{mutes, Socket, Bank} = Stream, Ps, Sock}) ->
+handle_cast({compute_until, Window}, {{mutes, Socket, Bank} = Stream, {Ps, _}, Sock}) ->
     #{newState := Ps1, changes := Changes} = 'tidal_muteVoice@ps':computeMutes(Window, Ps),
     NowUs = erlang:system_time(microsecond),
     array:foldl(
@@ -81,7 +93,7 @@ handle_cast({compute_until, Window}, {{mutes, Socket, Bank} = Stream, Ps, Sock})
               Delay = max(0, round((At - NowUs) / 1000)),
               timer:apply_after(Delay, selene_mutes, change, [Socket, Bank, Muted])
       end, ok, Changes),
-    {noreply, {Stream, Ps1, Sock}};
+    {noreply, {Stream, {Ps1, Window}, Sock}};
 handle_cast({compute_until, Window}, {Stream, Ps, Sock}) ->
     #{newState := Ps1, messages := Messages} =
         'tidal_dirtVoice@ps':computeUntil(Window, Ps),

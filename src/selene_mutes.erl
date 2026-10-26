@@ -34,7 +34,7 @@
 -module(selene_mutes).
 -behaviour(gen_server).
 
--export([start_link/0, hush/0, play/0, check/1, running/0, change/3, state/0]).
+-export([start_link/0, hush/0, play/0, check/1, running/0, change/3, state/0, command_for/4]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -define(RACK, <<"selene/rack">>).
@@ -50,6 +50,23 @@ play() -> cast(play).
 
 %% What is playing, {Socket, Bank} => Pattern, for inspection from a shell.
 running() -> gen_server:call(?MODULE, running).
+
+%% The daemon command that sends Bank as Rack has it, with the mutes its
+%% pattern holds at this moment on top, so a bank with a mute pattern is never
+%% sent unmuted (AC, 2026-10-26: every evaluation of a `# mute` line let the
+%% other voices leak for about a beat, between the line's own apply and the
+%% pattern's mutes 300 ms later). A pattern new to Rack is worked out now, on
+%% its stream's clock, and started. Command is returned unchanged when the
+%% bank has no pattern, Selene is stopped, or Command is not one apply.
+command_for(Rack, Socket, Bank, Command) ->
+    case {whereis(?MODULE), binary:match(Command, <<"\n">>), Command} of
+        {Pid, nomatch, <<"apply-polysignal ", _/binary>>} when is_pid(Pid) ->
+            case catch gen_server:call(?MODULE, {command_for, Rack, Socket, Bank}, 5000) of
+                C when is_binary(C) -> C;
+                _ -> Command
+            end;
+        _ -> Command
+    end.
 
 %% What every page is told: `muting selene <json>`.
 state() ->
@@ -89,6 +106,24 @@ handle_call(running, _From, St = #{running := R}) ->
     {reply, R, St};
 handle_call(state, _From, St) ->
     {reply, told(St), St};
+handle_call({command_for, _, _, _}, _From, St = #{hushed := true}) ->
+    {reply, none, St};
+handle_call({command_for, Rack, Socket, Bank}, _From, St = #{running := R, muted := M}) ->
+    Key = {Socket, Bank},
+    case [P || #{socket := S, bank := B, pattern := P} <- mutes(Rack), {S, B} =:= Key] of
+        [P | _] ->
+            Muted = case maps:get(Key, R, undefined) of
+                        P -> maps:get(Key, M, array:new());
+                        _ -> now_muted(Key, P, maps:get(Key, M, array:new()))
+                    end,
+            case catch 'reef_selene_line@ps':mutedApply(Rack, Socket, Bank, Muted) of
+                {just, #{command := C}} ->
+                    St1 = St#{running := R#{Key => P}, muted := M#{Key => Muted}},
+                    {reply, C, tell(St1)};
+                _ -> {reply, none, St}
+            end;
+        [] -> {reply, none, St}
+    end;
 handle_call(_Request, _From, St) ->
     {reply, {error, unknown_call}, St}.
 
@@ -101,11 +136,13 @@ handle_cast(play, St) ->
     {noreply, St1};
 handle_cast({change, Socket, Bank, Muted}, St = #{running := R, muted := M, hushed := false}) ->
     Key = {Socket, Bank},
-    case maps:is_key(Key, R) of
-        true ->
+    case {maps:is_key(Key, R), maps:get(Key, M, undefined)} of
+        %% already in force (the line that set the pattern sent it): nothing
+        {true, Muted} -> {noreply, St};
+        {true, _} ->
             send(St, Key, Muted),
             {noreply, tell(St#{muted := M#{Key => Muted}})};
-        false ->
+        _ ->
             {noreply, St}
     end;
 handle_cast(_Message, St) ->
@@ -140,21 +177,24 @@ reconcile(St = #{rack := Rack, running := Running, muted := M, hushed := Hushed}
     Gone = [K || K <- maps:keys(Running), not maps:is_key(K, Wanted)],
     [set(K, 'tidal_pattern_types@ps':silence()) || K <- Gone],
     [send(St, K, array:new()) || K <- Gone, not Hushed, array:size(maps:get(K, M, array:new())) > 0],
-    Now = maps:fold(
-            fun(K, P, Acc) ->
+    %% a pattern new or changed is worked out now, so what it mutes is known
+    %% before the line that wrote it sends its bank (command_for)
+    {Now, M2} = maps:fold(
+            fun(K, P, {Acc, MAcc}) ->
                     case maps:get(K, Running, undefined) of
-                        P -> Acc#{K => P};
+                        P -> {Acc#{K => P}, MAcc};
                         _ ->
                             case parse(P) of
-                                {ok, Pattern} -> set(K, Pattern), Acc#{K => P};
+                                {ok, _} ->
+                                    {Acc#{K => P}, MAcc#{K => now_muted(K, P, maps:get(K, MAcc, array:new()))}};
                                 error ->
                                     tidal_log:err("selene_mutes: not a pattern on ~p: ~ts~n", [K, P]),
                                     set(K, 'tidal_pattern_types@ps':silence()),
-                                    Acc
+                                    {Acc, MAcc}
                             end
                     end
-            end, #{}, Wanted),
-    St1 = St#{running := Now, muted := maps:with(maps:keys(Now), M)},
+            end, {#{}, M}, Wanted),
+    St1 = St#{running := Now, muted := maps:with(maps:keys(Now), M2)},
     case St1 of
         #{running := Running, muted := M} -> St1;
         _ -> tell(St1)
@@ -170,6 +210,19 @@ told(#{running := R, muted := M}) ->
                muted => array:to_list(maps:get({S, B}, M, array:new()))}
              || {{S, B}, P} <- lists:sort(maps:to_list(R))],
     iolist_to_binary([<<"muting selene ">>, json:encode(#{banks => Banks})]).
+
+%% What a pattern new to the rack mutes now: started on its stream, and asked
+%% on the stream's clock; what was muted before while the stream has no clock.
+now_muted(Key = {Socket, Bank}, P, Before) ->
+    case parse(P) of
+        {ok, Pattern} ->
+            set(Key, Pattern),
+            case catch tidal_dirt_voice:muted_now({mutes, Socket, Bank}, Pattern) of
+                A when is_tuple(A) -> A;
+                _ -> Before
+            end;
+        error -> Before
+    end.
 
 set({Socket, Bank}, Pattern) ->
     catch tidal_dirt_voice_sup:set({mutes, Socket, Bank}, Pattern).
