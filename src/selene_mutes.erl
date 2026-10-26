@@ -23,13 +23,18 @@
 %% audible but stays in time (AC, 2026-10-26). Sending early by a measured
 %% lead per daemon is the next step if it matters.
 %%
+%% Every page is told what each pattern is muting, when it changes, as
+%% `muting selene {"banks":[{"socket","bank","pattern","muted":[1,2]}]}`, so
+%% the page draws the pattern's mutes as they are heard; `selene-mutes` asks
+%% for it (a page just opened).
+%%
 %% `selene $ hush` silences the patterns and play brings them back, as for
 %% selene_retrig. A pattern that does not parse plays nothing and is logged;
 %% a `selene $` line is checked before it is kept (check/1).
 -module(selene_mutes).
 -behaviour(gen_server).
 
--export([start_link/0, hush/0, play/0, check/1, running/0, change/3]).
+-export([start_link/0, hush/0, play/0, check/1, running/0, change/3, state/0]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2]).
 
 -define(RACK, <<"selene/rack">>).
@@ -45,6 +50,13 @@ play() -> cast(play).
 
 %% What is playing, {Socket, Bank} => Pattern, for inspection from a shell.
 running() -> gen_server:call(?MODULE, running).
+
+%% What every page is told: `muting selene <json>`.
+state() ->
+    case whereis(?MODULE) of
+        undefined -> told(#{running => #{}, muted => #{}});
+        _ -> gen_server:call(?MODULE, state)
+    end.
 
 %% From a mute stream: Muted (a PureScript array of slots) is in force from
 %% now on that bank.
@@ -75,6 +87,8 @@ init([]) ->
 
 handle_call(running, _From, St = #{running := R}) ->
     {reply, R, St};
+handle_call(state, _From, St) ->
+    {reply, told(St), St};
 handle_call(_Request, _From, St) ->
     {reply, {error, unknown_call}, St}.
 
@@ -90,7 +104,7 @@ handle_cast({change, Socket, Bank, Muted}, St = #{running := R, muted := M, hush
     case maps:is_key(Key, R) of
         true ->
             send(St, Key, Muted),
-            {noreply, St#{muted := M#{Key => Muted}}};
+            {noreply, tell(St#{muted := M#{Key => Muted}})};
         false ->
             {noreply, St}
     end;
@@ -140,7 +154,22 @@ reconcile(St = #{rack := Rack, running := Running, muted := M, hushed := Hushed}
                             end
                     end
             end, #{}, Wanted),
-    St#{running := Now, muted := maps:with(maps:keys(Now), M)}.
+    St1 = St#{running := Now, muted := maps:with(maps:keys(Now), M)},
+    case St1 of
+        #{running := Running, muted := M} -> St1;
+        _ -> tell(St1)
+    end.
+
+%% Every page told what the patterns are muting.
+tell(St) ->
+    catch tidal_link_anchor:sync_broadcast(told(St)),
+    St.
+
+told(#{running := R, muted := M}) ->
+    Banks = [#{socket => S, bank => B, pattern => P,
+               muted => array:to_list(maps:get({S, B}, M, array:new()))}
+             || {{S, B}, P} <- lists:sort(maps:to_list(R))],
+    iolist_to_binary([<<"muting selene ">>, json:encode(#{banks => Banks})]).
 
 set({Socket, Bank}, Pattern) ->
     catch tidal_dirt_voice_sup:set({mutes, Socket, Bank}, Pattern).

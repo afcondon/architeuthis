@@ -511,6 +511,10 @@ try_parse_prefixed(<<"selene-learning", _/binary>>) ->
 %% just opened; answered as every page is told, `destinations selene <json>`.
 try_parse_prefixed(<<"selene-destinations", _/binary>>) ->
     selene_destinations;
+%% selene-mutes: what each mute pattern is muting now, for a page just
+%% opened; answered as every page is told, `muting selene <json>`.
+try_parse_prefixed(<<"selene-mutes", _/binary>>) ->
+    selene_mutes;
 try_parse_prefixed(<<"selene-applied", _/binary>>) ->
     %% what the modular has been given (selene_keeper), for the Dashboard
     selene_applied;
@@ -1318,6 +1322,12 @@ handle_pattern_message(Text, State) ->
             Reply = case catch selene_ableton:destinations() of
                         T when is_binary(T) -> T;
                         _ -> <<"ERR: selene-destinations: the Ableton bindings are not running">>
+                    end,
+            {reply, {text, Reply}, State};
+        selene_mutes ->
+            Reply = case catch selene_mutes:state() of
+                        T when is_binary(T) -> T;
+                        _ -> <<"ERR: selene-mutes: the mute patterns are not running">>
                     end,
             {reply, {text, Reply}, State};
         selene_applied ->
