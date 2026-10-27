@@ -1901,14 +1901,24 @@ route_block(Stmts) ->
                    end,
             case apply_routes(Text) of
                 <<"OK", _/binary>> ->
+                    Held = [I || #{input := I} <- array:to_list(New),
+                                 lists:member(I, array:to_list(current_locks()))],
+                    Note = case Held of
+                               [] -> <<>>;
+                               _ -> iolist_to_binary([<<" (locked on Odonus, kept but not followed: ">>,
+                                                      lists:join(<<", ">>, [inputName(I) || I <- Held]), <<")">>])
+                           end,
                     case Text of
                         null -> <<"OK: routing: no routes; Odonus follows its own scales">>;
                         _ -> iolist_to_binary([<<"OK: routing now: ">>,
-                                               lists:join(<<" \xc2\xb7 ">>, binary:split(Text, <<"\n">>, [global]))])
+                                               lists:join(<<" \xc2\xb7 ">>, binary:split(Text, <<"\n">>, [global])),
+                                               Note])
                     end;
                 Refused -> Refused
             end
     end.
+
+inputName(I) -> 'reef_route@ps':inputName(I).
 
 %% A route statement's body, past `route $`.
 route_body(S) ->
@@ -1962,10 +1972,58 @@ machine_statement(Block) ->
                 {play, Machine} -> play_machine(Machine);
                 none ->
                     case selene_learn_line(Block) of
-                        none -> machine_statement_(Block);
+                        none ->
+                            case odonus_lock_line(Block) of
+                                none -> machine_statement_(Block);
+                                Reply -> Reply
+                            end;
                         Reply -> Reply
                     end
             end
+    end.
+
+%% `odonus $ lock grid` / `odonus $ unlock out` (bare `lock`: both): Odonus
+%% keeps its own scale at that input, a route to it kept but not followed
+%% (docs/kb/plans/routing-in-tidal.md). Odonus's own state, on the stage as
+%% `odonus/locks` (Reef.Route.Locks), which odonus_feeds honours; the padlocks
+%% on Odonus's page write the same object.
+odonus_lock_line(Block) ->
+    case re:run(Block, <<"^\\s*odonus\\s*\\$\\s*(lock|unlock)((?:\\s+\\w+)*)\\s*$">>,
+                [{capture, all_but_first, binary}]) of
+        {match, [Verb, Args]} ->
+            Named = case string:trim(Args) of
+                        <<>> -> {right, array:from_list([{odonusGrid}, {odonusOut}])};
+                        A -> 'reef_route@ps':parseLocks(A)
+                    end,
+            case Named of
+                {left, Why} -> <<"ERR: odonus: ", Why/binary>>;
+                {right, These} ->
+                    Now = current_locks(),
+                    New = case Verb of
+                              <<"lock">> -> array:from_list(array:to_list(Now) ++ array:to_list(These));
+                              <<"unlock">> -> array:from_list([I || I <- array:to_list(Now), not lists:member(I, array:to_list(These))])
+                          end,
+                    Text = case 'reef_route@ps':printLocks(New) of
+                               <<>> -> null;
+                               T -> T
+                           end,
+                    tidal_stage:put_text(<<"odonus/locks">>, Text, rig),
+                    case Text of
+                        null -> <<"OK: odonus: nothing locked; routes take over">>;
+                        _ -> <<"OK: odonus: locked ", Text/binary, " (its own scale; routes there kept, not followed)">>
+                    end
+            end;
+        nomatch -> none
+    end.
+
+current_locks() ->
+    case tidal_stage:get_text(<<"odonus/locks">>) of
+        T when is_binary(T) ->
+            case 'reef_route@ps':parseLocks(T) of
+                {right, L} -> L;
+                _ -> array:new()
+            end;
+        _ -> array:new()
     end.
 
 %% `selene $ learn midi1 3`: MIDI row 1's signal 3 is all the MIDI the rig

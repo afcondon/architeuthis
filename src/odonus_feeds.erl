@@ -36,6 +36,7 @@
 -define(KEY, <<"vetula/key">>).
 -define(FEEDS, <<"odonus/feeds">>).
 -define(VOICES, <<"vetula/harmonies">>).
+-define(LOCKS, <<"odonus/locks">>).
 
 start_link() ->
     gen_server:start_link({local, ?MODULE}, ?MODULE, [], []).
@@ -52,7 +53,7 @@ feeds() -> gen_server:call(?MODULE, feeds).
 
 init([]) ->
     Table = tidal_stage:text_subscribe(self()),
-    St0 = #{routes => array:new(), cards => #{}, texts => #{}, progs => #{}, key => {nothing}, applied => unfed(),
+    St0 = #{routes => array:new(), locks => array:new(), cards => #{}, texts => #{}, progs => #{}, key => {nothing}, applied => unfed(),
             published => none, voices_published => none},
     St = maps:fold(fun(K, #{text := T}, Acc) -> take(K, T, Acc) end, St0, Table),
     %% a voice already running (this process restarted under it) is fed afresh
@@ -94,6 +95,17 @@ take(?ROUTES, T, St) ->
              end
     end,
     St#{routes => Routes};
+%% Odonus's locks (Reef.Route.Locks): a locked input keeps Odonus's own
+%% scale, its route kept but not followed (docs/kb/plans/routing-in-tidal.md).
+take(?LOCKS, T, St) ->
+    Locks = case T of
+        null -> array:new();
+        _ -> case 'reef_route@ps':parseLocks(T) of
+                 {right, L} -> L;
+                 _ -> maps:get(locks, St)
+             end
+    end,
+    St#{locks => Locks};
 take(?KEY, T, St) ->
     Key = case T of
         null -> {nothing};
@@ -229,7 +241,7 @@ send(Pid, Inputs) ->
     end.
 
 current(St) ->
-    'reef_route@ps':resolve(context(St), maps:get(routes, St)).
+    'reef_route@ps':resolve(context(St), 'reef_route@ps':followed(maps:get(locks, St), maps:get(routes, St))).
 
 unfed() ->
     'reef_route@ps':resolve('reef_route@ps':noContext(), array:new()).
