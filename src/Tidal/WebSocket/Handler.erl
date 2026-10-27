@@ -1860,9 +1860,62 @@ stop_selene() ->
 %% a machine's name at the margin begins a statement, indented lines continue
 %% it (a recall's `{ … }`), and each statement runs in turn.
 machine_line(Block) ->
-    case machine_statements(Block) of
-        [One] -> machine_statement(One);
-        Many -> iolist_to_binary(lists:join(<<"\n">>, [machine_statement(S) || S <- Many]))
+    Stmts = machine_statements(Block),
+    case lists:all(fun(S) -> starts_word(S, <<"route">>) end, Stmts) of
+        %% a block of routes is checked whole, then kept once
+        true -> route_block(Stmts);
+        false ->
+            case Stmts of
+                [One] -> machine_statement(One);
+                Many -> iolist_to_binary(lists:join(<<"\n">>, [machine_statement(S) || S <- Many]))
+            end
+    end.
+
+%% **A block of routes** (docs/kb/plans/routing-in-tidal.md, phase 1): one
+%% change a line, applied in order to the table as it stands; and checked
+%% whole first, so a bad line changes nothing and says which it was (a block
+%% half-applied mid-performance is a routing nobody wrote). Kept as one write
+%% (apply_routes), and answered with the table now in force.
+route_block(Stmts) ->
+    Step = fun(S, {ok, N, Routes}) ->
+                   case route_body(S) of
+                       {error, Why} -> {error, N, S, Why};
+                       {ok, Body} ->
+                           case 'reef_route@ps':applyLine(Body, Routes) of
+                               {left, Why} -> {error, N, S, Why};
+                               {right, New} -> {ok, N + 1, New}
+                           end
+                   end;
+              (_, Err) -> Err
+           end,
+    case lists:foldl(Step, {ok, 1, current_routes()}, Stmts) of
+        {error, N, S, Why} ->
+            iolist_to_binary([<<"ERR: route: ">>,
+                              case length(Stmts) of 1 -> <<>>; _ -> io_lib:format("line ~p (~s): ", [N, S]) end,
+                              Why,
+                              case length(Stmts) of 1 -> <<>>; _ -> <<"; nothing changed">> end]);
+        {ok, _, New} ->
+            Text = case array:size(New) of
+                       0 -> null;
+                       _ -> 'reef_route@ps':print(New)
+                   end,
+            case apply_routes(Text) of
+                <<"OK", _/binary>> ->
+                    case Text of
+                        null -> <<"OK: routing: no routes; Odonus follows its own scales">>;
+                        _ -> iolist_to_binary([<<"OK: routing now: ">>,
+                                               lists:join(<<" \xc2\xb7 ">>, binary:split(Text, <<"\n">>, [global]))])
+                    end;
+                Refused -> Refused
+            end
+    end.
+
+%% A route statement's body, past `route $`.
+route_body(S) ->
+    <<"route", Rest/binary>> = S,
+    case string:trim(Rest, leading) of
+        <<"$", Body/binary>> -> {ok, string:trim(Body)};
+        _ -> {error, <<"a route line is route $ INPUT <- SOURCE (odonus.grid or odonus.out; scale \"...\" ROOT, harmony \"...\", chromatic, vetula key, vetula R, or none)">>}
     end.
 
 machine_statements(Block) ->
