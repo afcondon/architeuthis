@@ -383,6 +383,7 @@ named_lead(St, LeadStep, Pending) ->
                                 true -> {Pending, Shown};
                                 false ->
                                     Input = 'tidal_named@ps':recallPatch(Text),
+                                    patch_locks(Text),
                                     Json = 'reef_protocol@ps':encodeTagged(#{tick => LeadStep, input => Input}),
                                     tidal_link_anchor:sync_broadcast(<<"reef-input ", Json/binary>>),
                                     {Pending ++ [{LeadStep, Input}], {Word, Text}}
@@ -391,6 +392,26 @@ named_lead(St, LeadStep, Pending) ->
                     end;
                 _ -> {Pending, Shown}
             end
+    end.
+
+%% A patch keeps Odonus's padlocks (`locks: "grid"`; none written, none
+%% kept), so recalling it sets `odonus/locks`, as the page does when it
+%% recalls one: odonus_feeds then follows the routes the patch lets through.
+%% Written when the recall is queued, a lookahead ahead of its step.
+patch_locks(Text) ->
+    case 'reef_odonus_patch@ps':parsePatch(Text) of
+        {just, P} ->
+            Want = 'reef_route@ps':printLocks(maps:get(locks, P)),
+            Now = case tidal_stage:get_text(<<"odonus/locks">>) of
+                      T when is_binary(T) -> T;
+                      _ -> <<>>
+                  end,
+            case Want =:= Now of
+                true -> ok;
+                false -> tidal_stage:put_text(<<"odonus/locks">>,
+                                              case Want of <<>> -> null; _ -> Want end, rig)
+            end;
+        _ -> ok
     end.
 
 %% Play one step down the routing table: Reef.Articulation decides every send
