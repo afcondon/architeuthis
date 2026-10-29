@@ -38,7 +38,7 @@ import Reef.PatternArg (PatternArg, argSrc)
 import Reef.Vetula.Harmony (Shape(..), seqHarmony) as VH
 import Reef.Vetula.Lepidoptera (VoiceSpec)
 import Reef.Vetula.Perf (wrapAt)
-import Reef.Vetula.PerformTypes (Layer, PerfFx(..), PerfSel(..), PerfTerm(..), VoiceShape(..), When(..), arpOrder, parseVoiceShape)
+import Reef.Vetula.PerformTypes (Layer, PerfFx(..), PerfSel(..), VoiceShape(..), When(..), arpOrder, parseVoiceShape, termConducts)
 import Tidal.Pattern.Core (cat, every, fast, slow, whenCycle)
 import Tidal.Pattern.Mini (parseMiniPattern)
 import Tidal.Pattern.Types (Arc(..), Event(..), Pattern, State(..), emptyContext, eventPart, eventValue, eventWhole, mkArc, mkState, pattern, query)
@@ -52,7 +52,7 @@ type CardHit = { at :: Number, len :: Number, notes :: Array Int }
 -- | channel until the CV/ES-9 destinations exist); `→ odo` conducts Odonus and
 -- | makes no notes.
 cardSounds :: VoiceSpec -> Boolean
-cardSounds spec = not spec.muted && spec.term /= TOdo && Array.length spec.chords > 0
+cardSounds spec = not spec.muted && not (termConducts spec.term) && Array.length spec.chords > 0
 
 -- | **What the card conducts**, when the router feeds `odonus.out <- vetula
 -- | N` from it (Reef.Route): its chords as a Tidal note pattern, which the rig

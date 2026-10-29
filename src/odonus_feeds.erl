@@ -141,22 +141,16 @@ read_cards(St) ->
                            end, maps:get(texts, St)),
     St#{cards => Cards}.
 
-%% `# out odo`: a card turning to `→ odo` routes odonus.out to it; turning
-%% away (or going) clears the route if it names the card's channel. The
-%% write comes back as a stage broadcast, which feeds Odonus.
+%% `# out odo` and `# grid odo`: a card turning to conduct routes that input
+%% of Odonus (out or grid) to it; turning away (or going) clears the route if
+%% it still names the card's channel. The write comes back as a stage
+%% broadcast, which feeds Odonus.
 shortcut(<<"vetula/v", _/binary>> = K, OldCards, St) ->
-    Was = odo_voice(K, maps:get(K, OldCards, none)),
-    Now = odo_voice(K, maps:get(K, maps:get(cards, St), none)),
+    Old = maps:get(K, OldCards, none),
+    Cur = maps:get(K, maps:get(cards, St), none),
     Routes = maps:get(routes, St),
-    Out = 'reef_route@ps':sourceOf({odonusOut}, Routes),
-    New = case {Was, Now} of
-        {Same, Same} -> Routes;
-        {_, {ch, Ch}} when Out =/= {just, {vetulaVoice, Ch}} ->
-            'reef_route@ps':setRoute({odonusOut}, {vetulaVoice, Ch}, Routes);
-        {{ch, Ch}, _} when Out =:= {just, {vetulaVoice, Ch}} ->
-            array:from_list([R || R = #{input := I} <- array:to_list(Routes), I =/= {odonusOut}]);
-        _ -> Routes
-    end,
+    New = lists:foldl(fun(Input, Rs) -> follow(Input, odo_voice(K, Input, Old), odo_voice(K, Input, Cur), Rs) end,
+                      Routes, [{odonusOut}, {odonusGrid}]),
     case New =:= Routes of
         true -> St;
         false ->
@@ -170,9 +164,23 @@ shortcut(<<"vetula/v", _/binary>> = K, OldCards, St) ->
 shortcut(_, _, St) ->
     St.
 
-%% The voice (its number) a card turning to `→ odo` routes to Odonus's output.
-odo_voice(K, #{term := {tOdo}}) -> {ch, card_no(K)};
-odo_voice(_, _) -> none.
+%% One input of Odonus following a card's turn to it, or away from it.
+follow(Input, Was, Now, Routes) ->
+    Src = 'reef_route@ps':sourceOf(Input, Routes),
+    case {Was, Now} of
+        {Same, Same} -> Routes;
+        {_, {ch, Ch}} when Src =/= {just, {vetulaVoice, Ch}} ->
+            'reef_route@ps':setRoute(Input, {vetulaVoice, Ch}, Routes);
+        {{ch, Ch}, _} when Src =:= {just, {vetulaVoice, Ch}} ->
+            array:from_list([R || R = #{input := I} <- array:to_list(Routes), I =/= Input]);
+        _ -> Routes
+    end.
+
+%% The voice (its number) a card conducting routes to that input of Odonus:
+%% `→ odo` to its output, `→ odo grid` to its grid.
+odo_voice(K, {odonusOut}, #{term := {tOdo}}) -> {ch, card_no(K)};
+odo_voice(K, {odonusGrid}, #{term := {tGrid}}) -> {ch, card_no(K)};
+odo_voice(_, _, _) -> none.
 
 %% Send the running voice what moves it from the feeds it last took, and
 %% publish them if they changed.
@@ -216,6 +224,7 @@ publish_voices(St) ->
                               Term = case {maps:get(muted, Spec, false), maps:get(term, Spec, {tMidi})} of
                                          {true, _} -> <<"mute">>;
                                          {_, {tOdo}} -> <<"odo">>;
+                                         {_, {tGrid}} -> <<"grid">>;
                                          {_, {tRig}} -> <<"rig">>;
                                          _ -> <<"midi">>
                                      end,
