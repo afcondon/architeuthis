@@ -91,7 +91,9 @@ handle_call({now, Ask}, From, {Stream = {Kind, _, _}, {Ps, W}, Sock}) when (Kind
 handle_call({now, Ask}, _From, State = {{Kind, _, _}, {_, W}, _}) when Kind =:= mutes orelse Kind =:= volts ->
     {reply, now_at(Kind, Ask, W), State};
 handle_call({set_pattern, Pattern}, _From, {Stream, Ps, Sock}) ->
-    {reply, ok, {Stream, 'tidal_dirtVoice@ps':setPattern(Pattern, Ps), Sock}}.
+    #{newState := Ps1, ensure := Ensure} = 'tidal_dirtVoice@ps':setPattern(Pattern, Ps),
+    ensure(Stream, Sock, Ensure),
+    {reply, ok, {Stream, Ps1, Sock}}.
 
 handle_cast({compute_until, Window}, {drums, Ps, Sock}) ->
     #{newState := Ps1, hits := Hits} = 'tidal_drumVoice@ps':computeHits(Window, Ps),
@@ -131,8 +133,9 @@ handle_cast({compute_until, Window}, {{mutes, Socket, Bank} = Stream, {Ps, W}, S
       end, ok, Changes),
     {noreply, {Stream, {Ps1, Window}, Sock}};
 handle_cast({compute_until, Window}, {Stream, Ps, Sock}) ->
-    #{newState := Ps1, messages := Messages} =
+    #{newState := Ps1, messages := Messages, ensure := Ensure} =
         'tidal_dirtVoice@ps':computeUntil(Window, Ps),
+    ensure(Stream, Sock, Ensure),
     %% PureScript arrays are Erlang `array`s; the args inside one too.
     array:foldl(
       fun(_, #{atUnixUs := At, args := Args}, _) ->
@@ -152,6 +155,17 @@ handle_info({no_window, From}, {Stream, {Ps, {waiting, Ws}}, Sock}) ->
     {noreply, {Stream, {Ps, case Ws1 of [] -> none; _ -> {waiting, Ws1} end}, Sock}};
 handle_info(_, State) ->
     {noreply, State}.
+
+%% Ask SuperDirt to read banks in full, by name (Tidal.DirtVoice's module
+%% note): a take saved after SuperDirt booted is unknown to it until asked,
+%% and a lazily registered one loses its first hit. Only `d1`..`d16` play
+%% SuperDirt banks; SuperDirt ignores a name with no directory.
+ensure(Stream, Sock, Names) when is_integer(Stream) ->
+    array:foldl(
+      fun(_, Name, _) ->
+              dirt_osc:send_now(Sock, dirt_osc:encode_msg(<<"/atlantis/ensure">>, [Name]))
+      end, ok, Names);
+ensure(_, _, _) -> ok.
 
 %% A first window come: those waiting for the stream's clock are answered.
 answer_waiting(Kind, {waiting, Ws}, Window) -> [gen_server:reply(F, now_at(Kind, A, Window)) || {F, A} <- Ws], ok;

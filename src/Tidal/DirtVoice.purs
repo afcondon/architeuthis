@@ -23,6 +23,16 @@
 -- | The timetag is the onset itself, as the rig's other SuperDirt voice
 -- | (Conspicillum's) stamps it. Haskell Tidal adds a 0.2 s latency; whether
 -- | the rig should is a question for the ear, with both engines on Link.
+-- |
+-- | **A stream asks SuperDirt for the banks it is about to play.** Takes,
+-- | Quadrat sets and tapes are registered lazily at SuperDirt's boot, and a
+-- | take saved after it booted is not registered at all; `/atlantis/ensure
+-- | <name>` reads one in full by its directory. So each name a stream plays is
+-- | asked for once (`asked`): ahead, when a pattern arrives (`banksAhead`
+-- | cycles of it), and again from any window that reaches a name the look
+-- | ahead missed. The clock looks only 200 ms ahead, too little to read a long
+-- | take from disk, which is why the pattern is asked about on arrival. Same
+-- | message, same reason, as Conspicillum's `ensure_corpus`.
 module Tidal.DirtVoice
   ( State
   , Window
@@ -30,27 +40,33 @@ module Tidal.DirtVoice
   , initialState
   , setPattern
   , computeUntil
+  , banksAhead
   , Onset
   , onsetsUntil
   ) where
 
 import Prelude
 
-import Data.Array (mapMaybe)
+import Data.Array (filter, mapMaybe, nub)
+import Data.Set (Set)
+import Data.Set as Set
+import Data.String (Pattern(..), indexOf, take)
 import Data.Int as Int
 import Data.Map as Map
-import Data.Maybe (Maybe(..))
+import Data.Maybe (Maybe(..), maybe)
 import Haskell.Rational (Rational, fromInt, toNumber)
 import Data.Tuple (Tuple(..))
 import Foreign (Foreign, unsafeToForeign)
 import Tidal.Pattern.Core (queryArc)
-import Tidal.Pattern.Types (Arc(..), ControlPattern, arcStart, Event(..), Value(..), ValueMap, silence)
+import Tidal.Pattern.Types (Arc(..), ControlPattern, arcStart, Event(..), Value(..), ValueMap, eventValue, silence)
 
 type State =
   { stream :: Int
   , pattern :: ControlPattern
   -- Where the last arc ended; `Nothing` before the first tick.
   , until :: Maybe Rational
+  -- The banks already asked of SuperDirt (see the module note).
+  , asked :: Set String
   }
 
 -- | The clock's window, as `tidal_clock` sends it (it carries more fields;
@@ -68,15 +84,31 @@ type Window =
 type Message = { atUnixUs :: Number, args :: Array Foreign }
 
 initialState :: Int -> State
-initialState stream = { stream, pattern: silence, until: Nothing }
+initialState stream = { stream, pattern: silence, until: Nothing, asked: Set.empty }
 
-setPattern :: ControlPattern -> State -> State
-setPattern pattern st = st { pattern = pattern }
+-- | How many cycles of a new pattern are looked through for banks to ask for.
+banksAhead :: Int
+banksAhead = 8
 
-computeUntil :: Window -> State -> { newState :: State, messages :: Array Message }
+-- | A new pattern, heard from the next arc, and the banks in its next
+-- | `banksAhead` cycles that this stream has not yet asked SuperDirt for.
+setPattern :: ControlPattern -> State -> { newState :: State, ensure :: Array String }
+setPattern pattern st =
+  let
+    from = case st.until of
+      Just u -> u
+      Nothing -> fromInt 0
+    names = banksOf (map eventValue (queryArc pattern from (from + fromInt banksAhead)))
+  in
+    ask names (st { pattern = pattern })
+
+computeUntil :: Window -> State -> { newState :: State, messages :: Array Message, ensure :: Array String }
 computeUntil w st =
-  let r = onsetsUntil w st
-  in { newState: r.newState, messages: map message r.onsets }
+  let
+    r = onsetsUntil w st
+    asked = ask (banksOf (map _.value r.onsets)) r.newState
+  in
+    { newState: asked.newState, messages: map message r.onsets, ensure: asked.ensure }
   where
   message o =
     let
@@ -126,6 +158,21 @@ onsetsUntil w st =
           , deltaS: toNumber (whole.stop - whole.start) / cps
           , value: e.value
           }
+    _ -> Nothing
+
+-- | The names not yet asked for, and the state that remembers them asked.
+ask :: Array String -> State -> { newState :: State, ensure :: Array String }
+ask names st =
+  let ensure = filter (\n -> not (Set.member n st.asked)) names
+  in { newState: st { asked = Set.union st.asked (Set.fromFoldable ensure) }, ensure }
+
+-- | The bank each value plays: `s`, up to any `:` (`s "take:2"` is bank
+-- | `take`, sample 2, as SuperDirt reads it). Values without `s` play no bank.
+banksOf :: Array ValueMap -> Array String
+banksOf values = nub (mapMaybe bank values)
+  where
+  bank m = case Map.lookup "s" m of
+    Just (VString name) | name /= "" -> Just (maybe name (\i -> take i name) (indexOf (Pattern ":") name))
     _ -> Nothing
 
 -- | Microcycle precision, as `Tidal.Voice` converts the clock's cycles.

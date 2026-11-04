@@ -4,7 +4,7 @@
 %% Shared by the voices that play samples (reef_conspicillum_voice, and
 %% reef_balistes_voice for a drum lane routed to a sample voice).
 -module(dirt_osc).
--export([encode_msg/2, osc_bundle/2, send_at/3]).
+-export([encode_msg/2, osc_bundle/2, send_at/3, send_now/2]).
 
 -define(SUPERDIRT_HOST, "127.0.0.1").
 -define(SUPERDIRT_PORT, 57120).
@@ -42,3 +42,8 @@ osc_bundle(WhenUnixUs, Msg) ->
 %% Send `Msg` to SuperDirt on `Sock`, to sound at `WhenUnixUs`.
 send_at(Sock, WhenUnixUs, Msg) ->
     gen_udp:send(Sock, ?SUPERDIRT_HOST, ?SUPERDIRT_PORT, osc_bundle(WhenUnixUs, Msg)).
+
+%% Send `Msg` to SuperDirt on `Sock` now, unbundled: for requests that are
+%% not sounds (`/atlantis/ensure`).
+send_now(Sock, Msg) ->
+    gen_udp:send(Sock, ?SUPERDIRT_HOST, ?SUPERDIRT_PORT, Msg).
