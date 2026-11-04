@@ -52,19 +52,25 @@
 start_json(Json) ->
     case 'reef_conspicillum_protocol@ps':decodeScene(ensure_bin(Json)) of
         {right, Scene} ->
-            ensure_corpus(Scene),
-            case whereis(reef_conspicillum_voice) of
-                Pid when is_pid(Pid) ->
-                    Pid ! {set_scene, Scene},
-                    {ok, Pid};
-                _ ->
-                    NewPid = spawn(fun() ->
-                        {ok, Sock} = gen_udp:open(0, [binary]),
-                        erlang:send_after(?POLL_MS, self(), poll),
-                        loop(#{ socket => Sock, scene => Scene, last_cycle => -1 })
-                    end),
-                    register(reef_conspicillum_voice, NewPid),
-                    {ok, NewPid}
+            Pattern = maps:get(samplePattern, maps:get(spec, Scene)),
+            case 'tidal_conspicillum_plays@ps':problem(Pattern) of
+                {just, Problem} ->
+                    {error, {pattern, Problem}};
+                {nothing} ->
+                    ensure_corpus(Scene),
+                    case whereis(reef_conspicillum_voice) of
+                        Pid when is_pid(Pid) ->
+                            Pid ! {set_scene, Scene},
+                            {ok, Pid};
+                        _ ->
+                            NewPid = spawn(fun() ->
+                                {ok, Sock} = gen_udp:open(0, [binary]),
+                                erlang:send_after(?POLL_MS, self(), poll),
+                                loop(#{ socket => Sock, scene => Scene, last_cycle => -1 })
+                            end),
+                            register(reef_conspicillum_voice, NewPid),
+                            {ok, NewPid}
+                    end
             end;
         {left, Errs} ->
             {error, {decode, Errs}}
@@ -90,9 +96,7 @@ audition(Json, Cycles, Bpm) ->
             CycleDurUs = ?BEATS_PER_CYCLE * 60000000.0 / Bpm,
             Start = erlang:system_time(microsecond) + round(?LOOKAHEAD_MS * 1000),
             Total = lists:foldl(fun(C, Acc) ->
-                Emits = array:to_list('reef_conspicillum_cloud@ps':cycleOf(
-                            maps:get(corpus, Scene), maps:get(query, Scene),
-                            maps:get(spec, Scene), maps:get(seed, Scene), C)),
+                Emits = cycle_emits(Scene, C),
                 CycleUs = Start + C * CycleDurUs,
                 lists:foreach(fun(Ev0) ->
                     {LeadUs, Ev} = lead_in(Ev0),
@@ -112,6 +116,15 @@ audition(Json, Cycles, Bpm) ->
         {left, Errs} ->
             {error, {decode, Errs}}
     end.
+
+%% One cycle's grains. A sampler's pattern is evaluated here, on the rig, one
+%% cycle at a time like everything else; a cloud's is empty and has no plays.
+cycle_emits(Scene, Cycle) ->
+    Spec = maps:get(spec, Scene),
+    Plays = 'tidal_conspicillum_plays@ps':playsOf(maps:get(samplePattern, Spec), Cycle),
+    array:to_list('reef_conspicillum_cloud@ps':cycleOfPlays(
+        Plays, maps:get(corpus, Scene), maps:get(query, Scene),
+        Spec, maps:get(seed, Scene), Cycle)).
 
 stop() ->
     case whereis(reef_conspicillum_voice) of
@@ -168,12 +181,7 @@ drain(St, Cycle, Horizon, AnchorUs, BeatAtAnchor, Tempo) ->
             %% ONE call per cycle, not per grain: cycleOf is a pure function of
             %% the scene and the cycle number, so the whole cloud for this bar
             %% arrives together and each grain is then placed by its own `at`.
-            Emits = array:to_list('reef_conspicillum_cloud@ps':cycleOf(
-                        maps:get(corpus, Scene),
-                        maps:get(query, Scene),
-                        maps:get(spec, Scene),
-                        maps:get(seed, Scene),
-                        Cycle)),
+            Emits = cycle_emits(Scene, Cycle),
             Name = maps:get(name, maps:get(corpus, Scene)),
             Cps = Tempo / 240.0,
             CycleUs = AnchorUs + (CycleBeat - BeatAtAnchor) * 60000000.0 / Tempo,
@@ -208,6 +216,9 @@ drain(St, Cycle, Horizon, AnchorUs, BeatAtAnchor, Tempo) ->
 %% alone. Done here rather than in reef because it is a fact about SuperDirt
 %% and about wall time, and the browser, which never plays, needs neither.
 -define(FADE_S, 0.001).
+%% How fast a played sample gets out of the way of the next (CR-32): quick enough
+%% to read as a change of chord, slow enough not to click.
+-define(CHOKE_FADE_S, 0.03).
 
 lead_in(Ev) ->
     Sus = float(maps:get(sustain, Ev)),
@@ -280,7 +291,13 @@ encode_dirt_play(Name, Ev, Cps) ->
            , <<"pan">>, float(maps:get(pan, Ev))
            , <<"accelerate">>, float(maps:get(accelerate, Ev))
            ],
-    dirt_osc:encode_msg(<<"/dirt/play">>, Args ++ chain_args(Ch) ++ fx_args(Fx)).
+    dirt_osc:encode_msg(<<"/dirt/play">>, Args ++ cut_args(maps:get(cut, Ev)) ++ chain_args(Ch) ++ fx_args(Fx)).
+
+%% A played sample's cut group. SuperDirt ends what is ringing in the group over
+%% that sound's own `fadeTime`, so one voice with a short fade needs no state
+%% here. A grain sends neither key, and its bytes are what they always were.
+cut_args(0) -> [];
+cut_args(Group) -> [<<"cut">>, Group, <<"fadeTime">>, float(?CHOKE_FADE_S)].
 
 %% =========================================================================
 %% Effects

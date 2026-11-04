@@ -174,6 +174,10 @@ try_parse_prefixed(<<"conspicillum-scene ", Rest/binary>>) ->
     %% stage, the envelope {"scene": <Scene>, "base", "edited", "page", "by"}:
     %% the voice plays `scene` and tidal_stage records the rest.
     {conspicillum_scene, trim_binary(Rest)};
+try_parse_prefixed(<<"conspicillum-plays ", Rest/binary>>) ->
+    %% conspicillum-plays <from> <count> <pattern> — a sampler's `n "…"` over a
+    %% run of cycles, for the page to draw. The page reads no Tidal itself.
+    {conspicillum_plays, trim_binary(Rest)};
 try_parse_prefixed(<<"conspicillum-stop">>) -> {conspicillum_stop};
 try_parse_prefixed(<<"conspicillum-stop ", _/binary>>) -> {conspicillum_stop};
 try_parse_prefixed(<<"reef-input ", Rest/binary>>) ->
@@ -1208,6 +1212,8 @@ handle_pattern_message(Text, State) ->
                     RB = list_to_binary(io_lib:format("~p", [Reason])),
                     {reply, {text, <<"ERR: conspicillum-scene ", RB/binary>>}, State}
             end;
+        {conspicillum_plays, Request} ->
+            {reply, {text, 'tidal_conspicillum_plays@ps':answer(Request)}, State};
         {conspicillum_stop} ->
             catch reef_conspicillum_voice:stop(),
             tidal_stage:stopped(conspicillum),
