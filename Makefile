@@ -129,15 +129,17 @@ test: erl
 # here still runs the suite on the BEAM through Tidal.Conformance.Main.
 
 # EUnit tests for the hand-written Erlang modules (the PureScript suite
-# above cannot reach them). Currently the step-window clamp, whose
-# thresholds misfire silently in both directions if they drift.
+# above cannot reach them): the step-window clamp, whose thresholds misfire
+# silently in both directions if they drift, and the /link/anchor receiver,
+# replayed against the rig-wide conformance vectors in the sibling binnacle
+# checkout (or $BINNACLE_DIR).
 test-erl:
 	@echo "==> Running Erlang (eunit) tests..."
 	@mkdir -p ebin
-	@erlc -o ebin src/tidal_step_window.erl src/tidal_anchor_log.erl
-	@erlc -o ebin test/tidal_step_window_tests.erl
+	@erlc -o ebin src/tidal_step_window.erl src/tidal_anchor_log.erl src/tidal_log.erl src/tidal_link_anchor.erl
+	@erlc -o ebin test/tidal_step_window_tests.erl test/tidal_link_anchor_tests.erl
 	@erl -noshell -pa ebin \
-		-eval 'case eunit:test(tidal_step_window_tests, []) of ok -> init:stop(0); _ -> init:stop(1) end'
+		-eval 'case eunit:test([tidal_step_window_tests, tidal_link_anchor_tests], []) of ok -> init:stop(0); _ -> init:stop(1) end'
 
 # Run the Branched guided tour (test/Test/BranchedTour.purs)
 tour: erl

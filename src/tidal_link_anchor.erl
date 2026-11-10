@@ -9,6 +9,12 @@
 %%               Tempo              :: float64,    %% BPM
 %%               Quantum            :: float64)    %% beats per Link "bar"
 %%
+%% The shape, the validity rule and the two encodings are declared once for
+%% the whole rig in binnacle/conformance/LINK-ANCHOR.md, and this module is
+%% held to that declaration's vectors by `make test-erl`. A datagram that is
+%% addressed to us and fails the rule is REFUSED and counted (`refused/0`);
+%% it never becomes the held anchor.
+%%
 %% Consumers compute beat-at-local-time using the affine map:
 %%   beat(T) = BeatAtAnchor + (T - UnixMicrosAtAnchor) * Tempo / 60_000_000
 %% and cycle = beat / Quantum (1 cycle = 1 bar in Tidal's vocabulary).
@@ -20,7 +26,12 @@
 
 -export([start/0, start_link/0, stop/0,
          info/0, cycle_at/1, beat_at/1, tempo/0, has_anchor/0,
-         scheduler_clock/2, sync_broadcast/1]).
+         scheduler_clock/2, sync_broadcast/1, refused/0]).
+
+%% The pure half: what an anchor is, on the wire and in use. These are what
+%% test/tidal_link_anchor_tests.erl replays the conformance vectors against
+%% (binnacle/conformance/LINK-ANCHOR.md is the declaration).
+-export([decode/1, beat_from/2, is_fresh/1, format_anchor/4]).
 
 -define(DEFAULT_PORT, 57121).
 -define(NAME, ?MODULE).
@@ -29,6 +40,13 @@
 %% 10 Hz so 2 s = 20 missed packets — a safe boundary between "transient
 %% drop" and "the bridge has actually died."
 -define(STALE_ANCHOR_US, 2000000).
+
+%% The validity rule (LINK-ANCHOR.md, "Validity").
+-define(TEMPO_MINIMUM, 20.0).
+-define(TEMPO_MAXIMUM, 999.0).
+-define(QUANTUM_MINIMUM, 1.0).
+-define(QUANTUM_MAXIMUM, 64.0).
+-define(UNIX_MICROS_MAXIMUM, 9007199254740992).    %% 2^53
 
 %% =========================================================================
 %% Public API
@@ -69,6 +87,22 @@ stop() ->
 info() ->
     call(info).
 
+%% How many datagrams addressed `/link/anchor` have failed the validity
+%% rule since this listener started. `no_anchor` if the listener is not
+%% answering.
+refused() ->
+    call(refused).
+
+%% Link's beat at a wall-clock moment, for an anchor as held. The
+%% operations are in the declaration's order: subtract, multiply by tempo,
+%% divide by sixty million, add.
+beat_from({AnchorUs, Beat, Tempo, _Quantum}, AtUs) ->
+    Beat + (AtUs - AnchorUs) * Tempo / 60000000.0.
+
+%% Whether an anchor received AgeUs ago still drives the clock.
+is_fresh(AgeUs) ->
+    AgeUs =< ?STALE_ANCHOR_US.
+
 %% Compute extrapolated cycle (cycle = beat / quantum) at the given local
 %% Unix microsecond time. Returns {ok, {Cycle, Tempo, Quantum}} or no_anchor.
 cycle_at(LocalUs) when is_integer(LocalUs) ->
@@ -76,7 +110,7 @@ cycle_at(LocalUs) when is_integer(LocalUs) ->
         no_anchor ->
             no_anchor;
         {anchor, AnchorUs, Beat, Tempo, Quantum, _LastRecvUs} ->
-            BeatNow = Beat + (LocalUs - AnchorUs) * Tempo / 60000000.0,
+            BeatNow = beat_from({AnchorUs, Beat, Tempo, Quantum}, LocalUs),
             Cycle = BeatNow / Quantum,
             {ok, {Cycle, Tempo, Quantum}}
     end.
@@ -86,9 +120,8 @@ beat_at(LocalUs) when is_integer(LocalUs) ->
     case info() of
         no_anchor ->
             no_anchor;
-        {anchor, AnchorUs, Beat, Tempo, _Quantum, _LastRecvUs} ->
-            BeatNow = Beat + (LocalUs - AnchorUs) * Tempo / 60000000.0,
-            {ok, BeatNow}
+        {anchor, AnchorUs, Beat, Tempo, Quantum, _LastRecvUs} ->
+            {ok, beat_from({AnchorUs, Beat, Tempo, Quantum}, LocalUs)}
     end.
 
 %% Latest tempo, or no_anchor.
@@ -130,7 +163,7 @@ scheduler_clock(StartTimeMs, FreeRunBpm) ->
         {anchor, AnchorUs, BeatAtAnchor, Tempo, Quantum, LastRecvUs}
                 when (NowUs - LastRecvUs) =< ?STALE_ANCHOR_US,
                      Tempo > 0, Quantum > 0 ->
-            BeatNow = BeatAtAnchor + (NowUs - AnchorUs) * Tempo / 60000000.0,
+            BeatNow = beat_from({AnchorUs, BeatAtAnchor, Tempo, Quantum}, NowUs),
             CycleNow = BeatNow / Quantum,
             CycleDur = 60000.0 * Quantum / Tempo,
             #{ synced => true,
@@ -188,7 +221,7 @@ open_socket(N) ->
 loop(State) ->
     receive
         {udp, _Sock, _Ip, _Port, Packet} ->
-            case decode_link_anchor(Packet) of
+            case decode(Packet) of
                 {ok, {UnixUs, Beat, Tempo, Quantum}} ->
                     NowUs = erlang:system_time(microsecond),
                     PrevRecvUs = maps:get(last_recv_us, State, 0),
@@ -209,10 +242,29 @@ loop(State) ->
                     broadcast_anchor(UnixUs, Beat, Tempo, Quantum,
                                      maps:get(subscribers, State, sets:new())),
                     loop(NewState);
-                error ->
-                    %% Unknown packet — log once at debug, ignore.
+                refuse ->
+                    %% Addressed to us and not usable. Counted, so that a
+                    %% listener hearing bad anchors does not look like one
+                    %% hearing none; said once, so the log names the cause.
+                    Refused = maps:get(refused, State, 0),
+                    case Refused of
+                        0 ->
+                            tidal_log:err("link-anchor: refusing a /link/anchor "
+                                          "that fails the validity rule; further "
+                                          "ones are counted (tidal_link_anchor:refused/0)~n",
+                                          []);
+                        _ ->
+                            ok
+                    end,
+                    loop(State#{refused => Refused + 1});
+                other ->
+                    %% Never an anchor: not counted.
                     loop(State)
             end;
+
+        {From, Ref, refused} when is_reference(Ref) ->
+            From ! {Ref, maps:get(refused, State, 0)},
+            loop(State);
 
         {From, Ref, info} when is_reference(Ref) ->
             Reply = case maps:get(anchor, State) of
@@ -313,44 +365,45 @@ call(Msg) ->
 %% OSC decoding for /link/anchor
 %% =========================================================================
 
-%% Returns {ok, {UnixUs, Beat, Tempo, Quantum}} on success, error otherwise.
-decode_link_anchor(Packet) ->
-    case decode_string(Packet) of
-        {ok, <<"/link/anchor">>, Rest1} ->
-            case decode_string(Rest1) of
-                {ok, <<",hddd">>, Rest2} when byte_size(Rest2) >= 32 ->
-                    <<UnixUs:64/big-signed-integer,
-                      Beat:64/big-float,
-                      Tempo:64/big-float,
-                      Quantum:64/big-float,
-                      _Trailer/binary>> = Rest2,
-                    {ok, {UnixUs, Beat, Tempo, Quantum}};
-                _ ->
-                    error
-            end;
+%% One datagram, to one of three verdicts (LINK-ANCHOR.md, "Encoding 1"):
+%%
+%%   {ok, {UnixUs, Beat, Tempo, Quantum}}   a valid anchor
+%%   refuse                                 addressed to us, not usable
+%%   other                                  never an anchor
+%%
+%% The layout is fixed at 56 bytes, so this is three matches rather than an
+%% OSC parse: sixteen bytes of address, eight of type tags, then an int64
+%% and three float64s. The tags are matched exactly; an `i` for the time or
+%% an `f` for a value is refused, not converted.
+decode(<<"/link/anchor", 0, 0, 0, 0, Rest/binary>>) ->
+    case Rest of
+        <<",hddd", 0, 0, 0,
+          UnixUs:64/big-signed-integer,
+          BeatBits:8/binary, TempoBits:8/binary, QuantumBits:8/binary>> ->
+            validate(UnixUs, finite(BeatBits), finite(TempoBits),
+                     finite(QuantumBits));
         _ ->
-            error
-    end.
+            refuse
+    end;
+decode(_) ->
+    other.
 
-%% Read a null-terminated string padded to a 4-byte boundary, return
-%% {ok, Bin, RestAfterPadding} or error.
-decode_string(Bin) ->
-    case binary:match(Bin, <<0>>) of
-        nomatch ->
-            error;
-        {Pos, _} ->
-            Str = binary:part(Bin, 0, Pos),
-            %% Padding: total bytes consumed (string + null) rounded up to 4.
-            Total = ((Pos + 4) div 4) * 4,
-            case byte_size(Bin) >= Total of
-                true ->
-                    Rest = binary:part(Bin, Total, byte_size(Bin) - Total),
-                    {ok, Str, Rest};
-                false ->
-                    error
-            end
-    end.
+%% Eight bytes as a float, or `not_finite`. The BEAM has no NaN and no
+%% infinity, so matching either as a float fails rather than yielding one:
+%% the bits are matched here, where the failure is an answer, and not in
+%% the caller, where it would be a crash.
+finite(<<Value:64/big-float>>) -> Value;
+finite(_) -> not_finite.
 
+%% The validity rule. Finiteness has been settled by finite/1.
+validate(UnixUs, Beat, Tempo, Quantum)
+  when is_float(Beat), is_float(Tempo), is_float(Quantum),
+       UnixUs >= 0, UnixUs < ?UNIX_MICROS_MAXIMUM,
+       Tempo >= ?TEMPO_MINIMUM, Tempo =< ?TEMPO_MAXIMUM,
+       Quantum >= ?QUANTUM_MINIMUM, Quantum =< ?QUANTUM_MAXIMUM ->
+    {ok, {UnixUs, Beat, Tempo, Quantum}};
+validate(_, _, _, _) ->
+    refuse.
 
 %% Send a frame to every page subscribed to the Atlantis sync channel (the
 %% pages that took the anchor stream: Binnacle apps). For changes the rig makes
