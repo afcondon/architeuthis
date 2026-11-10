@@ -178,8 +178,9 @@ try_parse_prefixed(<<"conspicillum-plays ", Rest/binary>>) ->
     %% conspicillum-plays <from> <count> <pattern> — a sampler's `n "…"` over a
     %% run of cycles, for the page to draw. The page reads no Tidal itself.
     {conspicillum_plays, trim_binary(Rest)};
-try_parse_prefixed(<<"conspicillum-stop">>) -> {conspicillum_stop};
-try_parse_prefixed(<<"conspicillum-stop ", _/binary>>) -> {conspicillum_stop};
+try_parse_prefixed(<<"conspicillum-stop">>) -> {conspicillum_stop, <<"a">>};
+%% conspicillum-stop <layer>: one layer (a to d); `all` stops every one
+try_parse_prefixed(<<"conspicillum-stop ", Layer/binary>>) -> {conspicillum_stop, trim_binary(Layer)};
 try_parse_prefixed(<<"reef-input ", Rest/binary>>) ->
     %% reef-input <json> — a tick-tagged input (lockstep P4c): {tick, input} in the
     %% Reef.Protocol wire format. Forwarded to the running reef voice, which buffers
@@ -1203,21 +1204,32 @@ handle_pattern_message(Text, State) ->
         {conspicillum_scene, Json} ->
             %% Conspicillum handoff: run (or live-swap) the pushed cloud, and
             %% record it on the stage.
-            {Scene, Staged} = stage_envelope(Json),
-            case reef_conspicillum_voice:start_json(Scene) of
+            %% The envelope may name a layer (a to d); without one it is `a`.
+            {Scene, Staged0} = stage_envelope(Json),
+            Layer = maps:get(<<"layer">>, Staged0, <<"a">>),
+            Staged = maps:remove(<<"layer">>, Staged0),
+            case reef_conspicillum_voice:start_json(Layer, Scene) of
                 {ok, _Pid} ->
-                    tidal_stage:put(conspicillum, Staged, self()),
-                    {reply, {text, <<"OK: conspicillum-scene (SuperDirt :57120)">>}, State};
+                    tidal_stage:put(reef_conspicillum_voice:slot(Layer), Staged, self()),
+                    {reply, {text, <<"OK: conspicillum-scene ", Layer/binary, " (SuperDirt :57120)">>}, State};
                 {error, Reason} ->
                     RB = list_to_binary(io_lib:format("~p", [Reason])),
                     {reply, {text, <<"ERR: conspicillum-scene ", RB/binary>>}, State}
             end;
         {conspicillum_plays, Request} ->
             {reply, {text, 'tidal_conspicillum_plays@ps':answer(Request)}, State};
-        {conspicillum_stop} ->
-            catch reef_conspicillum_voice:stop(),
-            tidal_stage:stopped(conspicillum),
-            {reply, {text, <<"OK: conspicillum-stop">>}, State};
+        {conspicillum_stop, <<"all">>} ->
+            stop_conspicillum_layers(),
+            {reply, {text, <<"OK: conspicillum-stop all">>}, State};
+        {conspicillum_stop, Layer} ->
+            case reef_conspicillum_voice:layer(Layer) of
+                undefined ->
+                    {reply, {text, <<"ERR: conspicillum-stop: no layer ", Layer/binary, " (a to d)">>}, State};
+                L ->
+                    catch reef_conspicillum_voice:stop(L),
+                    tidal_stage:stopped(reef_conspicillum_voice:slot(L)),
+                    {reply, {text, <<"OK: conspicillum-stop ", L/binary>>}, State}
+            end;
         {reef_input, Json} ->
             %% Lockstep live edit (P4c): decode the tick-tagged input with the SAME
             %% codec the frontend encoded it with (reef_protocol@ps:decodeTagged) and
@@ -1778,10 +1790,16 @@ tidal_line(Block) ->
 %% stage. Its page starts it again (entering Rig, pressing play), or for
 %% drums and Conspicillum, the next line written.
 machine_hush(Block) ->
-    case re:run(Block, <<"^\\s*(odonus|vetula|balistes|drums|conspicillum|selene)\\s*\\$\\s*hush\\s*$">>,
+    case re:run(Block, <<"^\\s*conspicillum\\s+\"([a-d])\"\\s*\\$\\s*hush\\s*$">>,
                 [{capture, all_but_first, binary}]) of
-        {match, [Machine]} -> {hush, Machine};
-        nomatch -> none
+        %% a Conspicillum layer: `conspicillum "b" $ hush`
+        {match, [Layer]} -> {hush, <<"conspicillum:", Layer/binary>>};
+        nomatch ->
+            case re:run(Block, <<"^\\s*(odonus|vetula|balistes|drums|conspicillum|selene)\\s*\\$\\s*hush\\s*$">>,
+                        [{capture, all_but_first, binary}]) of
+                {match, [Machine]} -> {hush, Machine};
+                nomatch -> none
+            end
     end.
 
 %% `<machine> $ play`: the page's ▶ Play, from a line, so a voice started in
@@ -1843,10 +1861,12 @@ hush_machine(<<"drums">>) ->
         Pid -> gen_server:call(Pid, {set_pattern, 'tidal_pattern_types@ps':silence()})
     end,
     <<"OK: drums hushed">>;
-hush_machine(<<"conspicillum">>) ->
-    catch reef_conspicillum_voice:stop(),
-    catch tidal_stage:stopped(conspicillum),
-    <<"OK: conspicillum hushed">>;
+%% `conspicillum $ hush` is layer a, as `conspicillum $` is
+hush_machine(<<"conspicillum">>) -> hush_machine(<<"conspicillum:a">>);
+hush_machine(<<"conspicillum:", Layer/binary>>) ->
+    catch reef_conspicillum_voice:stop(Layer),
+    catch tidal_stage:stopped(reef_conspicillum_voice:slot(Layer)),
+    <<"OK: conspicillum ", Layer/binary, " hushed">>;
 %% Selene's polysignals are not voices: once applied they run in the daemons
 %% (and the FH-2), so Selene is stopped as a whole by selene_keeper, which
 %% silences every part and tells the pages (CR-11).
@@ -2115,7 +2135,7 @@ machine_statement_(Block) ->
             end;
         <<"drums", Rest/binary>> -> drums_line(Rest);
         <<"conspicillum", _/binary>> ->
-            <<"ERR: conspicillum: its line goes through the stage (Limulus writes conspicillum/line); here only conspicillum $ hush">>;
+            <<"ERR: conspicillum: its line goes through the stage (Limulus writes conspicillum/line, or conspicillum/line-b for layer b); here only conspicillum $ hush or conspicillum \"b\" $ hush">>;
         <<"balistes", Rest/binary>> -> balistes_line(Rest);
         <<"selene", Rest/binary>> -> selene_line(Rest);
         <<"route", Rest/binary>> -> route_line(Rest);
@@ -2850,6 +2870,12 @@ stage_slot(<<"vetula">>) -> vetula;
 stage_slot(<<"balistes">>) -> balistes;
 stage_slot(<<"selene">>) -> selene;
 stage_slot(_) -> undefined.
+
+%% Every Conspicillum layer stopped, and the stage told of each.
+stop_conspicillum_layers() ->
+    catch reef_conspicillum_voice:stop(),
+    lists:foreach(fun(L) -> catch tidal_stage:stopped(reef_conspicillum_voice:slot(L)) end,
+                  [<<"a">>, <<"b">>, <<"c">>, <<"d">>]).
 
 %% Split a scene push into the scene for the voice and what the stage
 %% records. A push is either the scene itself or the envelope
@@ -4487,7 +4513,7 @@ hush_everything() ->
     %% and the Conspicillum grain cloud (conspicillum-scene) — also a
     %% /dirt/play emitter, and the densest one on the rig, so hush must
     %% reach it too.
-    catch reef_conspicillum_voice:stop(),
+    stop_conspicillum_layers(),
     %% and tell the stage, so every page shows the slots stopped.
     tidal_stage:stopped_all(),
     %% and the pages, whose transports would otherwise start their voices

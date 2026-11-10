@@ -29,7 +29,14 @@
 %% on the wire for a given grain is now conditional — thirteen effects that are
 %% each present or absent — and a rule about ABSENCE cannot be checked by
 %% listening. This makes the bytes readable from a shell.
--export([start_json/1, stop/0, loop/1, audition/3, encode_dirt_play/3]).
+-export([start_json/1, start_json/2, stop/0, stop/1, layer/1, slot/1, loop/1, audition/3, encode_dirt_play/3]).
+
+%% LAYERS (2026-11-10). Several clouds at once, Borderlands-style: layer
+%% `a` (what `conspicillum $` always was) to `d`, each its own process, its own
+%% stage slot and its own main SuperDirt orbit, so one layer's reverb or delay
+%% is not another's. The sends (orbits 10 and 11) stay shared: they are dry
+%% copies for a return, and a return mixes whatever reaches it.
+-define(LAYERS, [<<"a">>, <<"b">>, <<"c">>, <<"d">>]).
 
 %% Scheduler poll interval (ms).
 -define(POLL_MS, 25).
@@ -49,7 +56,30 @@
 %% A second push swaps the scene in place, and the NEXT cycle is computed from
 %% it — a cloud edit lands on a cycle boundary rather than mid-cycle, which is
 %% what makes an edit sound deliberate instead of like a glitch.
-start_json(Json) ->
+start_json(Json) -> start_json(<<"a">>, Json).
+
+start_json(Layer, Json) ->
+    case layer(Layer) of
+        undefined -> {error, {layer, Layer}};
+        L -> start_layer(L, Json)
+    end.
+
+%% A layer's name as written (`<<"b">>`), or `undefined` if there is no such layer.
+layer(L) when is_binary(L) -> case lists:member(L, ?LAYERS) of true -> L; false -> undefined end;
+layer(_) -> undefined.
+
+%% The stage slot a layer is recorded under: `conspicillum` for `a`, as it
+%% always was, so pages and Limulus from before layers still find it.
+slot(<<"a">>) -> conspicillum;
+slot(L) -> binary_to_atom(<<"conspicillum-", L/binary>>).
+
+registered(<<"a">>) -> reef_conspicillum_voice;
+registered(L) -> binary_to_atom(<<"reef_conspicillum_voice_", L/binary>>).
+
+%% A layer's main orbit: a 0, b 1, c 2, d 3.
+main_orbit(<<C>>) -> C - $a.
+
+start_layer(Layer, Json) ->
     case 'reef_conspicillum_protocol@ps':decodeScene(ensure_bin(Json)) of
         {right, Scene} ->
             Pattern = maps:get(samplePattern, maps:get(spec, Scene)),
@@ -58,7 +88,8 @@ start_json(Json) ->
                     {error, {pattern, Problem}};
                 {nothing} ->
                     ensure_corpus(Scene),
-                    case whereis(reef_conspicillum_voice) of
+                    Name = registered(Layer),
+                    case whereis(Name) of
                         Pid when is_pid(Pid) ->
                             Pid ! {set_scene, Scene},
                             {ok, Pid};
@@ -66,9 +97,10 @@ start_json(Json) ->
                             NewPid = spawn(fun() ->
                                 {ok, Sock} = gen_udp:open(0, [binary]),
                                 erlang:send_after(?POLL_MS, self(), poll),
-                                loop(#{ socket => Sock, scene => Scene, last_cycle => -1 })
+                                loop(#{ socket => Sock, scene => Scene, last_cycle => -1
+                                      , orbit => main_orbit(Layer) })
                             end),
-                            register(reef_conspicillum_voice, NewPid),
+                            register(Name, NewPid),
                             {ok, NewPid}
                     end
             end;
@@ -126,9 +158,13 @@ cycle_emits(Scene, Cycle) ->
         Plays, maps:get(corpus, Scene), maps:get(query, Scene),
         Spec, maps:get(seed, Scene), Cycle)).
 
-stop() ->
-    case whereis(reef_conspicillum_voice) of
-        Pid when is_pid(Pid) -> Pid ! stop, unregister(reef_conspicillum_voice), ok;
+%% Every layer (Panic, hush).
+stop() -> lists:foreach(fun stop/1, ?LAYERS).
+
+stop(Layer) ->
+    Name = registered(Layer),
+    case whereis(Name) of
+        Pid when is_pid(Pid) -> Pid ! stop, unregister(Name), ok;
         _ -> ok
     end.
 
@@ -190,11 +226,21 @@ drain(St, Cycle, Horizon, AnchorUs, BeatAtAnchor, Tempo) ->
             lists:foreach(fun(Ev0) ->
                 {LeadUs, Ev} = lead_in(Ev0),
                 WallUs = round(CycleUs + maps:get(at, Ev) * CycleDurUs) - LeadUs,
-                Msg = encode_dirt_play(Name, Ev, Cps),
+                Msg = encode_dirt_play(Name, on_orbit(maps:get(orbit, St, 0), Ev), Cps),
                 gen_udp:send(Sock, ?SUPERDIRT_HOST, ?SUPERDIRT_PORT,
                              dirt_osc:osc_bundle(WallUs, Msg))
             end, Emits),
             drain(St#{last_cycle => Cycle}, Cycle + 1, Horizon, AnchorUs, BeatAtAnchor, Tempo)
+    end.
+
+%% A grain on the main orbit (0, as reef writes it) goes to its layer's; the
+%% send orbits are left as they are.
+on_orbit(0, Ev) -> Ev;
+on_orbit(Main, Ev) ->
+    Ch = maps:get(chain, Ev),
+    case maps:get(orbit, Ch) of
+        0 -> Ev#{chain => Ch#{orbit => Main}};
+        _ -> Ev
     end.
 
 %% =========================================================================
