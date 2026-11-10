@@ -223,6 +223,13 @@ drain(St, Cycle, Horizon, AnchorUs, BeatAtAnchor, Tempo) ->
             CycleUs = AnchorUs + (CycleBeat - BeatAtAnchor) * 60000000.0 / Tempo,
             CycleDurUs = ?BEATS_PER_CYCLE * 60000000.0 / Tempo,
             Sock = maps:get(socket, St),
+            %% Said again every cycle, not only when a scene arrives: a
+            %% SuperDirt restarted under a playing layer has forgotten what it
+            %% read, and nothing else would tell it (2026-11-10, a layer silent
+            %% after the restart, "no buffer data"). SuperDirt reads a bank
+            %% once, so a repeat costs one small packet a cycle.
+            gen_udp:send(Sock, ?SUPERDIRT_HOST, ?SUPERDIRT_PORT,
+                         dirt_osc:encode_msg(<<"/atlantis/ensure">>, [Name])),
             lists:foreach(fun(Ev0) ->
                 {LeadUs, Ev} = lead_in(Ev0),
                 WallUs = round(CycleUs + maps:get(at, Ev) * CycleDurUs) - LeadUs,

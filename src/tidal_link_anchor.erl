@@ -31,7 +31,8 @@
 %% The pure half: what an anchor is, on the wire and in use. These are what
 %% test/tidal_link_anchor_tests.erl replays the conformance vectors against
 %% (binnacle/conformance/LINK-ANCHOR.md is the declaration).
--export([decode/1, beat_from/2, is_fresh/1, format_anchor/4]).
+-export([decode/1, beat_from/2, is_fresh/1, format_anchor/4,
+         decode_peers/1, format_link/2, es9_refused/1, continuo_refused/1]).
 
 -define(DEFAULT_PORT, 57121).
 -define(NAME, ?MODULE).
@@ -258,9 +259,21 @@ loop(State) ->
                     end,
                     loop(State#{refused => Refused + 1});
                 other ->
-                    %% Never an anchor: not counted.
-                    loop(State)
+                    %% Never an anchor: not counted. The one other message
+                    %% we listen for is Diaphus's peer count (diaphus
+                    %% src/main.rs, item 8), passed on to the pages.
+                    case decode_peers(Packet) of
+                        {ok, Peers} ->
+                            State1 = ask_daemons(State#{peers => Peers}),
+                            broadcast_link(State1),
+                            loop(State1);
+                        other ->
+                            loop(State)
+                    end
             end;
+
+        {daemons_refused, Daemons} ->
+            loop(State#{daemons => Daemons, asking => false});
 
         {From, Ref, refused} when is_reference(Ref) ->
             From ! {Ref, maps:get(refused, State, 0)},
@@ -295,6 +308,10 @@ loop(State) ->
                 {U, B, T, Q} ->
                     Pid ! {anchor_broadcast, format_anchor(U, B, T, Q)}
             end,
+            case maps:get(peers, State, undefined) of
+                undefined -> ok;
+                _ -> Pid ! {sync_broadcast, link_frame(State)}
+            end,
             loop(State#{subscribers => Subs});
 
         {'DOWN', _Ref, process, Pid, _Reason} ->
@@ -319,6 +336,89 @@ broadcast_anchor(UnixUs, Beat, Tempo, Quantum, Subscribers) ->
     Bin = format_anchor(UnixUs, Beat, Tempo, Quantum),
     lists:foreach(fun(Pid) -> Pid ! {anchor_broadcast, Bin} end,
                   sets:to_list(Subscribers)).
+
+%% The Link session's health, for the Dashboard: how many other peers
+%% share the session (Diaphus's count, re-sent once a second), and how many
+%% anchors each receiver the rig can ask has refused (binnacle/conformance/
+%% LINK-ANCHOR.md: every one should read zero). Its own frame, never an
+%% `anchor ...` one, so Binnacle hands it to the page untouched.
+broadcast_link(State) ->
+    Bin = link_frame(State),
+    lists:foreach(fun(Pid) -> Pid ! {sync_broadcast, Bin} end,
+                  sets:to_list(maps:get(subscribers, State, sets:new()))).
+
+link_frame(State) ->
+    format_link(maps:get(peers, State, 0),
+                [{architeuthis, maps:get(refused, State, 0)}
+                 | maps:get(daemons, State, [])]).
+
+%% `link <peers> <receiver>=<refused> ...`; a receiver that did not answer
+%% reads `-`.
+format_link(Peers, Counts) ->
+    iolist_to_binary(
+      [io_lib:format("link ~B", [Peers])
+       | [io_lib:format(" ~s=~s", [Name, case N of
+                                              N when is_integer(N) -> integer_to_list(N);
+                                              _ -> "-"
+                                          end])
+          || {Name, N} <- Counts]]).
+
+%% es9-daemon's and Continuo's refusal counts, asked of their control
+%% sockets at most every five seconds, from a process of its own so the
+%% anchor loop never waits on a socket.
+-define(DAEMON_ASK_US, 5000000).
+ask_daemons(State) ->
+    NowUs = erlang:system_time(microsecond),
+    Last = maps:get(asked_us, State, 0),
+    case maps:get(asking, State, false) orelse NowUs - Last < ?DAEMON_ASK_US of
+        true ->
+            State;
+        false ->
+            Self = self(),
+            spawn(fun() ->
+                Self ! {daemons_refused,
+                        [{'es9-daemon', es9_refused(ask(".es9/control.sock", "link"))},
+                         {continuo, continuo_refused(ask(".continuo/control.sock", "status"))}]}
+            end),
+            State#{asking => true, asked_us => NowUs}
+    end.
+
+ask(Rel, Verb) ->
+    Path = filename:join(os:getenv("HOME", "/tmp"), Rel),
+    case gen_tcp:connect({local, Path}, 0, [{active, false}, binary, {packet, line}], 500) of
+        {ok, Sock} ->
+            try
+                ok = gen_tcp:send(Sock, [Verb, $\n]),
+                case gen_tcp:recv(Sock, 0, 1000) of
+                    {ok, Reply} -> {ok, Reply};
+                    E -> E
+                end
+            after gen_tcp:close(Sock)
+            end;
+        E -> E
+    end.
+
+%% es9-daemon's `link` verb ends `refused N`.
+es9_refused({ok, Reply}) ->
+    case re:run(Reply, "refused ([0-9]+)", [{capture, all_but_first, binary}]) of
+        {match, [N]} -> binary_to_integer(N);
+        _ -> unknown
+    end;
+es9_refused(_) -> unknown.
+
+%% Continuo's `status` is JSON with `"anchorsRefused": N`.
+continuo_refused({ok, Reply}) ->
+    case re:run(Reply, "\"anchorsRefused\": *([0-9]+)", [{capture, all_but_first, binary}]) of
+        {match, [N]} -> binary_to_integer(N);
+        _ -> unknown
+    end;
+continuo_refused(_) -> unknown.
+
+%% Diaphus's `/link/peers ,i n`; anything else is `other`.
+decode_peers(<<"/link/peers", 0, ",i", 0, 0, Peers:32/big-signed>>) when Peers >= 0 ->
+    {ok, Peers};
+decode_peers(_) ->
+    other.
 
 %% Atlantis Sync Protocol anchor frame: `anchor <unixMicros> <beat>
 %% <tempo> <quantum>`. unixMicros is the int64 wall-clock timestamp;

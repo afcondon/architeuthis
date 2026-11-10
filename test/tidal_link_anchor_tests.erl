@@ -115,3 +115,19 @@ accepted_anchors_are_written_as_a_line_the_grammar_admits_test_() ->
       end}
      || Case <- section(<<"osc">>),
         maps:get(<<"expect">>, Case) =:= <<"accept">>].
+
+%% Diaphus's peer count (`/link/peers ,i n`, diaphus src/main.rs item 8):
+%% read as its own message, never as an anchor, and passed to the pages as
+%% `link <peers> <refused>`.
+peers_test_() ->
+    Peers = fun(N) -> <<"/link/peers", 0, ",i", 0, 0, N:32/big-signed>> end,
+    [?_assertEqual({ok, 0}, tidal_link_anchor:decode_peers(Peers(0))),
+     ?_assertEqual({ok, 3}, tidal_link_anchor:decode_peers(Peers(3))),
+     ?_assertEqual(other, tidal_link_anchor:decode_peers(Peers(-1))),
+     ?_assertEqual(other, tidal_link_anchor:decode(Peers(3))),
+     ?_assertEqual(other, tidal_link_anchor:decode_peers(<<"/link/peers", 0, ",f", 0, 0, 0:32>>)),
+     ?_assertEqual(<<"link 2 architeuthis=0 es9-daemon=- continuo=3">>,
+                   tidal_link_anchor:format_link(2, [{architeuthis, 0}, {'es9-daemon', unknown}, {continuo, 3}])),
+     ?_assertEqual(0, tidal_link_anchor:es9_refused({ok, <<"OK locked snaps 14 latency-ms 0.00 origin 0 refused 0\n">>})),
+     ?_assertEqual(unknown, tidal_link_anchor:es9_refused({error, enoent})),
+     ?_assertEqual(2, tidal_link_anchor:continuo_refused({ok, <<"{\"anchors\": 9, \"anchorsRefused\": 2, \"x\": 1}">>}))].
