@@ -178,6 +178,10 @@ try_parse_prefixed(<<"conspicillum-plays ", Rest/binary>>) ->
     %% conspicillum-plays <from> <count> <pattern> — a sampler's `n "…"` over a
     %% run of cycles, for the page to draw. The page reads no Tidal itself.
     {conspicillum_plays, trim_binary(Rest)};
+try_parse_prefixed(<<"conspicillum-hit ", Rest/binary>>) ->
+    %% conspicillum-hit <layer> <index> — a pad struck: sample <index> of the
+    %% layer's set, sounded now rather than in a cycle (the 3D's sampler).
+    {conspicillum_hit, trim_binary(Rest)};
 try_parse_prefixed(<<"conspicillum-stop">>) -> {conspicillum_stop, <<"a">>};
 %% conspicillum-stop <layer>: one layer (a to d); `all` stops every one
 try_parse_prefixed(<<"conspicillum-stop ", Layer/binary>>) -> {conspicillum_stop, trim_binary(Layer)};
@@ -1218,6 +1222,23 @@ handle_pattern_message(Text, State) ->
             end;
         {conspicillum_plays, Request} ->
             {reply, {text, 'tidal_conspicillum_plays@ps':answer(Request)}, State};
+        {conspicillum_hit, Request} ->
+            %% Silent on success: a pad can be struck many times a second, and
+            %% the page has nothing to do with an OK.
+            case binary:split(Request, <<" ">>) of
+                [Layer, IndexText] ->
+                    case catch binary_to_integer(trim_binary(IndexText)) of
+                        Index when is_integer(Index) ->
+                            case reef_conspicillum_voice:hit(Layer, Index) of
+                                ok -> {ok, State};
+                                {error, R} ->
+                                    RB = list_to_binary(io_lib:format("~p", [R])),
+                                    {reply, {text, <<"ERR: conspicillum-hit ", RB/binary>>}, State}
+                            end;
+                        _ -> {reply, {text, <<"ERR: conspicillum-hit <layer> <index>">>}, State}
+                    end;
+                _ -> {reply, {text, <<"ERR: conspicillum-hit <layer> <index>">>}, State}
+            end;
         {conspicillum_stop, <<"all">>} ->
             stop_conspicillum_layers(),
             {reply, {text, <<"OK: conspicillum-stop all">>}, State};

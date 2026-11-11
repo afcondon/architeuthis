@@ -29,7 +29,7 @@
 %% on the wire for a given grain is now conditional — thirteen effects that are
 %% each present or absent — and a rule about ABSENCE cannot be checked by
 %% listening. This makes the bytes readable from a shell.
--export([start_json/1, start_json/2, stop/0, stop/1, layer/1, slot/1, loop/1, audition/3, encode_dirt_play/3]).
+-export([start_json/1, start_json/2, stop/0, stop/1, layer/1, slot/1, loop/1, audition/3, hit/2, encode_dirt_play/3]).
 
 %% LAYERS (2026-11-10). Several clouds at once, Borderlands-style: layer
 %% `a` (what `conspicillum $` always was) to `d`, each its own process, its own
@@ -158,6 +158,59 @@ cycle_emits(Scene, Cycle) ->
         Plays, maps:get(corpus, Scene), maps:get(query, Scene),
         Spec, maps:get(seed, Scene), Cycle)).
 
+%% A pad struck (the Midifighter 3D, `Conspicillum.Pads`): sample `Index` of
+%% the layer's set, sounded NOW, not in a cycle.
+%%
+%% This is the one path into SuperDirt that does not wait for the lookahead:
+%% everything else is fixed a cycle ahead (`drain`), and a hand cannot wait a
+%% bar to hear itself. It goes through the same `cycleOfPlays` as a scheduled
+%% play, one play at the cycle's start, so a struck sample has the speed,
+%% gain, cut group, effects and sends its replay will have. The loop the page
+%% records from these hits comes back as ordinary plays in the scene.
+%% `{error, not_playing}` when the layer has no scene: there is nothing to say
+%% which set, or how it sounds.
+hit(Layer, Index) ->
+    case layer(Layer) of
+        undefined -> {error, {layer, Layer}};
+        L ->
+            case whereis(registered(L)) of
+                Pid when is_pid(Pid) -> Pid ! {hit, Index}, ok;
+                _ -> {error, not_playing}
+            end
+    end.
+
+%% How far ahead of now a hit is timetagged: enough that SuperDirt does not
+%% call it late, small enough not to feel.
+-define(HIT_LEAD_US, 5000).
+
+sound_now(St, Index) ->
+    Scene = maps:get(scene, St),
+    Spec = maps:get(spec, Scene),
+    NowUs = erlang:system_time(microsecond),
+    {Cycle, Cps} =
+        case tidal_link_anchor:info() of
+            {anchor, AnchorUs, BeatAtAnchor, Tempo, _Quantum, LastRecvUs}
+                    when (NowUs - LastRecvUs) =< ?STALE_ANCHOR_US, Tempo > 0 ->
+                Beat = BeatAtAnchor + (NowUs - AnchorUs) * Tempo / 60000000.0,
+                {trunc(Beat / ?BEATS_PER_CYCLE), Tempo / 240.0};
+            _ ->
+                {max(0, maps:get(last_cycle, St)), 0.5}
+        end,
+    %% A pattern that is not empty is what makes `cycleOfPlays` a sampler; its
+    %% text is never read here, only the plays given.
+    Sampler = case maps:get(samplePattern, Spec) of <<>> -> Spec#{samplePattern => <<"hit">>}; _ -> Spec end,
+    Plays = array:from_list([#{at => 0.0, index => Index}]),
+    Emits = array:to_list('reef_conspicillum_cloud@ps':cycleOfPlays(
+        Plays, maps:get(corpus, Scene), maps:get(query, Scene),
+        Sampler, maps:get(seed, Scene), Cycle)),
+    Name = maps:get(name, maps:get(corpus, Scene)),
+    Sock = maps:get(socket, St),
+    lists:foreach(fun(Ev) ->
+        Msg = encode_dirt_play(Name, on_orbit(maps:get(orbit, St, 0), Ev), Cps),
+        gen_udp:send(Sock, ?SUPERDIRT_HOST, ?SUPERDIRT_PORT,
+                     dirt_osc:osc_bundle(NowUs + ?HIT_LEAD_US, Msg))
+    end, Emits).
+
 %% Every layer (Panic, hush).
 stop() -> lists:foreach(fun stop/1, ?LAYERS).
 
@@ -177,6 +230,9 @@ loop(St) ->
             gen_udp:close(maps:get(socket, St));
         {set_scene, Scene} ->
             loop(St#{scene => Scene});
+        {hit, Index} ->
+            sound_now(St, Index),
+            loop(St);
         poll ->
             St2 = tick(St),
             erlang:send_after(?POLL_MS, self(), poll),
