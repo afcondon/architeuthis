@@ -247,17 +247,7 @@ loop(State) ->
                     %% Addressed to us and not usable. Counted, so that a
                     %% listener hearing bad anchors does not look like one
                     %% hearing none; said once, so the log names the cause.
-                    Refused = maps:get(refused, State, 0),
-                    case Refused of
-                        0 ->
-                            tidal_log:err("link-anchor: refusing a /link/anchor "
-                                          "that fails the validity rule; further "
-                                          "ones are counted (tidal_link_anchor:refused/0)~n",
-                                          []);
-                        _ ->
-                            ok
-                    end,
-                    loop(State#{refused => Refused + 1});
+                    loop(count_refusal("/link/anchor", State));
                 other ->
                     %% Never an anchor: not counted. The one other message
                     %% we listen for is Diaphus's peer count (diaphus
@@ -267,6 +257,11 @@ loop(State) ->
                             State1 = ask_daemons(State#{peers => Peers}),
                             broadcast_link(State1),
                             loop(State1);
+                        refuse ->
+                            %% In the same count as a refused anchor: it is
+                            %% the count of messages from Diaphus this
+                            %% receiver could not use.
+                            loop(count_refusal("/link/peers", State));
                         other ->
                             loop(State)
                     end
@@ -414,11 +409,32 @@ continuo_refused({ok, Reply}) ->
     end;
 continuo_refused(_) -> unknown.
 
-%% Diaphus's `/link/peers ,i n`; anything else is `other`.
+%% Diaphus's `/link/peers ,i n`, as binnacle/conformance/LINK-PEERS.md
+%% declares it and `make test-erl` holds it:
+%%   {ok, Peers}   a count of zero or more
+%%   refuse        addressed to us, not usable
+%%   other         never this message
+%% The type tags are matched exactly and the datagram is exactly 20 bytes.
 decode_peers(<<"/link/peers", 0, ",i", 0, 0, Peers:32/big-signed>>) when Peers >= 0 ->
     {ok, Peers};
+decode_peers(<<"/link/peers", 0, _/binary>>) ->
+    refuse;
 decode_peers(_) ->
     other.
+
+%% One more message from Diaphus that was addressed to us and could not be
+%% used. The first is logged with its address; all are counted.
+count_refusal(Address, State) ->
+    Refused = maps:get(refused, State, 0),
+    case Refused of
+        0 ->
+            tidal_log:err("link-anchor: refusing a ~s that fails its "
+                          "declared rule; further refusals are counted "
+                          "(tidal_link_anchor:refused/0)~n", [Address]);
+        _ ->
+            ok
+    end,
+    State#{refused => Refused + 1}.
 
 %% Atlantis Sync Protocol anchor frame: `anchor <unixMicros> <beat>
 %% <tempo> <quantum>`. unixMicros is the int64 wall-clock timestamp;

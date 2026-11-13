@@ -123,11 +123,39 @@ peers_test_() ->
     Peers = fun(N) -> <<"/link/peers", 0, ",i", 0, 0, N:32/big-signed>> end,
     [?_assertEqual({ok, 0}, tidal_link_anchor:decode_peers(Peers(0))),
      ?_assertEqual({ok, 3}, tidal_link_anchor:decode_peers(Peers(3))),
-     ?_assertEqual(other, tidal_link_anchor:decode_peers(Peers(-1))),
+     ?_assertEqual(refuse, tidal_link_anchor:decode_peers(Peers(-1))),
      ?_assertEqual(other, tidal_link_anchor:decode(Peers(3))),
-     ?_assertEqual(other, tidal_link_anchor:decode_peers(<<"/link/peers", 0, ",f", 0, 0, 0:32>>)),
+     ?_assertEqual(refuse, tidal_link_anchor:decode_peers(<<"/link/peers", 0, ",f", 0, 0, 0:32>>)),
      ?_assertEqual(<<"link 2 architeuthis=0 es9-daemon=- continuo=3">>,
                    tidal_link_anchor:format_link(2, [{architeuthis, 0}, {'es9-daemon', unknown}, {continuo, 3}])),
      ?_assertEqual(0, tidal_link_anchor:es9_refused({ok, <<"OK locked snaps 14 latency-ms 0.00 origin 0 refused 0\n">>})),
      ?_assertEqual(unknown, tidal_link_anchor:es9_refused({error, enoent})),
      ?_assertEqual(2, tidal_link_anchor:continuo_refused({ok, <<"{\"anchors\": 9, \"anchorsRefused\": 2, \"x\": 1}">>}))].
+
+%% The /link/peers conformance vectors (binnacle/conformance/LINK-PEERS.md).
+%% Not finding the file is a failure, not a skip.
+peers_vectors() ->
+    Dir = case os:getenv("BINNACLE_DIR") of
+              false -> "../binnacle";
+              Given -> Given
+          end,
+    Path = filename:join(Dir, "conformance/vectors/link-peers.json"),
+    {ok, Text} = file:read_file(Path),
+    Json = json:decode(Text),
+    1 = maps:get(<<"link-peers-vectors">>, Json),
+    Cases = maps:get(<<"osc">>, Json),
+    true = length(Cases) > 0,
+    Cases.
+
+peers_cases_decode_to_their_declared_verdict_test_() ->
+    [{binary_to_list(maps:get(<<"name">>, Case)),
+      fun() ->
+              Decoded = tidal_link_anchor:decode_peers(
+                          binary:decode_hex(maps:get(<<"hex">>, Case))),
+              ?assertEqual(maps:get(<<"expect">>, Case), verdict(Decoded)),
+              case Decoded of
+                  {ok, Peers} -> ?assertEqual(maps:get(<<"peers">>, Case), Peers);
+                  _ -> ok
+              end
+      end}
+     || Case <- peers_vectors()].
