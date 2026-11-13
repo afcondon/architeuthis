@@ -38,14 +38,14 @@ import Reef.PatternArg (PatternArg, argSrc)
 import Reef.Vetula.Harmony (Shape(..), seqHarmony) as VH
 import Reef.Vetula.Lepidoptera (VoiceSpec)
 import Reef.Vetula.Perf (wrapAt)
-import Reef.Vetula.PerformTypes (Layer, PerfFx(..), PerfSel(..), VoiceShape(..), When(..), arpOrder, parseVoiceShape, termConducts)
+import Reef.Vetula.PerformTypes (Layer, PerfFx(..), PerfSel(..), VoiceShape(..), When(..), arpOrder, defaultVelocity, parseVoiceShape, termConducts, velocityOf)
 import Tidal.Pattern.Core (cat, every, fast, slow, whenCycle)
 import Tidal.Pattern.Mini (parseMiniPattern)
 import Tidal.Pattern.Types (Arc(..), Event(..), Pattern, State(..), emptyContext, eventPart, eventValue, eventWhole, mkArc, mkState, pattern, query)
 
 -- | One chord struck in a slot: where it starts and how long it lasts, as
 -- | fractions of the slot, and its notes.
-type CardHit = { at :: Number, len :: Number, notes :: Array Int }
+type CardHit = { at :: Number, len :: Number, notes :: Array Int, velocity :: Int }
 
 -- | Whether the card sounds from the rig at all: not muted, and bound for MIDI
 -- | or for the rig (`→ rig`, "hand this card to the rig", plays as MIDI on its
@@ -94,7 +94,27 @@ cardHits spec c =
   where
   hit ev = do
     Arc w <- onsetWhole ev
-    pure { at: Rat.toNumber (w.start - Rat.fromInt c), len: Rat.toNumber (w.stop - w.start), notes: eventValue ev }
+    pure { at: Rat.toNumber (w.start - Rat.fromInt c), len: Rat.toNumber (w.stop - w.start), notes: eventValue ev
+         , velocity: velocityAt spec.stack (Arc w) }
+
+-- | How hard a note sounding over `whole` is struck: each `vel` layer whose
+-- | `when` holds in the note's bar, sampled at the note, the last one winning;
+-- | a rest in its pattern leaves the velocity as it was.
+velocityAt :: Array Layer -> Arc -> Int
+velocityAt stack whole@(Arc w) = foldl pick defaultVelocity stack
+  where
+  bar = Int.floor (Rat.toNumber w.start)
+  holds = case _ of
+    Always -> true
+    Every n -> mod bar (max 1 n) == 0
+    Prob p -> cycleRand bar < p
+    AfterBar n -> bar >= n
+    Whenmod n r -> mod bar (max 1 n) >= r
+  pick was lyr = case lyr.fx of
+    Velocity arg | holds lyr.when -> case Array.head (query (argEval arg) (mkState whole)) of
+      Just ev -> velocityOf was (eventValue ev)
+      Nothing -> was
+    _ -> was
 
 cardPattern :: VoiceSpec -> Pattern (Array Int)
 cardPattern spec = foldl (\p lyr -> applyLayer lyr p) base spec.stack
@@ -141,6 +161,7 @@ applyFx = case _ of
   Arpg dir rate -> arpRate rate <<< map (arpOrder dir)
   ArpP src -> arpIndexed arpSelect (idxPattern src)
   Strum _ -> identity
+  Velocity _ -> identity   -- read where the notes are struck (`velocityAt`)
 
 idxPattern :: String -> Pattern String
 idxPattern src = case parseMiniPattern src of

@@ -202,18 +202,19 @@ strike(St, Spec, Slot, SlotBeats, AnchorUs, BeatAtAnchor, Tempo, Acc) ->
           StartUs = AnchorUs + (StartBeat - BeatAtAnchor) * 60000000.0 / Tempo,
           DurMs = max(20.0, maps:get(len, Hit) * SlotMs * 0.9),
           Notes = array:to_list(maps:get(notes, Hit)),
+          Vel = maps:get(velocity, Hit),   % `# vel`, else the card's own (90)
           {_, Acc2} = lists:foldl(
                         fun(Note, {K, A}) ->
                             AtUs = round(StartUs + K * StrumMs * 1000.0),
-                            play(St, Ch, Note, DurMs, SlotMs, AtUs),
-                            {K + 1, [#{pitch => Note, ch => Ch, atUs => AtUs, vel => ?VELOCITY, gateMs => DurMs} | A]}
+                            play(St, Ch, Note, Vel, DurMs, SlotMs, AtUs),
+                            {K + 1, [#{pitch => Note, ch => Ch, atUs => AtUs, vel => Vel, gateMs => DurMs} | A]}
                         end, {0, Acc1}, Notes),
           Acc2
       end, Acc, Hits).
 
 %% One note of the card on channel Ch, down its legs.
-play(St, Ch, Note, DurMs, SlotMs, AtUs) ->
-    route_note(maps:get(sock, St), maps:get(routing, St), Ch, Note, ?VELOCITY, DurMs, SlotMs, AtUs).
+play(St, Ch, Note, Vel, DurMs, SlotMs, AtUs) ->
+    route_note(maps:get(sock, St), maps:get(routing, St), Ch, Note, Vel, DurMs, SlotMs, AtUs).
 
 %% One note on channel Ch, down its legs, or nowhere without a table; a loop
 %% on the rig (rig_loops) plays Vetula's notes through it too.
