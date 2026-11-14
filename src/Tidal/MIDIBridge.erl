@@ -50,7 +50,7 @@ scheduleNoteAt(Socket, PortName, Channel, Note, Velocity, DurationMs, UnixUsAt) 
         case learning() of
             true -> unit;
             false -> send_or_log(Socket, "scheduleNoteAt",
-                                 encode_note_at(PortName, Channel, Note, Velocity, DurationMs, UnixUsAt))
+                                 rig_wire:note_at(PortName, Channel, Note, Velocity, DurationMs, UnixUsAt))
         end
     end.
 
@@ -61,20 +61,22 @@ scheduleNoteOnAt(Socket, PortName, Channel, Note, Velocity, UnixUsAt) ->
         case learning() of
             true -> unit;
             false -> send_or_log(Socket, "scheduleNoteOnAt",
-                                 encode_on_at(PortName, Channel, Note, Velocity, UnixUsAt))
+                                 rig_wire:on_at(PortName, Channel, Note, Velocity, UnixUsAt))
         end
     end.
 
 scheduleNoteOffAt(Socket, PortName, Channel, Note, UnixUsAt) ->
     fun() -> send_or_log(Socket, "scheduleNoteOffAt",
-                         encode_off_at(PortName, Channel, Note, UnixUsAt)) end.
+                         rig_wire:off_at(PortName, Channel, Note, UnixUsAt)) end.
 
 %% gen_udp:send's result is checked though not propagated: a `closed`
 %% error says the socket has died (its owning process exited), which would
 %% otherwise be silent, and tidal_log:err always prints.
-send_or_log(Socket, What, Packet) ->
-    case gen_udp:send(Socket, ?LINK_SPIKE_HOST, ?LINK_SPIKE_PORT, Packet) of
+send_or_log(Socket, What, Message) ->
+    case rig_wire:send(Socket, ?LINK_SPIKE_HOST, ?LINK_SPIKE_PORT, Message) of
         ok -> ok;
+        %% Counted and logged by rig_wire.
+        {refused, _} -> ok;
         {error, Reason} ->
             tidal_log:err("MIDIBridge.~s: gen_udp:send failed: ~p~n", [What, Reason])
     end,
@@ -85,7 +87,7 @@ scheduleCCAt(Socket, PortName, Channel, CC, Value, UnixUsAt) ->
     fun() ->
         case cc_passes(PortName, Channel, CC) of
             true -> send_or_log(Socket, "scheduleCCAt",
-                                encode_cc_at(PortName, Channel, CC, Value, UnixUsAt));
+                                rig_wire:cc_at(PortName, Channel, CC, Value, UnixUsAt));
             false -> unit
         end
     end.
@@ -93,94 +95,11 @@ scheduleCCAt(Socket, PortName, Channel, CC, Value, UnixUsAt) ->
 %% Send /link/set-tempo. link-spike's handler captures its AblLink
 %% session, mutates tempo, commits — Link broadcasts to all peers.
 setLinkTempo(Socket, Bpm) ->
-    fun() ->
-        Packet = encode_link_set_tempo(Bpm),
-        case gen_udp:send(Socket, ?LINK_SPIKE_HOST, ?LINK_SPIKE_PORT, Packet) of
-            ok -> ok;
-            {error, Reason} ->
-                tidal_log:err("MIDIBridge.setLinkTempo: gen_udp:send failed: ~p~n",
-                              [Reason])
-        end,
-        unit
-    end.
+    fun() -> send_or_log(Socket, "setLinkTempo", rig_wire:set_tempo(Bpm)) end.
 
-%% =========================================================================
-%% OSC encoding
-%% =========================================================================
-%%
-%% Inline rather than using Tidal.OSC's encode_args because we need an
-%% int64 (h) typetag for the timestamp, which the existing encoder
-%% doesn't generate. The existing encoder is also general-purpose
-%% (infers types from Erlang values); ours is fixed-shape so it's
-%% slightly faster — relevant when firing thousands of events/sec on
-%% dense CC streams.
-
-%% /midi/note/at  ,siiiih  port channel note velocity duration_ms unix_us_at
-encode_note_at(PortName, Channel, Note, Velocity, DurationMs, UnixUsAt) ->
-    Addr = pad_string(<<"/midi/note/at">>),
-    TypeTag = pad_string(<<",siiiih">>),
-    PortPadded = pad_string(ensure_binary(PortName)),
-    Body = <<
-        (round(Channel)):32/big-signed-integer,
-        (round(Note)):32/big-signed-integer,
-        (round(Velocity)):32/big-signed-integer,
-        (round(DurationMs)):32/big-signed-integer,
-        (round(UnixUsAt)):64/big-signed-integer
-    >>,
-    <<Addr/binary, TypeTag/binary, PortPadded/binary, Body/binary>>.
-
-%% /midi/on/at  ,siiih  port channel note velocity unix_us_at
-encode_on_at(PortName, Channel, Note, Velocity, UnixUsAt) ->
-    Addr = pad_string(<<"/midi/on/at">>),
-    TypeTag = pad_string(<<",siiih">>),
-    PortPadded = pad_string(ensure_binary(PortName)),
-    Body = <<
-        (round(Channel)):32/big-signed-integer,
-        (round(Note)):32/big-signed-integer,
-        (round(Velocity)):32/big-signed-integer,
-        (round(UnixUsAt)):64/big-signed-integer
-    >>,
-    <<Addr/binary, TypeTag/binary, PortPadded/binary, Body/binary>>.
-
-%% /midi/off/at  ,siih  port channel note unix_us_at
-encode_off_at(PortName, Channel, Note, UnixUsAt) ->
-    Addr = pad_string(<<"/midi/off/at">>),
-    TypeTag = pad_string(<<",siih">>),
-    PortPadded = pad_string(ensure_binary(PortName)),
-    Body = <<
-        (round(Channel)):32/big-signed-integer,
-        (round(Note)):32/big-signed-integer,
-        (round(UnixUsAt)):64/big-signed-integer
-    >>,
-    <<Addr/binary, TypeTag/binary, PortPadded/binary, Body/binary>>.
-
-%% /midi/cc/at  ,siiih  port channel cc value unix_us_at
-encode_cc_at(PortName, Channel, CC, Value, UnixUsAt) ->
-    Addr = pad_string(<<"/midi/cc/at">>),
-    TypeTag = pad_string(<<",siiih">>),
-    PortPadded = pad_string(ensure_binary(PortName)),
-    Body = <<
-        (round(Channel)):32/big-signed-integer,
-        (round(CC)):32/big-signed-integer,
-        (round(Value)):32/big-signed-integer,
-        (round(UnixUsAt)):64/big-signed-integer
-    >>,
-    <<Addr/binary, TypeTag/binary, PortPadded/binary, Body/binary>>.
-
-%% /link/set-tempo  ,f  bpm  — single 32-bit IEEE 754 big-endian float.
-%% Link's tempo range is 20..999 BPM; clamp on the link-spike side.
-encode_link_set_tempo(Bpm) ->
-    Addr = pad_string(<<"/link/set-tempo">>),
-    TypeTag = pad_string(<<",f">>),
-    BpmF = case is_float(Bpm) of true -> Bpm; false -> float(Bpm) end,
-    Body = <<BpmF:32/float-big>>,
-    <<Addr/binary, TypeTag/binary, Body/binary>>.
-
-%% Pad a string to a 4-byte boundary with at least one trailing null.
-pad_string(Bin) when is_binary(Bin) ->
-    Len = byte_size(Bin) + 1,
-    Padding = (4 - (Len rem 4)) rem 4,
-    <<Bin/binary, 0:8, 0:(Padding*8)>>.
+%% The packets are laid out by rig_wire, from the declared descriptions
+%% (binnacle/conformance/DIAPHUS-INBOUND.md). A value that breaks a declared
+%% rule is counted there and not sent.
 
 ensure_binary(B) when is_binary(B) -> B;
 ensure_binary(L) when is_list(L) -> list_to_binary(L).

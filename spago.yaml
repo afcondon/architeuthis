@@ -34,6 +34,8 @@ package:
     - reef
     - js-bigints   # the purerl port (../../littorina/vendor/js-bigints)
     - littorina    # Tidal's engine: patterns, mini-notation, line language
+    - hawser       # wire descriptions; the OSC encoder comes from them
+    - rig-wires    # what Diaphus and es9-daemon read (binnacle/wires)
   # Without this section spago compiles src/ only, and `make test` ran
   # whatever test modules were last compiled (2026-05-08) rather than test/.
   test:
@@ -60,6 +62,20 @@ workspace:
       path: ../../littorina/core
     js-bigints:
       path: ../../littorina/vendor/js-bigints
+    # The OSC sent to Diaphus and es9-daemon is encoded from these
+    # descriptions (src/rig_wire.erl), not by hand. Declarations and vectors:
+    # binnacle/conformance. Hawser needs the purerl ports of three packages
+    # the purerl set lacks.
+    rig-wires:
+      path: ../binnacle/wires
+    hawser:
+      path: ../../../purescript-hylograph-libs/purescript-hawser
+    st:
+      path: ../../../purescript-backends/purerl-ports/st
+    foreign-object:
+      path: ../../../purescript-backends/purerl-ports/foreign-object
+    argonaut-core:
+      path: ../../../purescript-backends/purerl-ports/argonaut-core
   packageSet:
     url: https://raw.githubusercontent.com/purerl/package-sets/erl-0.15.3-20220629/packages.json
   backend:

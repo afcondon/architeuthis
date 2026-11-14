@@ -992,14 +992,13 @@ handle_pattern_message(Text, State) ->
                     {reply, {text, <<"ERR: stage-put wants a JSON object">>}, State}
             end;
         {fire_at, Bus, Val, Dur, Delay} ->
-            es9_relay(<<"/cv/trig/at">>,
-                      [Bus, float(Val), float(Dur), float(Delay)]),
+            es9_relay(rig_wire:cv_trig_at(Bus, Val, Dur, Delay)),
             {reply, {text, <<"OK: fire-at">>}, State};
         {cv_out, Bus, Val} ->
-            es9_relay(<<"/cv">>, [Bus, float(Val)]),
+            es9_relay(rig_wire:cv(Bus, Val)),
             {reply, {text, <<"OK: cv-out">>}, State};
         {cv_slew, Bus, Val, Lag} ->
-            es9_relay(<<"/cv/slew">>, [Bus, float(Val), float(Lag)]),
+            es9_relay(rig_wire:cv_slew(Bus, Val, Lag)),
             {reply, {text, <<"OK: cv-slew">>}, State};
         {bind, Name, ActionSpec} ->
             tidal_dispatcher:set_binding_from_spec(Name, ActionSpec),
@@ -3286,40 +3285,12 @@ fh2_apply_selene_standalone(JsonBinary) ->
 %% cope with the multi-space alignment users will write
 %% (`midi      live    "IAC Driver Tidal"`).
 %% --- Direct OSC relay to es9-daemon (Atlantis Sync Protocol output) ----
-%% Self-contained minimal OSC encoder + sender so the fire-at / cv-out /
-%% cv-slew verbs can reach es9-daemon (127.0.0.1:57130) without coupling
-%% to the dispatcher's gate config or tidal_oSC's hardcoded gate-bus math.
-%% Fresh socket per send (matching tidal_oSC's *After helpers — a
+%% The fire-at / cv-out / cv-slew verbs reach es9-daemon (127.0.0.1:57130)
+%% without coupling to the dispatcher's gate config. The packet is laid out
+%% by rig_wire from the declared description; a fresh socket per send (a
 %% long-lived socket silently dies across es9-daemon restarts).
-%% Port moved 57120 → 57130 (workstream C) with the rest of the es9 path.
-es9_relay(Address, Args) ->
-    case gen_udp:open(0, [binary]) of
-        {ok, Socket} ->
-            Msg = es9_osc_encode(Address, Args),
-            gen_udp:send(Socket, {127,0,0,1}, 57130, Msg),
-            gen_udp:close(Socket);
-        _ ->
-            ok
-    end.
-
-es9_osc_encode(Address, Args) ->
-    PaddedAddr = es9_osc_pad(Address),
-    {TypeTag, Encoded} = es9_osc_args(Args, <<>>, <<>>),
-    PaddedTag = es9_osc_pad(<<",", TypeTag/binary>>),
-    <<PaddedAddr/binary, PaddedTag/binary, Encoded/binary>>.
-
-es9_osc_args([], Tag, Enc) -> {Tag, Enc};
-es9_osc_args([A | Rest], Tag, Enc) when is_integer(A) ->
-    es9_osc_args(Rest, <<Tag/binary, "i">>,
-                 <<Enc/binary, A:32/big-signed-integer>>);
-es9_osc_args([A | Rest], Tag, Enc) when is_float(A) ->
-    es9_osc_args(Rest, <<Tag/binary, "f">>, <<Enc/binary, A:32/float>>).
-
-%% Pad a binary to a 4-byte boundary with a null terminator (OSC rule).
-es9_osc_pad(Bin) ->
-    Len = byte_size(Bin) + 1,
-    Pad = (4 - (Len rem 4)) rem 4,
-    <<Bin/binary, 0:8, 0:(Pad*8)>>.
+es9_relay(Message) ->
+    rig_wire:send_once({127,0,0,1}, 57130, Message).
 
 ws_tokens(Bin) -> ws_tokens(Bin, []).
 

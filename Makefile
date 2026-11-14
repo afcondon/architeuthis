@@ -98,6 +98,7 @@ erl-quick:
 	@erlc -disable-feature maybe_expr -o ebin src/odonus_engine.erl
 	@erlc -disable-feature maybe_expr -o ebin src/odonus_voice_sup.erl
 	@erlc -disable-feature maybe_expr -o ebin src/odonus_voice.erl
+	@erlc -disable-feature maybe_expr -o ebin src/rig_wire.erl
 	@erlc -disable-feature maybe_expr -o ebin src/es9_cv.erl
 	@erlc -disable-feature maybe_expr -o ebin src/reef_voice.erl
 	@erlc -disable-feature maybe_expr -o ebin src/routing_out.erl
@@ -137,9 +138,11 @@ test-erl:
 	@echo "==> Running Erlang (eunit) tests..."
 	@mkdir -p ebin
 	@erlc -o ebin src/tidal_step_window.erl src/tidal_anchor_log.erl src/tidal_log.erl src/tidal_link_anchor.erl
-	@erlc -o ebin test/tidal_step_window_tests.erl test/tidal_link_anchor_tests.erl
+	@erlc -o ebin src/rig_wire.erl
+	@erlc -o ebin test/tidal_step_window_tests.erl test/tidal_link_anchor_tests.erl test/rig_wire_tests.erl
+	@# rig_wire_tests needs the PureScript side in ebin (hawser, Wires.Daemons): run `make erl` first.
 	@erl -noshell -pa ebin \
-		-eval 'case eunit:test([tidal_step_window_tests, tidal_link_anchor_tests], []) of ok -> init:stop(0); _ -> init:stop(1) end'
+		-eval 'case eunit:test([tidal_step_window_tests, tidal_link_anchor_tests, rig_wire_tests], []) of ok -> init:stop(0); _ -> init:stop(1) end'
 
 # Run the Branched guided tour (test/Test/BranchedTour.purs)
 tour: erl

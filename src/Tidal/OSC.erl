@@ -99,60 +99,37 @@ dirt_param_args(Params) ->
 %% ============================================
 %% CV/Gate functions for Expert Sleepers ES-9
 %% ============================================
+%%
+%% Every packet here is laid out by rig_wire, from the declared descriptions
+%% (binnacle/conformance/ES9-OSC.md). A value that breaks a declared rule is
+%% counted there and not sent.
 
 %% Send CV value to a channel
 %% Format: /tidal/cv <channel> <value>
 sendCV(Client, Channel, Value) ->
-    fun() ->
-        {Socket, Host, Port} = Client,
-        Msg = encode_osc(<<"/tidal/cv">>, [Channel, Value]),
-        gen_udp:send(Socket, Host, Port, Msg),
-        unit
-    end.
+    fun() -> send_now(Client, rig_wire:tidal_cv(Channel, Value)) end.
 
 %% Send CV with custom slew time
 %% Format: /tidal/cv/slew <channel> <value> <lag>
 sendCVSlew(Client, Channel, Value, Lag) ->
-    fun() ->
-        {Socket, Host, Port} = Client,
-        Msg = encode_osc(<<"/tidal/cv/slew">>, [Channel, Value, Lag]),
-        gen_udp:send(Socket, Host, Port, Msg),
-        unit
-    end.
+    fun() -> send_now(Client, rig_wire:tidal_cv_slew(Channel, Value, Lag)) end.
 
 %% Send gate state (0 or 1)
 %% Format: /tidal/gate <channel> <state>
 sendGate(Client, Channel, State) ->
-    fun() ->
-        {Socket, Host, Port} = Client,
-        Msg = encode_osc(<<"/tidal/gate">>, [Channel, State]),
-        gen_udp:send(Socket, Host, Port, Msg),
-        unit
-    end.
+    fun() -> send_now(Client, rig_wire:gate(Channel, State)) end.
 
 %% Trigger gate for a duration (ms) — fires immediately on receipt
 %% Format: /tidal/gate/trig <channel> <duration_ms>
 sendGateTrig(Client, Channel, DurationMs) ->
-    fun() ->
-        {Socket, Host, Port} = Client,
-        Msg = encode_osc(<<"/tidal/gate/trig">>, [Channel, DurationMs]),
-        gen_udp:send(Socket, Host, Port, Msg),
-        unit
-    end.
+    fun() -> send_now(Client, rig_wire:gate_trig(Channel, DurationMs)) end.
 
 %% Sample-accurate scheduled gate trigger.
 %% Maps gate channel (0-7) to direct bus (8-15) for panel jacks 1-8.
 %% Value 0.5 matches es9-daemon's SAFETY_SCALE (gate high ~5V).
 %% Format: /cv/trig/at <bus> <value> <duration_ms> <delay_ms>
 sendGateTrigAt(Client, Channel, DurationMs, DelayMs) ->
-    fun() ->
-        {Socket, Host, Port} = Client,
-        Bus = 8 + Channel,
-        Value = 0.5,
-        Msg = encode_osc(<<"/cv/trig/at">>, [Bus, Value, DurationMs, DelayMs]),
-        gen_udp:send(Socket, Host, Port, Msg),
-        unit
-    end.
+    fun() -> send_now(Client, rig_wire:cv_trig_at(8 + Channel, 0.5, DurationMs, DelayMs)) end.
 
 %% BEAM-side delayed gate trigger. Spawns a one-shot process that sleeps
 %% DelayMs then opens a fresh UDP socket, sends /tidal/gate/trig, closes.
@@ -162,42 +139,12 @@ sendGateTrigAt(Client, Channel, DurationMs, DelayMs) ->
 %% gen_udp:open(0) is microseconds, so the per-send overhead is negligible
 %% and we get robust recovery across es9-daemon restarts for free.
 sendGateTrigAfter(Client, Channel, DurationMs, DelayMs) ->
-    fun() ->
-        {_StoredSocket, Host, Port} = Client,
-        DelayInt = max(0, round(DelayMs)),
-        spawn(fun() ->
-            timer:sleep(DelayInt),
-            case gen_udp:open(0, [binary]) of
-                {ok, Socket} ->
-                    Msg = encode_osc(<<"/tidal/gate/trig">>, [Channel, DurationMs]),
-                    gen_udp:send(Socket, Host, Port, Msg),
-                    gen_udp:close(Socket);
-                _ ->
-                    ok
-            end
-        end),
-        unit
-    end.
+    fun() -> after_delay(Client, DelayMs, fun() -> rig_wire:gate_trig(Channel, DurationMs) end) end.
 
 %% BEAM-side delayed CV update. Same robustness model as sendGateTrigAfter
 %% — fresh socket per send so es9-daemon restarts don't silently break us.
 sendCVAfter(Client, Bus, Value, DelayMs) ->
-    fun() ->
-        {_StoredSocket, Host, Port} = Client,
-        DelayInt = max(0, round(DelayMs)),
-        spawn(fun() ->
-            timer:sleep(DelayInt),
-            case gen_udp:open(0, [binary]) of
-                {ok, Socket} ->
-                    Msg = encode_osc(<<"/cv">>, [Bus, Value]),
-                    gen_udp:send(Socket, Host, Port, Msg),
-                    gen_udp:close(Socket);
-                _ ->
-                    ok
-            end
-        end),
-        unit
-    end.
+    fun() -> after_delay(Client, DelayMs, fun() -> rig_wire:cv(Bus, Value) end) end.
 
 %% BEAM-side delayed CV trigger. Direct-bus counterpart to
 %% sendGateTrigAfter — emits `/cv/trig <bus> 1.0 <duration_ms>` to
@@ -206,44 +153,12 @@ sendCVAfter(Client, Bus, Value, DelayMs) ->
 %% Use this for percussive gates on absolute es9-daemon buses (panel
 %% jacks 1-8 are buses 8-15 per the cpal channel mapping).
 sendCVTrigAfter(Client, Bus, DurationMs, DelayMs) ->
-    fun() ->
-        {_StoredSocket, Host, Port} = Client,
-        DelayInt = max(0, round(DelayMs)),
-        DurFloat = float(DurationMs),
-        spawn(fun() ->
-            timer:sleep(DelayInt),
-            case gen_udp:open(0, [binary]) of
-                {ok, Socket} ->
-                    Msg = encode_osc(<<"/cv/trig">>,
-                                     [Bus, 1.0, DurFloat]),
-                    gen_udp:send(Socket, Host, Port, Msg),
-                    gen_udp:close(Socket);
-                _ ->
-                    ok
-            end
-        end),
-        unit
-    end.
+    fun() -> after_delay(Client, DelayMs, fun() -> rig_wire:cv_trig(Bus, 1.0, DurationMs) end) end.
 
 %% BEAM-side delayed ESX-8CV update. Same robustness model as sendCVAfter.
 %% /esx <slot> <value> reaches the Silent Way encoder in es9-daemon.
 sendESXAfter(Client, Slot, Value, DelayMs) ->
-    fun() ->
-        {_StoredSocket, Host, Port} = Client,
-        DelayInt = max(0, round(DelayMs)),
-        spawn(fun() ->
-            timer:sleep(DelayInt),
-            case gen_udp:open(0, [binary]) of
-                {ok, Socket} ->
-                    Msg = encode_osc(<<"/esx">>, [Slot, Value]),
-                    gen_udp:send(Socket, Host, Port, Msg),
-                    gen_udp:close(Socket);
-                _ ->
-                    ok
-            end
-        end),
-        unit
-    end.
+    fun() -> after_delay(Client, DelayMs, fun() -> rig_wire:esx(Slot, Value) end) end.
 
 %% BEAM-side delayed ES-5 gate trigger. es9-daemon's /esx5gate sets one bit
 %% in the byte that gets packed into the high byte of the ES-5 L ADAT lane;
@@ -256,28 +171,31 @@ sendES5GateTrigAfter(Client, Bit, DurationMs, DelayMs) ->
         DurInt = max(1, round(DurationMs)),
         spawn(fun() ->
             timer:sleep(DelayInt),
-            send_one_osc(Host, Port, <<"/esx5gate">>, [Bit, 1]),
+            rig_wire:send_once(Host, Port, rig_wire:esx5_gate(Bit, 1)),
             timer:sleep(DurInt),
-            send_one_osc(Host, Port, <<"/esx5gate">>, [Bit, 0])
+            rig_wire:send_once(Host, Port, rig_wire:esx5_gate(Bit, 0))
         end),
         unit
     end.
 
-%% Helper for the *Trig style: open fresh socket per send. Same robustness
-%% model as the existing sendGateTrigAfter/sendCVAfter — survives es9-daemon
-%% restarts because we never reuse a long-lived socket.
-send_one_osc(Host, Port, Addr, Args) ->
-    case gen_udp:open(0, [binary]) of
-        {ok, Socket} ->
-            Msg = encode_osc(Addr, Args),
-            gen_udp:send(Socket, Host, Port, Msg),
-            gen_udp:close(Socket);
-        _ ->
-            ok
-    end.
+%% Send over the client's own socket, now.
+send_now({Socket, Host, Port}, Message) ->
+    rig_wire:send(Socket, Host, Port, Message),
+    unit.
+
+%% Send after a delay, from a one-shot process with a socket of its own.
+%% The message is built when it is due, in that process.
+after_delay({_StoredSocket, Host, Port}, DelayMs, Build) ->
+    DelayInt = max(0, round(DelayMs)),
+    spawn(fun() ->
+        timer:sleep(DelayInt),
+        rig_wire:send_once(Host, Port, Build())
+    end),
+    unit.
 
 %% ============================================
-%% OSC encoding helpers
+%% OSC encoding helpers, for /note and /dirt/play only (SuperDirt's wire,
+%% which is not ours to declare). Nothing sent to es9-daemon comes from here.
 %% ============================================
 
 %% Encode an OSC message

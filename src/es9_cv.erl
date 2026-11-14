@@ -15,7 +15,7 @@
 %% (localhost, tiny bodies) to avoid pulling in inets — keeps the runtime lean
 %% ([[feedback_minimize_system_complexity]]).
 -module(es9_cv).
--export([send_cv/3, send_slew/4, send_trig_at/5, encode_cv/2, encode_trig_at/4,
+-export([send_cv/3, send_slew/4, send_trig_at/5,
          realise/2, note_to_hz/1, fetch_tables/1]).
 
 %% es9-daemon's OSC intake (moved 57120 -> 57130 in workstream C; see the
@@ -31,28 +31,21 @@
 %% Emit
 %% =========================================================================
 
-%% Send one `/cv <bus:int> <value:float>` to es9-daemon over the given (already
-%% open, unbound) UDP socket. `Value` is volts/10 in ±1.0 → ±10 V units.
-send_cv(Sock, Bus, Value) ->
-    gen_udp:send(Sock, ?ES9_IP, ?ES9_PORT, encode_cv(Bus, float(Value))).
+%% The packets are laid out by rig_wire, from the declared descriptions
+%% (binnacle/conformance/ES9-OSC.md). A value that breaks a declared rule
+%% (a bus above 15, a negative time) is counted there and not sent.
 
-%% Build the OSC message for `/cv` — address, ",if" type-tag, then an int32 bus
-%% and a float32 value, each big-endian and 4-byte aligned.
-encode_cv(Bus, Value) ->
-    Addr = pad_string(<<"/cv">>),
-    Tags = pad_string(<<",if">>),
-    Body = <<Bus:32/big-signed-integer, (float(Value)):32/float-big>>,
-    <<Addr/binary, Tags/binary, Body/binary>>.
+%% Send `/cv <bus> <value>` to es9-daemon over the given (already open,
+%% unbound) UDP socket. `Value` is volts/10 in ±1.0 → ±10 V units.
+send_cv(Sock, Bus, Value) ->
+    rig_wire:send(Sock, ?ES9_IP, ?ES9_PORT, rig_wire:cv(Bus, Value)).
 
 %% Send `/cv/slew <bus> <value> <lag_sec>`: move the bus to `value` through
 %% es9-daemon's first-order smoother, whose lag (a time constant, seconds)
 %% stays on the bus until set again. A slide is a slew with a long lag; a plain
 %% note restores the short one (Reef.Articulation).
 send_slew(Sock, Bus, Value, LagSec) ->
-    Addr = pad_string(<<"/cv/slew">>),
-    Tags = pad_string(<<",iff">>),
-    Body = <<Bus:32/big-signed-integer, (float(Value)):32/float-big, (float(LagSec)):32/float-big>>,
-    gen_udp:send(Sock, ?ES9_IP, ?ES9_PORT, <<Addr/binary, Tags/binary, Body/binary>>).
+    rig_wire:send(Sock, ?ES9_IP, ?ES9_PORT, rig_wire:cv_slew(Bus, Value, LagSec)).
 
 %% Send `/cv/trig/at <bus> <value> <dur_ms> <delay_ms>` — a SAMPLE-ACCURATE
 %% scheduled trigger (the note-gate facet). The daemon raises `bus` to `value`
@@ -63,19 +56,7 @@ send_slew(Sock, Bus, Value, LagSec) ->
 %% `/cv` sibling has no scheduled form, so pitch DC uses BEAM-side send_after
 %% while the timing-critical gate rides this daemon primitive.
 send_trig_at(Sock, Bus, Value, DurMs, DelayMs) ->
-    gen_udp:send(Sock, ?ES9_IP, ?ES9_PORT,
-                 encode_trig_at(Bus, float(Value), float(DurMs), float(DelayMs))).
-
-%% OSC for `/cv/trig/at` — ",ifff" tag: int32 bus, then three float32s
-%% (value, dur_ms, delay_ms), big-endian, 4-byte aligned.
-encode_trig_at(Bus, Value, DurMs, DelayMs) ->
-    Addr = pad_string(<<"/cv/trig/at">>),
-    Tags = pad_string(<<",ifff">>),
-    Body = <<Bus:32/big-signed-integer,
-             (float(Value)):32/float-big,
-             (float(DurMs)):32/float-big,
-             (float(DelayMs)):32/float-big>>,
-    <<Addr/binary, Tags/binary, Body/binary>>.
+    rig_wire:send(Sock, ?ES9_IP, ?ES9_PORT, rig_wire:cv_trig_at(Bus, Value, DurMs, DelayMs)).
 
 %% =========================================================================
 %% Realiser — invert a calibration table (target Hz -> volts)
@@ -177,9 +158,3 @@ to_float(X) when is_float(X)   -> X.
 
 ensure_bin(B) when is_binary(B) -> B;
 ensure_bin(L) when is_list(L)   -> iolist_to_binary(L).
-
-%% Pad an OSC string to a 4-byte boundary with at least one trailing null.
-pad_string(Bin) when is_binary(Bin) ->
-    Len = byte_size(Bin) + 1,
-    Padding = (4 - (Len rem 4)) rem 4,
-    <<Bin/binary, 0:8, 0:(Padding * 8)>>.
